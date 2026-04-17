@@ -2,7 +2,9 @@
 
 基于 `Python + asyncio + litellm + pydantic` 的本地 Coding Agent 实验仓库。
 
-当前已经完成 `ZX-code.md` 中第一阶段的最小实现，跑通了下面这个闭环：
+当前已经完成 `docs/ZX-code.md` 中第二阶段：单 Agent 核心 + 持久化运行时。
+
+第一阶段跑通了下面这个闭环：
 
 `user input -> model -> tool use -> tool_result -> final answer`
 
@@ -27,6 +29,14 @@
   - loop
   - tools
   - provider mock
+- JSONL 会话持久化
+- 历史重放
+- 上下文裁剪与 compact
+- 分层 system prompt builder
+- `.memory/MEMORY.md` 记忆系统
+- 持久 TodoManager
+- `allow / deny / ask` 权限系统
+- `CLI > 项目 > 用户` 三层配置
 
 ## 环境要求
 
@@ -86,7 +96,7 @@ uv run agent "帮我看看这个仓库"
 指定模型：
 
 ```bash
-uv run agent --model openai/gpt-4o-mini "读取 ZX-code.md"
+uv run agent --model openai/gpt-4o-mini "读取 docs/ZX-code.md"
 ```
 
 关闭流式输出：
@@ -99,6 +109,24 @@ uv run agent --no-stream "总结当前目录"
 
 ```bash
 uv run agent --max-turns 6 "帮我列出当前项目结构"
+```
+
+指定会话：
+
+```bash
+uv run agent --session-id demo "继续上次任务"
+```
+
+打印 system prompt：
+
+```bash
+uv run agent --print-system-prompt
+```
+
+临时关闭 memory/todo：
+
+```bash
+uv run agent --no-memory --no-todos "只做一次临时分析"
 ```
 
 进入 REPL：
@@ -123,7 +151,13 @@ uv run agent --help
 
 - `--model`
 - `--max-turns`
+- `--session-id`
+- `--data-dir`
+- `--context-max-chars`
 - `--no-stream`
+- `--no-memory`
+- `--no-todos`
+- `--print-system-prompt`
 
 ## 运行测试
 
@@ -137,14 +171,23 @@ uv run pytest -q
 .
 ├── README.md
 ├── pyproject.toml
-├── ZX-code.md
+├── docs/
+│   ├── ZX-code.md
+│   ├── phase-01-单Agent核心讲解.md
+│   └── phase-02-持久化上下文权限记忆讲解.md
 ├── src/
 │   └── agent/
+│       ├── config.py
+│       ├── context.py
 │       ├── main.py
 │       ├── loop.py
+│       ├── memory.py
 │       ├── models.py
+│       ├── permissions.py
 │       ├── prompt.py
 │       ├── recovery.py
+│       ├── sessions.py
+│       ├── todo.py
 │       ├── providers/
 │       │   ├── base.py
 │       │   └── litellm_client.py
@@ -154,10 +197,17 @@ uv run pytest -q
 │           ├── read_file.py
 │           ├── write_file.py
 │           ├── edit_file.py
-│           └── grep.py
+│           ├── grep.py
+│           ├── memory.py
+│           └── todo.py
 └── tests/
+    ├── test_config.py
+    ├── test_context.py
     ├── test_loop.py
+    ├── test_memory_todo_prompt.py
+    ├── test_permissions.py
     ├── test_provider_mock.py
+    ├── test_sessions.py
     └── test_tools.py
 ```
 
@@ -186,16 +236,42 @@ uv run pytest -q
 
 - 负责 CLI 入口
 - 支持单次执行和 REPL
+- 负责组装配置、会话、上下文、记忆、todo、权限和 prompt builder
+
+`src/agent/sessions.py`
+
+- 使用 JSONL append-only 持久化消息
+- 支持按 `session_id` 重建历史
+
+`src/agent/context.py`
+
+- 在模型调用前裁剪过长 tool result
+- 在历史过长时 compact 旧消息
+
+`src/agent/prompt.py`
+
+- 使用 `SystemPromptBuilder` 分层构建 prompt
+- 支持 memory、todo、runtime 注入
+
+`src/agent/permissions.py`
+
+- 在工具执行前判断 `allow / deny / ask`
+- 危险 bash 命令默认需要确认
+
+`src/agent/memory.py`
+
+- 管理 `.memory/MEMORY.md`
+- 使用 frontmatter + markdown 存储长期记忆
+
+`src/agent/todo.py`
+
+- 管理持久 todo
+- 支持创建、更新、完成和 prompt 渲染
 
 ## 当前限制
 
-这一版还是第一阶段 MVP，目前还没有：
+当前还没有：
 
-- 会话持久化
-- 上下文压缩
-- 权限系统
-- 记忆系统
-- Todo/Planning
 - 多通道网关
 - 手机端 Telegram / 飞书接入
 - DeliveryQueue
@@ -203,23 +279,25 @@ uv run pytest -q
 - MCP / 插件
 - 并发车道和子代理
 
-这些都在 `ZX-code.md` 后续阶段里。
+这些都在 `docs/ZX-code.md` 后续阶段里。
 
 ## 开发路线
 
 实施路线见：
 
-- `ZX-code.md`
-- `12-Python实战技术选型.md`
+- `docs/ZX-code.md`
+- `docs/12-Python实战技术选型.md`
+- `docs/phase-01-单Agent核心讲解.md`
+- `docs/phase-02-持久化上下文权限记忆讲解.md`
 
-当前代码对应 `ZX-code.md` 的第一阶段。
+当前代码对应 `docs/ZX-code.md` 的第二阶段。
 
 ## 建议的下一步
 
 比较顺的推进顺序是：
 
-1. 做 `SessionStore`，把消息持久化下来
-2. 做 `SystemPromptBuilder`
-3. 做 `PermissionManager`
-4. 做 `MEMORY.md` 和最小记忆注入
-5. 再接 OpenClaw 风格的 `Channel + Gateway + BindingTable`
+1. 定义 `InboundMessage`
+2. 实现 `Channel` 抽象和 `CLIChannel`
+3. 接入 Telegram 或飞书
+4. 实现 `BindingTable`
+5. 把手机消息路由到同一条 Agent brain

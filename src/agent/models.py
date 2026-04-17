@@ -84,6 +84,14 @@ class AgentConfig(BaseModel):
     max_iterations: int = 8
     model_timeout_s: float = 60.0
     stream: bool = True
+    session_id: str = "default"
+    data_dir: str = ".agent"
+    context_max_chars: int = 40000
+    context_keep_recent: int = 24
+    context_tool_result_max_chars: int = 6000
+    memory_path: str = ".memory/MEMORY.md"
+    enable_memory: bool = True
+    enable_todos: bool = True
 
 
 class AgentState(BaseModel):
@@ -91,6 +99,7 @@ class AgentState(BaseModel):
 
     system_prompt: str
     max_iterations: int
+    session_id: str | None = None
     turn_count: int = 0
     messages: list[Message] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
@@ -103,4 +112,4 @@ class AgentRunResult(BaseModel):
     iterations: int
     messages: list[Message]
     tool_results: list[ToolResult]
-
+    session_id: str | None = None

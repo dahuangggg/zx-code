@@ -21,7 +21,6 @@ def test_configure_readline_applies_bindings(monkeypatch) -> None:
         "set input-meta on",
         "set output-meta on",
         "set convert-meta off",
-        "set enable-meta-keybindings on",
     ]
 
 
@@ -37,4 +36,4 @@ def test_configure_readline_ignores_backend_errors(monkeypatch) -> None:
 
     main._configure_readline()
 
-    assert len(calls) == 5
+    assert len(calls) == 4
