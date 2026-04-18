@@ -2,7 +2,7 @@
 
 基于 `Python + asyncio + litellm + pydantic` 的本地 Coding Agent 实验仓库。
 
-当前已经完成 `docs/ZX-code.md` 中第三阶段：单 Agent 核心 + 持久化运行时 + 多通道 Gateway。
+当前已经完成 `docs/ZX-code.md` 中第四阶段：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron。
 
 第一阶段跑通了下面这个闭环：
 
@@ -50,6 +50,11 @@
 - `Gateway` 统一调度入口
 - `build_session_key()` 会话隔离
 - `--watch` 通道监听模式
+- `DeliveryQueue` 写前日志式可靠投递
+- `DeliveryRunner` 出站消息发送、失败重试和失败目录
+- `chunk_message()` 按平台上限切分长消息
+- `HeartbeatRunner` 主动心跳，用户活跃时不抢占对话
+- `CronScheduler` 支持 `at / every / cron` 三类定时任务
 
 ## 环境要求
 
@@ -259,7 +264,7 @@ uv run agent \
   --telegram-offset 123456789
 ```
 
-`--telegram-offset` 应该设置为最后一次已处理 `update_id + 1`。第四阶段会把 offset 和投递状态放进可靠队列/状态文件。
+`--telegram-offset` 应该设置为最后一次已处理 `update_id + 1`。
 
 如果这个 bot 之前配置过 webhook，`getUpdates` 可能不能正常工作。可以先删除 webhook：
 
@@ -304,10 +309,10 @@ uv run agent \
 - 支持 `--telegram-allowed-chats` 白名单
 - 支持 offset 持久化
 - 支持长消息按 Telegram 4096 字符上限切块
-- 出站消息还没有 `DeliveryQueue`
-- 失败后不会自动重试
+- 出站消息会先进入 `DeliveryQueue` 再发送
+- 发送失败会按指数退避重试，超过次数后进入失败目录
 
-这些会在第四阶段处理。
+剩余的投递后台 daemon 和更细的限流恢复会在后续阶段处理。
 
 ## 飞书连接说明
 
@@ -407,7 +412,124 @@ Feishu webhook -> FeishuChannel.push_event()
 - 暂不支持加密事件解密
 - 暂不支持富文本回复
 - 暂不下载图片或文件内容，只把 media key 放进 `InboundMessage.media`
-- 出站消息还没有 `DeliveryQueue`，失败不会持久化重试
+- 出站消息会先进入 `DeliveryQueue`，失败会持久化重试
+
+## 可靠投递、Heartbeat 和 Cron
+
+第四阶段把“直接发送回复”改成了“先落盘，再发送”。
+
+出站消息会写到：
+
+```text
+.agent/delivery/queued/
+```
+
+发送成功后移动到：
+
+```text
+.agent/delivery/sent/
+```
+
+连续失败后移动到：
+
+```text
+.agent/delivery/failed/
+```
+
+这让 Telegram / 飞书回复、Heartbeat 输出、Cron 输出都走同一个可靠投递路径。
+
+### Delivery 常用参数
+
+```bash
+uv run agent \
+  --channel telegram \
+  --watch \
+  --telegram-token "$TELEGRAM_BOT_TOKEN" \
+  --delivery-max-attempts 5 \
+  --delivery-base-delay 1 \
+  --delivery-max-delay 300 \
+  --delivery-jitter 1
+```
+
+含义：
+
+- `--delivery-max-attempts`：最多尝试次数
+- `--delivery-base-delay`：第一次失败后的基础退避秒数
+- `--delivery-max-delay`：最大退避秒数
+- `--delivery-jitter`：随机抖动秒数，避免固定节奏重试
+
+### Heartbeat
+
+Heartbeat 用于让 Agent 在用户空闲时主动检查是否有需要推送的内容。
+
+```bash
+uv run agent \
+  --channel telegram \
+  --watch \
+  --telegram-token "$TELEGRAM_BOT_TOKEN" \
+  --heartbeat \
+  --heartbeat-to "123456789" \
+  --heartbeat-interval 300 \
+  --heartbeat-min-idle 60 \
+  --heartbeat-prompt "检查项目状态；没有需要告诉用户的内容就只回复 HEARTBEAT_OK"
+```
+
+规则：
+
+- 用户当前对话正在跑 Agent 时，Heartbeat 不执行
+- 用户刚发过消息且未超过 `--heartbeat-min-idle`，Heartbeat 不执行
+- Agent 回复 `HEARTBEAT_OK` 时不会推送
+- 其他输出会进入 `DeliveryQueue`
+
+### Cron
+
+Cron 配置文件默认读取 `.zx-code/cron.json`，也可以用 `--cron-jobs` 指定。
+
+示例：
+
+```json
+{
+  "jobs": [
+    {
+      "id": "daily-summary",
+      "kind": "cron",
+      "schedule": "0 9 * * *",
+      "prompt": "总结昨天到现在的项目变化，只有有价值的信息才推送。",
+      "channel": "telegram",
+      "to": "123456789",
+      "account_id": "main-telegram-bot"
+    },
+    {
+      "id": "five-min-check",
+      "kind": "every",
+      "schedule": "300",
+      "prompt": "检查是否有需要提醒用户的内容。",
+      "channel": "telegram",
+      "to": "123456789"
+    },
+    {
+      "id": "one-shot",
+      "kind": "at",
+      "schedule": "1770000000",
+      "prompt": "到点提醒用户检查阶段四验收。",
+      "channel": "telegram",
+      "to": "123456789"
+    }
+  ]
+}
+```
+
+启动时加：
+
+```bash
+uv run agent \
+  --channel telegram \
+  --watch \
+  --telegram-token "$TELEGRAM_BOT_TOKEN" \
+  --cron-jobs .zx-code/cron.json
+```
+
+`cron` 表达式优先使用 `croniter`；如果当前环境没有安装 `croniter`，会退回到内置的五字段简单解析，支持 `*`、`*/N`、单值和逗号列表。
 
 ## CLI 参数
 
@@ -421,7 +543,8 @@ uv run agent --help
 - `--max-turns`
 - `--session-id`
 - `--data-dir`
-- `--context-max-chars`
+- `--context-max-tokens`
+- `--compact-model`
 - `--channel`
 - `--account-id`
 - `--agent-id`
@@ -443,6 +566,18 @@ uv run agent --help
 - `--feishu-webhook-host`
 - `--feishu-webhook-port`
 - `--feishu-receive-timeout`
+- `--delivery-max-attempts`
+- `--delivery-base-delay`
+- `--delivery-max-delay`
+- `--delivery-jitter`
+- `--heartbeat`
+- `--heartbeat-interval`
+- `--heartbeat-min-idle`
+- `--heartbeat-channel`
+- `--heartbeat-to`
+- `--heartbeat-prompt`
+- `--heartbeat-sentinel`
+- `--cron-jobs`
 - `--watch`
 - `--no-stream`
 - `--no-memory`
@@ -465,10 +600,11 @@ uv run pytest -q
 4. `docs/phase-01-单Agent核心讲解.md`：理解第一阶段单 Agent 核心
 5. `docs/phase-02-持久化上下文权限记忆讲解.md`：理解第二阶段运行时状态
 6. `docs/phase-03-通道网关与手机接入讲解.md`：理解第三阶段多通道 Gateway
-7. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
-8. `src/agent/gateway.py`：看路由、会话隔离和统一派发
-9. `src/agent/loop.py`：看 Agent 主循环
-10. `tests/`：看每个能力如何被验证
+7. `docs/phase-04-可靠投递与主动调度讲解.md`：理解第四阶段可靠投递、Heartbeat 和 Cron
+8. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
+9. `src/agent/gateway.py`：看路由、会话隔离和统一派发
+10. `src/agent/delivery.py`：看出站消息如何先落盘再发送
+11. `tests/`：看每个能力如何被验证
 
 ## 文档维护规则
 
@@ -478,6 +614,8 @@ uv run pytest -q
 2. 更新 `DEVLOG.md`，记录本次改动、设计原因、验证方式和阅读入口
 3. 如果完成了一个阶段，新增或更新 `docs/phase-xx-...讲解.md`
 4. 如果 CLI 参数、目录结构、配置文件或测试方式变化，必须同步写进 README
+
+注意：`docs/` 是本地学习讲解材料，当前由 `.gitignore` 忽略，不加入 git。
 
 ## 项目结构
 
@@ -491,7 +629,8 @@ uv run pytest -q
 │   ├── ZX-code.md
 │   ├── phase-01-单Agent核心讲解.md
 │   ├── phase-02-持久化上下文权限记忆讲解.md
-│   └── phase-03-通道网关与手机接入讲解.md
+│   ├── phase-03-通道网关与手机接入讲解.md
+│   └── phase-04-可靠投递与主动调度讲解.md
 ├── src/
 │   └── agent/
 │       ├── channels/
@@ -501,7 +640,10 @@ uv run pytest -q
 │       │   └── feishu.py
 │       ├── config.py
 │       ├── context.py
+│       ├── cron.py
+│       ├── delivery.py
 │       ├── gateway.py
+│       ├── heartbeat.py
 │       ├── main.py
 │       ├── loop.py
 │       ├── memory.py
@@ -527,7 +669,9 @@ uv run pytest -q
     ├── test_channels.py
     ├── test_config.py
     ├── test_context.py
+    ├── test_delivery.py
     ├── test_gateway.py
+    ├── test_heartbeat_cron.py
     ├── test_loop.py
     ├── test_memory_todo_prompt.py
     ├── test_permissions.py
@@ -564,6 +708,7 @@ uv run pytest -q
 - 负责组装配置、会话、上下文、记忆、todo、权限和 prompt builder
 - 负责把 CLI / Telegram / 飞书入口接入 Gateway
 - 支持 `--watch` 持续监听通道
+- 在 watch loop 中驱动 Delivery、Heartbeat 和 Cron tick
 
 `src/agent/sessions.py`
 
@@ -634,16 +779,38 @@ uv run pytest -q
 - 实现 `BindingTable`
 - 实现 `Gateway.handle_inbound()`
 - 把不同通道统一路由到同一条 Agent Brain
+- 回复先进入 `DeliveryQueue`，再由 `DeliveryRunner` 投递
+
+`src/agent/delivery.py`
+
+- 定义 `DeliveryEntry`
+- 实现 `DeliveryQueue`
+- 使用 `tmp + fsync + os.replace` 原子写入
+- 实现 `DeliveryRunner`
+- 实现指数退避、失败目录和 `chunk_message()`
+
+`src/agent/heartbeat.py`
+
+- 定义 `ActivityTracker`
+- 定义 `HeartbeatConfig`
+- 实现 `HeartbeatRunner`
+- 用户活跃或 Agent 正在处理时跳过心跳
+
+`src/agent/cron.py`
+
+- 定义 `CronJob`
+- 实现 `CronScheduler`
+- 支持 `at / every / cron`
+- 支持从 `.zx-code/cron.json` 加载任务
 
 ## 当前限制
 
 当前还没有：
 
-- DeliveryQueue
-- Heartbeat / Cron
-- Telegram 可靠投递和失败重试
 - 飞书加密事件解密
 - 飞书富文本回复
+- DeliveryRunner 独立后台 daemon
+- Cron 状态文件持久化
 - MCP / 插件
 - 并发车道和子代理
 
@@ -658,15 +825,16 @@ uv run pytest -q
 - `docs/phase-01-单Agent核心讲解.md`
 - `docs/phase-02-持久化上下文权限记忆讲解.md`
 - `docs/phase-03-通道网关与手机接入讲解.md`
+- `docs/phase-04-可靠投递与主动调度讲解.md`
 
-当前代码对应 `docs/ZX-code.md` 的第三阶段。
+当前代码对应 `docs/ZX-code.md` 的第四阶段。
 
 ## 建议的下一步
 
 比较顺的推进顺序是：
 
-1. 实现 `DeliveryQueue`
-2. 实现 Telegram 出站消息可靠投递
-3. 实现消息 chunk、失败目录和重试退避
-4. 实现 `HeartbeatRunner`
-5. 实现 `CronScheduler`
+1. 持久化 Cron job 的 `last_fired_at / next_run_at`
+2. 把 DeliveryRunner 拆成独立后台任务
+3. 实现 `main / cron / heartbeat` 多 lane 优先级
+4. 补飞书加密事件解密
+5. 推进 MCP、subagent、worktree 和 resilience

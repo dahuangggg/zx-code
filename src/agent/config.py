@@ -52,6 +52,18 @@ class AgentSettings(BaseModel):
     feishu_webhook_host: str = "127.0.0.1"
     feishu_webhook_port: int = 0
     feishu_receive_timeout_s: float = 30.0
+    delivery_max_attempts: int = 5
+    delivery_base_delay_s: float = 1.0
+    delivery_max_delay_s: float = 300.0
+    delivery_jitter_s: float = 1.0
+    heartbeat_enabled: bool = False
+    heartbeat_interval_s: float = 300.0
+    heartbeat_min_idle_s: float = 30.0
+    heartbeat_channel: str = ""
+    heartbeat_to: str = ""
+    heartbeat_prompt: str = "Heartbeat check. Reply HEARTBEAT_OK if no user-facing update is needed."
+    heartbeat_sentinel: str = "HEARTBEAT_OK"
+    cron_jobs_path: str = ""
 
     def to_agent_config(self, *, system_prompt: str = "") -> AgentConfig:
         return AgentConfig(

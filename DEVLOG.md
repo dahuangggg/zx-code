@@ -8,6 +8,68 @@
 2. 每次更新代码后，都要在 `DEVLOG.md` 追加一条记录
 3. 每完成一个阶段，都要在 `docs/` 下新增对应的阶段讲解文档
 4. Devlog 要写清楚本次改了什么、为什么这么改、怎么验证、读者下一步应该看哪里
+5. `docs/` 是本地学习讲解材料，当前由 `.gitignore` 忽略，不加入 git
+
+## 2026-04-18 - Phase 4: 可靠投递与主动调度
+
+### 改动内容
+
+- 新增 `src/agent/delivery.py`
+  - `DeliveryEntry`
+  - `DeliveryQueue`
+  - `DeliveryRunner`
+  - `chunk_message()`
+  - queued / sent / failed 三目录投递状态
+  - `tmp + fsync + os.replace` 原子写入
+  - 指数退避、jitter、最大尝试次数和失败目录
+- 新增 `src/agent/heartbeat.py`
+  - `ActivityTracker`
+  - `HeartbeatConfig`
+  - `HeartbeatRunner`
+  - 用户活跃或 Agent 正在处理时跳过 Heartbeat
+  - `HEARTBEAT_OK` sentinel 不推送
+- 新增 `src/agent/cron.py`
+  - `CronJob`
+  - `CronScheduler`
+  - 支持 `at / every / cron`
+  - 支持从 `.zx-code/cron.json` 或 `--cron-jobs` 加载任务
+- 更新 `src/agent/gateway.py`，把直接 `channel.send()` 改成先写 `DeliveryQueue` 再由 `DeliveryRunner` 投递
+- 更新 `src/agent/main.py`，在 watch loop 中驱动 `receive_once / heartbeat.tick / cron.tick / drain_delivery`
+- 更新 `src/agent/config.py` 和 CLI，新增 delivery、heartbeat、cron 配置参数
+- 更新 `pyproject.toml` 和 `uv.lock`，加入 `croniter` 作为 cron 表达式解析依赖
+- 新增 `tests/test_delivery.py` 和 `tests/test_heartbeat_cron.py`
+- 更新 README，并新增第四阶段讲解文档；`docs/` 按当前要求继续由 `.gitignore` 忽略，只保留本地
+
+### 为什么这么改
+
+第三阶段完成了手机入口，但出站回复仍然存在“生成了答案但发送失败就丢”的风险。第四阶段把出站消息统一放到 `DeliveryQueue`，让用户回复、Heartbeat 输出和 Cron 输出都走同一套可靠投递路径。
+
+这次实现遵循 `docs/12-Python实战技术选型.md` 的方向：不用数据库，先用可读、可测试、可恢复的文件持久化；后台行为用 `asyncio` tick 组织；重试采用自定义指数退避，方便后续接入限流和错误分类。
+
+### 验证
+
+```bash
+uv run pytest -q
+uv run agent --help
+```
+
+验证结果：
+
+- `uv run pytest -q` 通过，`64 passed`
+- CLI help 正常显示 delivery、heartbeat、cron 参数
+
+裸 `pytest -q` 在当前全局 Python 环境会因为没有安装 `python-frontmatter` 失败；项目验证以 `uv run pytest -q` 为准。
+
+### 读者入口
+
+- 总览入口：`README.md`
+- 第四阶段讲解：`docs/phase-04-可靠投递与主动调度讲解.md`
+- 可靠投递：`src/agent/delivery.py`
+- Heartbeat：`src/agent/heartbeat.py`
+- Cron：`src/agent/cron.py`
+- Gateway 接入：`src/agent/gateway.py`
+- CLI wiring：`src/agent/main.py`
+- 测试：`tests/test_delivery.py`、`tests/test_heartbeat_cron.py`
 
 ## 2026-04-17 - Phase 3 Hardening: 安全与持久化加固
 

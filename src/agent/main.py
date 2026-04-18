@@ -12,7 +12,10 @@ from agent.channels import ChannelManager, CLIChannel, FeishuChannel, InboundMes
 from agent.channels.telegram import TelegramChannel
 from agent.config import AgentSettings, ConfigLoader
 from agent.context import ContextGuard
+from agent.cron import CronScheduler
+from agent.delivery import DeliveryQueue, DeliveryRunner
 from agent.gateway import AgentRouteConfig, BindingTable, Gateway
+from agent.heartbeat import ActivityTracker, HeartbeatConfig, HeartbeatRunner
 from agent.hooks import HookRunner
 from agent.loop import run_task
 from agent.memory import MemoryStore
@@ -214,6 +217,18 @@ def _build_gateway(settings: AgentSettings, *, emit_cli: bool) -> Gateway:
             receive_timeout_s=settings.feishu_receive_timeout_s,
         )
     )
+    delivery_queue = DeliveryQueue(
+        data_dir / "delivery",
+        max_attempts=settings.delivery_max_attempts,
+        base_delay_s=settings.delivery_base_delay_s,
+        max_delay_s=settings.delivery_max_delay_s,
+        jitter_s=settings.delivery_jitter_s,
+    )
+    delivery_runner = DeliveryRunner(
+        queue=delivery_queue,
+        channel_manager=channel_manager,
+    )
+    activity_tracker = ActivityTracker()
 
     binding_table = BindingTable(default_agent_id=settings.default_agent_id)
     agent_configs = {
@@ -243,6 +258,70 @@ def _build_gateway(settings: AgentSettings, *, emit_cli: bool) -> Gateway:
         binding_table=binding_table,
         agent_configs=agent_configs,
         run_agent_turn=run_agent_turn,
+        delivery_queue=delivery_queue,
+        delivery_runner=delivery_runner,
+        activity_tracker=activity_tracker,
+    )
+
+
+def _build_heartbeat_runner(settings: AgentSettings, gateway: Gateway) -> HeartbeatRunner | None:
+    if not settings.heartbeat_enabled or gateway.delivery_queue is None:
+        return None
+    channel = settings.heartbeat_channel or settings.channel
+    to = settings.heartbeat_to
+    if not channel or not to:
+        return None
+
+    async def run_agent_turn(prompt: str, session_id: str) -> str:
+        return await _run_agent_text(
+            prompt,
+            settings=settings.model_copy(update={"stream": False}),
+            session_id=session_id,
+        )
+
+    return HeartbeatRunner(
+        config=HeartbeatConfig(
+            enabled=settings.heartbeat_enabled,
+            interval_s=settings.heartbeat_interval_s,
+            min_idle_s=settings.heartbeat_min_idle_s,
+            channel=channel,
+            to=to,
+            account_id=settings.account_id,
+            prompt=settings.heartbeat_prompt,
+            sentinel=settings.heartbeat_sentinel,
+        ),
+        delivery_queue=gateway.delivery_queue,
+        run_agent_turn=run_agent_turn,
+        activity_tracker=gateway.activity_tracker,
+    )
+
+
+def _build_cron_scheduler(settings: AgentSettings, gateway: Gateway) -> CronScheduler | None:
+    if gateway.delivery_queue is None:
+        return None
+
+    project_root = Path.cwd()
+    cron_path: Path | None = None
+    if settings.cron_jobs_path:
+        cron_path = _resolve_project_path(project_root, settings.cron_jobs_path)
+    else:
+        default_path = project_root / ".zx-code" / "cron.json"
+        if default_path.exists():
+            cron_path = default_path
+    if cron_path is None or not cron_path.exists():
+        return None
+
+    async def run_agent_turn(prompt: str, session_id: str) -> str:
+        return await _run_agent_text(
+            prompt,
+            settings=settings.model_copy(update={"stream": False}),
+            session_id=session_id,
+        )
+
+    return CronScheduler.from_file(
+        cron_path,
+        delivery_queue=gateway.delivery_queue,
+        run_agent_turn=run_agent_turn,
     )
 
 
@@ -259,6 +338,9 @@ def _validate_channel_settings(settings: AgentSettings) -> bool:
         if settings.feishu_webhook_port <= 0:
             console.print("[red]Error:[/red] --feishu-webhook-port is required for Feishu")
             return False
+    if settings.heartbeat_enabled and not settings.heartbeat_to:
+        console.print("[red]Error:[/red] --heartbeat-to is required when heartbeat is enabled")
+        return False
     return True
 
 
@@ -319,6 +401,7 @@ async def _run_channel_once(
 
     if result is None:
         console.print(f"No inbound message on channel: {settings.channel}")
+    await gateway.drain_delivery()
     return 0
 
 
@@ -337,6 +420,8 @@ async def _run_channel_loop(
         return 1
 
     gateway = _build_gateway(settings, emit_cli=not settings.stream)
+    heartbeat_runner = _build_heartbeat_runner(settings, gateway)
+    cron_scheduler = _build_cron_scheduler(settings, gateway)
     console.print(f"Listening on channel: {settings.channel}. Press Ctrl-C to stop.")
     try:
         while True:
@@ -347,6 +432,11 @@ async def _run_channel_loop(
                 )
                 if result is None:
                     await asyncio.sleep(0.2)
+                if heartbeat_runner is not None:
+                    await heartbeat_runner.tick()
+                if cron_scheduler is not None:
+                    await cron_scheduler.tick()
+                await gateway.drain_delivery()
             except AgentError as exc:
                 console.print(f"[red]Error:[/red] {exc}")
                 return 1
@@ -449,6 +539,18 @@ def _settings_from_cli(
     feishu_webhook_host: str | None,
     feishu_webhook_port: int | None,
     feishu_receive_timeout: float | None,
+    delivery_max_attempts: int | None,
+    delivery_base_delay: float | None,
+    delivery_max_delay: float | None,
+    delivery_jitter: float | None,
+    heartbeat_enabled: bool,
+    heartbeat_interval: float | None,
+    heartbeat_min_idle: float | None,
+    heartbeat_channel: str | None,
+    heartbeat_to: str | None,
+    heartbeat_prompt: str | None,
+    heartbeat_sentinel: str | None,
+    cron_jobs_path: str | None,
     no_stream: bool,
     no_memory: bool,
     no_todos: bool,
@@ -480,9 +582,22 @@ def _settings_from_cli(
         "feishu_webhook_host": feishu_webhook_host,
         "feishu_webhook_port": feishu_webhook_port,
         "feishu_receive_timeout_s": feishu_receive_timeout,
+        "delivery_max_attempts": delivery_max_attempts,
+        "delivery_base_delay_s": delivery_base_delay,
+        "delivery_max_delay_s": delivery_max_delay,
+        "delivery_jitter_s": delivery_jitter,
+        "heartbeat_interval_s": heartbeat_interval,
+        "heartbeat_min_idle_s": heartbeat_min_idle,
+        "heartbeat_channel": heartbeat_channel,
+        "heartbeat_to": heartbeat_to,
+        "heartbeat_prompt": heartbeat_prompt,
+        "heartbeat_sentinel": heartbeat_sentinel,
+        "cron_jobs_path": cron_jobs_path,
     }
     if feishu_is_lark:
         overrides["feishu_is_lark"] = True
+    if heartbeat_enabled:
+        overrides["heartbeat_enabled"] = True
     if no_stream:
         overrides["stream"] = False
     if no_memory:
@@ -531,6 +646,18 @@ def _build_typer_app() -> Any:
         feishu_webhook_host: str | None = typer.Option(None, "--feishu-webhook-host"),
         feishu_webhook_port: int | None = typer.Option(None, "--feishu-webhook-port"),
         feishu_receive_timeout: float | None = typer.Option(None, "--feishu-receive-timeout"),
+        delivery_max_attempts: int | None = typer.Option(None, "--delivery-max-attempts"),
+        delivery_base_delay: float | None = typer.Option(None, "--delivery-base-delay"),
+        delivery_max_delay: float | None = typer.Option(None, "--delivery-max-delay"),
+        delivery_jitter: float | None = typer.Option(None, "--delivery-jitter"),
+        heartbeat_enabled: bool = typer.Option(False, "--heartbeat"),
+        heartbeat_interval: float | None = typer.Option(None, "--heartbeat-interval"),
+        heartbeat_min_idle: float | None = typer.Option(None, "--heartbeat-min-idle"),
+        heartbeat_channel: str | None = typer.Option(None, "--heartbeat-channel"),
+        heartbeat_to: str | None = typer.Option(None, "--heartbeat-to"),
+        heartbeat_prompt: str | None = typer.Option(None, "--heartbeat-prompt"),
+        heartbeat_sentinel: str | None = typer.Option(None, "--heartbeat-sentinel"),
+        cron_jobs_path: str | None = typer.Option(None, "--cron-jobs"),
         watch: bool = typer.Option(False, "--watch"),
         no_stream: bool = typer.Option(False, "--no-stream"),
         no_memory: bool = typer.Option(False, "--no-memory"),
@@ -565,6 +692,18 @@ def _build_typer_app() -> Any:
             feishu_webhook_host=feishu_webhook_host,
             feishu_webhook_port=feishu_webhook_port,
             feishu_receive_timeout=feishu_receive_timeout,
+            delivery_max_attempts=delivery_max_attempts,
+            delivery_base_delay=delivery_base_delay,
+            delivery_max_delay=delivery_max_delay,
+            delivery_jitter=delivery_jitter,
+            heartbeat_enabled=heartbeat_enabled,
+            heartbeat_interval=heartbeat_interval,
+            heartbeat_min_idle=heartbeat_min_idle,
+            heartbeat_channel=heartbeat_channel,
+            heartbeat_to=heartbeat_to,
+            heartbeat_prompt=heartbeat_prompt,
+            heartbeat_sentinel=heartbeat_sentinel,
+            cron_jobs_path=cron_jobs_path,
             no_stream=no_stream,
             no_memory=no_memory,
             no_todos=no_todos,

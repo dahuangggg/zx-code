@@ -6,6 +6,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.channels.base import ChannelManager, InboundMessage
+from agent.delivery import DeliveryQueue, DeliveryRunner
+from agent.heartbeat import ActivityTracker
 
 
 DMScope = Literal[
@@ -205,11 +207,17 @@ class Gateway:
         binding_table: BindingTable,
         agent_configs: dict[str, AgentRouteConfig],
         run_agent_turn: AgentTurnHandler,
+        delivery_queue: DeliveryQueue | None = None,
+        delivery_runner: DeliveryRunner | None = None,
+        activity_tracker: ActivityTracker | None = None,
     ) -> None:
         self.channel_manager = channel_manager
         self.binding_table = binding_table
         self.agent_configs = agent_configs
         self.run_agent_turn = run_agent_turn
+        self.delivery_queue = delivery_queue
+        self.delivery_runner = delivery_runner
+        self.activity_tracker = activity_tracker
 
     def agent_config(self, agent_id: str) -> AgentRouteConfig:
         if agent_id not in self.agent_configs:
@@ -222,6 +230,9 @@ class Gateway:
         *,
         force_agent_id: str | None = None,
     ) -> GatewayResult:
+        if self.activity_tracker is not None:
+            self.activity_tracker.mark_inbound(inbound)
+            self.activity_tracker.mark_agent_start(inbound)
         agent_id = self.binding_table.resolve_inbound(
             inbound,
             force_agent_id=force_agent_id,
@@ -235,12 +246,15 @@ class Gateway:
             guild_id=inbound.guild_id,
             dm_scope=config.dm_scope,
         )
-        reply = await self.run_agent_turn(inbound, agent_id, session_id)
-        channel = self.channel_manager.get(inbound.channel)
-        delivered = await channel.send(
-            inbound.peer_id,
+        try:
+            reply = await self.run_agent_turn(inbound, agent_id, session_id)
+        finally:
+            if self.activity_tracker is not None:
+                self.activity_tracker.mark_agent_end(inbound)
+
+        delivered = await self._deliver_reply(
+            inbound,
             reply,
-            inbound=inbound.model_dump(mode="json"),
             agent_id=agent_id,
             session_id=session_id,
         )
@@ -264,3 +278,37 @@ class Gateway:
             return None
         return await self.handle_inbound(inbound, force_agent_id=force_agent_id)
 
+    async def drain_delivery(self) -> int:
+        if self.delivery_runner is None:
+            return 0
+        return await self.delivery_runner.deliver_ready_once()
+
+    async def _deliver_reply(
+        self,
+        inbound: InboundMessage,
+        reply: str,
+        *,
+        agent_id: str,
+        session_id: str,
+    ) -> bool:
+        metadata = {
+            "inbound": inbound.model_dump(mode="json"),
+            "agent_id": agent_id,
+            "session_id": session_id,
+        }
+        if self.delivery_queue is not None and self.delivery_runner is not None:
+            entry = self.delivery_queue.enqueue(
+                channel=inbound.channel,
+                to=inbound.peer_id,
+                account_id=inbound.account_id,
+                text=reply,
+                metadata=metadata,
+            )
+            return await self.delivery_runner.deliver(entry.id)
+
+        channel = self.channel_manager.get(inbound.channel)
+        return await channel.send(
+            inbound.peer_id,
+            reply,
+            **metadata,
+        )
