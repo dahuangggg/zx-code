@@ -48,14 +48,17 @@ class SystemPromptBuilder:
 
     def sections(self, config: AgentConfig | None = None) -> list[PromptSection]:
         runtime_config = config or AgentConfig()
+        # Order is cache-aware: stable → semi-stable → dynamic.
+        # Stable content at the top maximises prompt cache hit rate.
+        # Todos go last because they change most frequently (every iteration).
         sections = [
-            PromptSection(title="Identity", content=self._identity_block()),
-            PromptSection(title="Operating Rules", content=DEFAULT_SYSTEM_PROMPT),
-            PromptSection(title="Project", content=self._project_block()),
-            PromptSection(title="Tools", content=self._tools_block()),
-            PromptSection(title="Memory", content=self._memory_block()),
-            PromptSection(title="Todos", content=self._todo_block()),
-            PromptSection(title="Runtime", content=self._runtime_block(runtime_config)),
+            PromptSection(title="Identity", content=self._identity_block()),       # stable
+            PromptSection(title="Operating Rules", content=DEFAULT_SYSTEM_PROMPT), # stable
+            PromptSection(title="Tools", content=self._tools_block()),             # stable
+            PromptSection(title="Project", content=self._project_block()),         # stable per session
+            PromptSection(title="Memory", content=self._memory_block()),           # semi-stable
+            PromptSection(title="Runtime", content=self._runtime_block(runtime_config)),  # per-session
+            PromptSection(title="Todos", content=self._todo_block()),              # changes every turn
         ]
         return [section for section in sections if section.content.strip()]
 
@@ -101,7 +104,7 @@ class SystemPromptBuilder:
             [
                 f"Session id: {config.session_id}",
                 f"Max iterations: {config.max_iterations}",
-                f"Context budget chars: {config.context_max_chars}",
+                f"Context budget tokens: {config.context_max_tokens}",
             ]
         )
 

@@ -24,6 +24,12 @@ session_id = "from-user"
 [agent]
 model = "openai/project"
 session_id = "from-project"
+channel = "telegram"
+account_id = "bot-a"
+dm_scope = "per-channel-peer"
+telegram_allowed_chats = "123,456"
+feishu_app_id = "cli_xxx"
+feishu_webhook_port = 8787
 
 [agent.permission_tools]
 bash = "deny"
@@ -39,5 +45,10 @@ bash = "deny"
     assert settings.model == "openai/project"
     assert settings.max_iterations == 3
     assert settings.session_id == "from-cli"
+    assert settings.channel == "telegram"
+    assert settings.account_id == "bot-a"
+    assert settings.dm_scope == "per-channel-peer"
+    assert settings.telegram_allowed_chats == "123,456"
+    assert settings.feishu_app_id == "cli_xxx"
+    assert settings.feishu_webhook_port == 8787
     assert settings.permission_tools == {"bash": "deny"}
-

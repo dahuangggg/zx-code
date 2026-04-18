@@ -22,7 +22,10 @@ class EditFileTool(Tool):
     input_model = EditFileInput
 
     async def run(self, arguments: EditFileInput) -> dict[str, object]:
-        path = Path(arguments.path).expanduser().resolve()
+        raw_path = Path(arguments.path).expanduser()
+        if raw_path.is_symlink():
+            raise PermissionError(f"refusing to follow symbolic link: {arguments.path}")
+        path = raw_path.resolve()
         if not path.exists():
             raise FileNotFoundError(path)
         original = path.read_text(encoding="utf-8", errors="replace")

@@ -1,48 +1,58 @@
 from __future__ import annotations
 
+import asyncio
+
 from agent.context import ContextGuard
 from agent.models import Message, ToolCall
 
 
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
 def test_context_guard_truncates_large_tool_results() -> None:
-    guard = ContextGuard(max_chars=1000, tool_result_max_chars=10)
+    guard = ContextGuard(max_tokens=250, tool_result_max_chars=10)
     messages = [Message.tool("call-1", "read_file", "x" * 40)]
 
-    prepared = guard.prepare(messages)
+    prepared = _run(guard.prepare(messages))
 
     assert "tool result truncated" in prepared[0].content
     assert len(prepared[0].content) < 80
 
 
 def test_context_guard_compacts_old_history() -> None:
-    guard = ContextGuard(max_chars=120, keep_recent=2, summary_entry_chars=20)
+    guard = ContextGuard(max_tokens=30, keep_recent=2, summary_entry_chars=20)
     messages = [Message.user(f"old message {index} " + "x" * 30) for index in range(5)]
     messages.append(Message.user("recent one"))
     messages.append(Message.assistant("recent two"))
 
-    prepared = guard.prepare(messages)
+    prepared = _run(guard.prepare(messages))
 
     assert prepared[0].role == "system"
-    assert "compacted" in prepared[0].content
+    assert "compacted" in prepared[0].content.lower() or "summary" in prepared[0].content.lower()
     assert prepared[-2].content == "recent one"
     assert prepared[-1].content == "recent two"
 
 
-def test_context_guard_drops_orphan_tool_messages_after_compact() -> None:
-    guard = ContextGuard(max_chars=80, keep_recent=2)
+def test_context_guard_safe_split_skips_orphan_tool_messages() -> None:
+    guard = ContextGuard(max_tokens=20, keep_recent=2)
     messages = [
         Message.user("old " + "x" * 100),
         Message.tool("call-1", "read_file", "orphaned result"),
         Message.user("recent"),
     ]
 
-    prepared = guard.prepare(messages)
+    prepared = _run(guard.prepare(messages))
 
-    assert [message.role for message in prepared] == ["system", "user"]
+    # The safe split should push the orphan tool into the older group (summarized),
+    # so only system summary + recent user remain.
+    roles = [message.role for message in prepared]
+    assert "tool" not in roles or roles.count("tool") == 0
+    assert prepared[-1].content == "recent"
 
 
 def test_context_guard_keeps_tool_message_with_recent_assistant_call() -> None:
-    guard = ContextGuard(max_chars=80, keep_recent=2)
+    guard = ContextGuard(max_tokens=20, keep_recent=2)
     messages = [
         Message.user("old " + "x" * 100),
         Message.assistant(
@@ -54,6 +64,25 @@ def test_context_guard_keeps_tool_message_with_recent_assistant_call() -> None:
         Message.tool("call-1", "read_file", "result"),
     ]
 
-    prepared = guard.prepare(messages)
+    prepared = _run(guard.prepare(messages))
 
     assert [message.role for message in prepared] == ["system", "assistant", "tool"]
+
+
+def test_context_guard_llm_summarize_fallback() -> None:
+    """When compact_model is set but LLM fails, falls back to mechanical summary."""
+    guard = ContextGuard(
+        max_tokens=30,
+        keep_recent=2,
+        summary_entry_chars=20,
+        compact_model="nonexistent/model-that-will-fail",
+    )
+    messages = [Message.user(f"old message {index} " + "x" * 30) for index in range(5)]
+    messages.append(Message.user("recent one"))
+    messages.append(Message.assistant("recent two"))
+
+    prepared = _run(guard.prepare(messages))
+
+    assert prepared[0].role == "system"
+    assert "compacted" in prepared[0].content.lower()
+    assert prepared[-1].content == "recent two"

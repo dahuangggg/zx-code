@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -86,8 +88,20 @@ class TodoManager:
     def _save(self, items: list[TodoItem]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = [item.model_dump(mode="json") for item in items]
-        self.path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        fd, tmp_path = tempfile.mkstemp(
+            dir=self.path.parent, suffix=".tmp", prefix=".todo-"
         )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.rename(tmp_path, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 

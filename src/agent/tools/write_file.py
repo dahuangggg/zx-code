@@ -22,7 +22,10 @@ class WriteFileTool(Tool):
     input_model = WriteFileInput
 
     async def run(self, arguments: WriteFileInput) -> dict[str, object]:
-        path = Path(arguments.path).expanduser().resolve()
+        raw_path = Path(arguments.path).expanduser()
+        if raw_path.is_symlink():
+            raise PermissionError(f"refusing to follow symbolic link: {arguments.path}")
+        path = raw_path.resolve()
         if arguments.create_parents:
             path.parent.mkdir(parents=True, exist_ok=True)
 

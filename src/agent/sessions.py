@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import re
 from datetime import UTC, datetime
@@ -43,7 +44,12 @@ class SessionStore:
         path = self.path_for(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(parsed.model_dump_json() + "\n")
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                handle.write(parsed.model_dump_json() + "\n")
+                handle.flush()
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
     def append_message(self, session_id: str, message: Message) -> None:
         self.append(

@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.gateway import DMScope
 from agent.models import AgentConfig
 from agent.permissions import PermissionDecision
 
@@ -19,14 +20,38 @@ class AgentSettings(BaseModel):
     stream: bool = True
     session_id: str = "default"
     data_dir: str = ".agent"
-    context_max_chars: int = 40000
-    context_keep_recent: int = 24
+    context_max_tokens: int = 12000
+    context_keep_recent: int = 6
     context_tool_result_max_chars: int = 6000
+    compact_model: str = ""
     memory_path: str = ".memory/MEMORY.md"
     enable_memory: bool = True
     enable_todos: bool = True
     permission_default: PermissionDecision = "allow"
     permission_tools: dict[str, PermissionDecision] = Field(default_factory=dict)
+    permission_rules_path: str = ""
+    hooks_path: str = ""
+    agent_id: str = "default"
+    default_agent_id: str = "default"
+    force_agent_id: str = ""
+    dm_scope: DMScope = "per-account-channel-peer"
+    channel: str = "cli"
+    account_id: str = "local"
+    telegram_token: str = ""
+    telegram_offset: int | None = None
+    telegram_timeout_s: int = 30
+    telegram_allowed_chats: str = ""
+    telegram_text_coalesce_s: float = 1.0
+    telegram_media_group_coalesce_s: float = 0.5
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+    feishu_verification_token: str = ""
+    feishu_encrypt_key: str = ""
+    feishu_bot_open_id: str = ""
+    feishu_is_lark: bool = False
+    feishu_webhook_host: str = "127.0.0.1"
+    feishu_webhook_port: int = 0
+    feishu_receive_timeout_s: float = 30.0
 
     def to_agent_config(self, *, system_prompt: str = "") -> AgentConfig:
         return AgentConfig(
@@ -37,7 +62,7 @@ class AgentSettings(BaseModel):
             stream=self.stream,
             session_id=self.session_id,
             data_dir=self.data_dir,
-            context_max_chars=self.context_max_chars,
+            context_max_tokens=self.context_max_tokens,
             context_keep_recent=self.context_keep_recent,
             context_tool_result_max_chars=self.context_tool_result_max_chars,
             memory_path=self.memory_path,
@@ -83,4 +108,3 @@ class ConfigLoader:
             if value is not None:
                 raw[key] = value
         return AgentSettings.model_validate(raw)
-

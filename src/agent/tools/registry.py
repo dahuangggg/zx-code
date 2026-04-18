@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import traceback
 from typing import Any
 
 from pydantic import ValidationError
@@ -61,10 +62,11 @@ class ToolRegistry:
                 is_error=True,
             )
         except Exception as exc:
+            tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
             return ToolResult(
                 call_id=call_id,
                 name=name,
-                content=f"{name} failed: {exc}",
+                content=f"{name} failed ({type(exc).__name__}): {exc}\n{''.join(tb[-3:])}",
                 is_error=True,
             )
 
