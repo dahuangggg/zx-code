@@ -2,7 +2,7 @@
 
 基于 `Python + asyncio + litellm + pydantic` 的本地 Coding Agent 实验仓库。
 
-当前已经完成 `docs/ZX-code.md` 中第四阶段，并推进到第五阶段 5D：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime + Delivery Daemon + Subagent + Profile Fallback。
+当前已经完成 `docs/ZX-code.md` 中第四阶段，并推进到第五阶段 5E：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime + Delivery Daemon + Subagent + Profile Fallback + ResilienceRunner。
 
 第一阶段跑通了下面这个闭环：
 
@@ -64,6 +64,7 @@
 - `ModelProfile` 支持多模型 / 多 key 配置
 - `FallbackModelClient` 在 `rate_limit / auth / billing / timeout` 这类可恢复失败时自动切换备用 profile
 - `classify_error()` 支持 `rate_limit / auth / timeout / overflow / billing / unknown` 失败分类
+- `ResilienceRunner` 统一封装单次模型 turn 的 timeout、rate limit backoff、截断续写和 overflow compact
 
 ## 环境要求
 
@@ -653,6 +654,41 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 `api_key_env` 只保存环境变量名，不保存真实 key。运行时会读取环境变量，把值作为 `litellm` 的 `api_key` 参数传入。这样可以实现同模型多 key 轮换，也可以实现跨模型 fallback。
 
+## ResilienceRunner
+
+第五阶段 5E 把单次模型 turn 的恢复逻辑收敛到 `ResilienceRunner`。
+
+Agent loop 仍然只调用一个函数：
+
+```python
+run_model_turn_with_recovery(...)
+```
+
+这个函数现在会创建 `ResilienceRunner` 并委托给它执行。这样保持了 `loop.py` 的调用面不变，同时让恢复策略有了明确的类边界。
+
+当前 `ResilienceRunner` 负责四类恢复：
+
+1. `timeout`
+   - 单次模型 turn 超过 `model_timeout_s` 后抛出 `ModelTimeoutError`
+
+2. `rate_limit`
+   - 在单 profile 内按 `RecoveryBudget` 做有限 backoff retry
+   - 多 profile 情况下，外层 `FallbackModelClient` 会优先切换备用 profile
+
+3. `length / max_tokens`
+   - 如果模型回复被截断且没有工具调用，会自动追加一条 continue 提示，再请求一次
+
+4. `overflow`
+   - 如果模型报上下文过长，会调用 `ContextGuard.compact_history()` 压缩历史后重试
+
+这相当于把第五阶段路线图里的三层恢复洋葱拆成了清晰边界：
+
+```text
+FallbackModelClient   -> profile / key / model fallback
+ResilienceRunner      -> timeout / backoff / overflow compact / continuation
+Agent loop            -> tool-use loop 与 max iterations
+```
+
 ## CLI 参数
 
 ```bash
@@ -731,12 +767,14 @@ uv run pytest -q
 9. `docs/phase-05B-Delivery-Daemon讲解.md`：理解第五阶段 5B 的后台投递 daemon
 10. `docs/phase-05C-Subagent讲解.md`：理解第五阶段 5C 的子代理运行时
 11. `docs/phase-05D-Profile与Fallback讲解.md`：理解第五阶段 5D 的模型 profile 和 fallback
-12. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
-13. `src/agent/gateway.py`：看路由、会话隔离和统一派发
-14. `src/agent/subagent.py`：看子代理如何隔离会话并限制递归
-15. `src/agent/profiles.py`：看模型 profile 和 fallback client
-16. `src/agent/delivery.py`：看可靠投递、锁和后台 daemon
-17. `tests/`：看每个能力如何被验证
+12. `docs/phase-05E-ResilienceRunner讲解.md`：理解第五阶段 5E 的模型 turn 恢复器
+13. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
+14. `src/agent/gateway.py`：看路由、会话隔离和统一派发
+15. `src/agent/subagent.py`：看子代理如何隔离会话并限制递归
+16. `src/agent/profiles.py`：看模型 profile 和 fallback client
+17. `src/agent/recovery.py`：看 `ResilienceRunner` 和错误分类
+18. `src/agent/delivery.py`：看可靠投递、锁和后台 daemon
+19. `tests/`：看每个能力如何被验证
 
 ## 文档维护规则
 
@@ -766,7 +804,8 @@ uv run pytest -q
 │   ├── phase-05A-Priority-Lane与Cron状态持久化讲解.md
 │   ├── phase-05B-Delivery-Daemon讲解.md
 │   ├── phase-05C-Subagent讲解.md
-│   └── phase-05D-Profile与Fallback讲解.md
+│   ├── phase-05D-Profile与Fallback讲解.md
+│   └── phase-05E-ResilienceRunner讲解.md
 ├── src/
 │   └── agent/
 │       ├── channels/
@@ -820,6 +859,7 @@ uv run pytest -q
     ├── test_profiles.py
     ├── test_provider_mock.py
     ├── test_recovery.py
+    ├── test_resilience_runner.py
     ├── test_sessions.py
     ├── test_subagent.py
     └── test_tools.py
@@ -971,7 +1011,8 @@ uv run pytest -q
 
 - 定义 Agent 运行时错误类型
 - `classify_error()` 将模型错误归类为 `rate_limit / auth / timeout / overflow / billing / unknown`
-- `run_model_turn_with_recovery()` 负责单 profile 内的超时、截断续写、rate limit backoff 和 overflow compact
+- 定义 `ResilienceRunner`，统一处理单次模型 turn 的超时、截断续写、rate limit backoff 和 overflow compact
+- `run_model_turn_with_recovery()` 保持旧入口兼容，内部委托给 `ResilienceRunner`
 
 `src/agent/subagent.py`
 
@@ -995,10 +1036,9 @@ uv run pytest -q
 - 飞书富文本回复
 - MCP / 插件
 - Worktree Isolation
-- 完整 ResilienceRunner
 - Lane 目前是 turn 级协作式调度，不做 LLM mid-turn 抢占
 - Subagent 当前共享同一个工作目录和工具集合，还没有文件隔离
-- Profile fallback 当前只处理模型调用阶段，还没有把 overflow compact 和 profile 轮换合并成完整三层 ResilienceRunner
+- ResilienceRunner 当前聚焦单次模型 turn，还没有把恢复事件持久化成 TraceEvent
 
 这些都在 `docs/ZX-code.md` 后续阶段里。
 
@@ -1016,14 +1056,15 @@ uv run pytest -q
 - `docs/phase-05B-Delivery-Daemon讲解.md`
 - `docs/phase-05C-Subagent讲解.md`
 - `docs/phase-05D-Profile与Fallback讲解.md`
+- `docs/phase-05E-ResilienceRunner讲解.md`
 
-当前代码对应 `docs/ZX-code.md` 的第五阶段 5D。
+当前代码对应 `docs/ZX-code.md` 的第五阶段 5E。
 
 ## 建议的下一步
 
 比较顺的推进顺序是：
 
-1. 把 overflow compact、profile fallback 和 tool-use loop 收敛成完整 `ResilienceRunner`
-2. 补飞书加密事件解密
-3. 推进 MCP 和 worktree isolation
-4. 第六阶段接入 TraceEvent，记录 fallback、delivery daemon、subagent 和 lane wait time
+1. 推进 MCP 客户端与工具路由
+2. 推进 worktree isolation
+3. 补飞书加密事件解密
+4. 第六阶段接入 TraceEvent，记录 fallback、resilience、delivery daemon、subagent 和 lane wait time

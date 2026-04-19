@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from agent.models import Message, ModelTurn
@@ -52,6 +52,9 @@ class RecoveryBudget:
 
     def backoff_delay(self) -> float:
         return min(2 ** self.attempts.get("backoff", 0) + random.random(), 60.0)
+
+
+SleepFunc = Callable[[float], Awaitable[None]]
 
 
 def classify_error(exc: Exception) -> str:
@@ -110,57 +113,105 @@ async def run_model_turn_with_recovery(
     recovery_budget: RecoveryBudget | None = None,
     context_guard: Any | None = None,
 ) -> ModelTurn:
-    budget = recovery_budget or RecoveryBudget()
+    runner = ResilienceRunner(
+        model_client=model_client,
+        timeout_s=timeout_s,
+        recovery_budget=recovery_budget,
+        context_guard=context_guard,
+    )
+    return await runner.run(
+        system_prompt=system_prompt,
+        messages=messages,
+        tools=tools,
+        stream_handler=stream_handler,
+    )
 
-    while True:
-        try:
-            turn = await asyncio.wait_for(
-                model_client.run_turn(
-                    system_prompt=system_prompt,
-                    messages=messages,
-                    tools=tools,
-                    stream_handler=stream_handler,
-                ),
-                timeout=timeout_s,
-            )
 
-            if (
-                turn.stop_reason in ("length", "max_tokens")
-                and not turn.tool_calls
-                and budget.can_retry("continuation")
-            ):
-                budget.record("continuation")
-                messages = [
-                    *messages,
-                    Message.assistant(turn.text),
-                    Message.user("[Your response was truncated. Please continue from where you left off.]"),
-                ]
-                continue
+class ResilienceRunner:
+    """Run one model turn with bounded recovery strategies."""
 
-            return turn
+    def __init__(
+        self,
+        *,
+        model_client: ModelClient,
+        timeout_s: float,
+        recovery_budget: RecoveryBudget | None = None,
+        context_guard: Any | None = None,
+        sleep: SleepFunc = asyncio.sleep,
+    ) -> None:
+        self.model_client = model_client
+        self.timeout_s = timeout_s
+        self.recovery_budget = recovery_budget or RecoveryBudget()
+        self.context_guard = context_guard
+        self.sleep = sleep
 
-        except TimeoutError as exc:
-            raise ModelTimeoutError(f"model turn timed out after {timeout_s:.1f}s") from exc
+    async def run(
+        self,
+        *,
+        system_prompt: str,
+        messages: Sequence[Message],
+        tools: list[dict[str, Any]],
+        stream_handler: Callable[[str], Any] | None = None,
+    ) -> ModelTurn:
+        current_messages = list(messages)
 
-        except AgentError:
-            raise
+        while True:
+            try:
+                turn = await asyncio.wait_for(
+                    self.model_client.run_turn(
+                        system_prompt=system_prompt,
+                        messages=current_messages,
+                        tools=tools,
+                        stream_handler=stream_handler,
+                    ),
+                    timeout=self.timeout_s,
+                )
 
-        except Exception as exc:
-            error_type = classify_error(exc)
-
-            if error_type == "rate_limit" and budget.can_retry("backoff"):
-                budget.record("backoff")
-                delay = budget.backoff_delay()
-                await asyncio.sleep(delay)
-                continue
-
-            if error_type == "overflow" and budget.can_retry("compaction"):
-                budget.record("compaction")
-                if context_guard is not None:
-                    messages = await context_guard.compact_history(messages)
+                if self._should_continue(turn):
+                    self.recovery_budget.record("continuation")
+                    current_messages = [
+                        *current_messages,
+                        Message.assistant(turn.text),
+                        Message.user(
+                            "[Your response was truncated. Please continue from where you left off.]"
+                        ),
+                    ]
                     continue
-                raise ContextOverflowError(
-                    f"context overflow and no context_guard available: {exc}"
+
+                return turn
+
+            except TimeoutError as exc:
+                raise ModelTimeoutError(
+                    f"model turn timed out after {self.timeout_s:.1f}s"
                 ) from exc
 
-            raise ModelInvocationError(f"model turn failed: {exc}") from exc
+            except AgentError:
+                raise
+
+            except Exception as exc:
+                error_type = classify_error(exc)
+
+                if error_type == "rate_limit" and self.recovery_budget.can_retry("backoff"):
+                    self.recovery_budget.record("backoff")
+                    await self.sleep(self.recovery_budget.backoff_delay())
+                    continue
+
+                if error_type == "overflow" and self.recovery_budget.can_retry("compaction"):
+                    self.recovery_budget.record("compaction")
+                    if self.context_guard is not None:
+                        current_messages = await self.context_guard.compact_history(
+                            current_messages
+                        )
+                        continue
+                    raise ContextOverflowError(
+                        f"context overflow and no context_guard available: {exc}"
+                    ) from exc
+
+                raise ModelInvocationError(f"model turn failed: {exc}") from exc
+
+    def _should_continue(self, turn: ModelTurn) -> bool:
+        return (
+            turn.stop_reason in ("length", "max_tokens")
+            and not turn.tool_calls
+            and self.recovery_budget.can_retry("continuation")
+        )

@@ -10,6 +10,55 @@
 4. Devlog 要写清楚本次改了什么、为什么这么改、怎么验证、读者下一步应该看哪里
 5. `docs/` 是本地学习讲解材料，当前由 `.gitignore` 忽略，不加入 git
 
+## 2026-04-19 - Phase 5E: ResilienceRunner
+
+### 改动内容
+
+- 更新 `src/agent/recovery.py`
+  - 新增 `ResilienceRunner`
+  - 新增 `SleepFunc`
+  - 将原 `run_model_turn_with_recovery()` 的主体逻辑迁移进 runner
+  - 保留 `run_model_turn_with_recovery()` 作为兼容入口，`loop.py` 不需要改
+- 新增 `tests/test_resilience_runner.py`
+  - 覆盖 `length / max_tokens` 截断续写
+  - 覆盖 `overflow` 后调用 `ContextGuard.compact_history()` 并重试
+- 更新 README，并新增第五阶段 5E 讲解文档；`docs/` 继续由 `.gitignore` 忽略，只保留本地
+
+### 为什么这么改
+
+5D 已经实现了 profile fallback，但模型 turn 内部的恢复逻辑仍然集中在函数里。第五阶段路线图提到三层恢复洋葱：profile 轮换、overflow 截断/压缩、tool-use loop。5E 把单次模型 turn 的恢复策略抽成 `ResilienceRunner`，让这三层边界更清晰：
+
+- `FallbackModelClient` 负责 profile / key / model fallback
+- `ResilienceRunner` 负责 timeout / backoff / overflow compact / continuation
+- `loop.py` 负责 tool-use loop 和 max iterations
+
+保留旧函数入口是为了降低改动面。`loop.py` 继续调用 `run_model_turn_with_recovery()`，但函数内部委托给 runner。这样既完成了结构收敛，又避免把 Agent loop 和恢复策略绑在一起。
+
+### 验证
+
+```bash
+uv run pytest tests/test_resilience_runner.py tests/test_recovery.py tests/test_loop.py -q
+uv run pytest -q
+uv run agent --help
+git check-ignore -v docs/phase-05E-ResilienceRunner讲解.md docs/README.md
+```
+
+验证结果：
+
+- 目标测试通过，`5 passed`
+- 完整测试通过，`84 passed`
+- CLI help 正常显示
+- `git check-ignore` 确认 `docs/` 仍由 `.gitignore` 忽略，不加入 git
+
+### 读者入口
+
+- 总览入口：`README.md`
+- 第五阶段 5E 讲解：`docs/phase-05E-ResilienceRunner讲解.md`
+- 恢复运行器：`src/agent/recovery.py`
+- Agent loop 调用点：`src/agent/loop.py`
+- Profile fallback：`src/agent/profiles.py`
+- 测试：`tests/test_resilience_runner.py`、`tests/test_recovery.py`、`tests/test_loop.py`
+
 ## 2026-04-19 - Phase 5D: Profile 与 Fallback Model
 
 ### 改动内容
