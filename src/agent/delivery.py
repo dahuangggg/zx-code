@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
@@ -254,8 +255,13 @@ class DeliveryRunner:
     ) -> None:
         self.queue = queue
         self.channel_manager = channel_manager
+        self._lock = asyncio.Lock()
 
     async def deliver(self, delivery_id: str) -> bool:
+        async with self._lock:
+            return await self._deliver_unlocked(delivery_id)
+
+    async def _deliver_unlocked(self, delivery_id: str) -> bool:
         entry = self.queue.get(delivery_id)
         if entry is None or entry.status != "queued":
             return False
@@ -278,8 +284,43 @@ class DeliveryRunner:
         return True
 
     async def deliver_ready_once(self, *, now: float | None = None) -> int:
-        delivered = 0
-        for entry in self.queue.ready(now=now):
-            if await self.deliver(entry.id):
-                delivered += 1
-        return delivered
+        async with self._lock:
+            delivered = 0
+            for entry in self.queue.ready(now=now):
+                if await self._deliver_unlocked(entry.id):
+                    delivered += 1
+            return delivered
+
+
+class DeliveryDaemon:
+    def __init__(
+        self,
+        *,
+        runner: DeliveryRunner,
+        interval_s: float = 1.0,
+    ) -> None:
+        self.runner = runner
+        self.interval_s = interval_s
+        self._task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self.run_forever())
+
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+
+    async def tick(self) -> int:
+        return await self.runner.deliver_ready_once()
+
+    async def run_forever(self) -> None:
+        while True:
+            await self.tick()
+            await asyncio.sleep(self.interval_s)

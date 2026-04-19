@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from agent.channels.base import Channel, ChannelManager, InboundMessage
-from agent.delivery import DeliveryQueue, DeliveryRunner, chunk_message
+from agent.delivery import DeliveryDaemon, DeliveryQueue, DeliveryRunner, chunk_message
 from agent.gateway import AgentRouteConfig, BindingTable, Gateway
 
 
@@ -20,6 +21,16 @@ class FakeChannel(Channel):
     async def send(self, to: str, text: str, **kwargs: Any) -> bool:
         self.sent.append((to, text, kwargs))
         return not self.fail
+
+
+class SlowChannel(FakeChannel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def send(self, to: str, text: str, **kwargs: Any) -> bool:
+        await self.release.wait()
+        return await super().send(to, text, **kwargs)
 
 
 def test_chunk_message_splits_on_newlines() -> None:
@@ -88,6 +99,48 @@ async def test_delivery_runner_keeps_failed_send_queued(tmp_path) -> None:
     assert reloaded is not None
     assert reloaded.status == "queued"
     assert reloaded.retry_count == 1
+
+
+async def test_delivery_runner_does_not_duplicate_concurrent_delivery(tmp_path) -> None:
+    queue = DeliveryQueue(tmp_path, jitter_s=0)
+    entry = queue.enqueue(channel="fake", to="peer", text="hello")
+    channel = SlowChannel()
+    manager = ChannelManager()
+    manager.register(channel)
+    runner = DeliveryRunner(queue=queue, channel_manager=manager)
+
+    first = asyncio.create_task(runner.deliver(entry.id))
+    second = asyncio.create_task(runner.deliver(entry.id))
+    await asyncio.sleep(0)
+    channel.release.set()
+
+    results = await asyncio.gather(first, second)
+
+    assert sorted(results) == [False, True]
+    assert len(channel.sent) == 1
+    assert queue.get(entry.id).status == "sent"
+
+
+async def test_delivery_daemon_delivers_ready_entries_in_background(tmp_path) -> None:
+    queue = DeliveryQueue(tmp_path, jitter_s=0)
+    entry = queue.enqueue(channel="fake", to="peer", text="hello")
+    channel = FakeChannel()
+    manager = ChannelManager()
+    manager.register(channel)
+    runner = DeliveryRunner(queue=queue, channel_manager=manager)
+    daemon = DeliveryDaemon(runner=runner, interval_s=0.01)
+
+    daemon.start()
+    try:
+        for _ in range(20):
+            if queue.get(entry.id).status == "sent":
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        await daemon.stop()
+
+    assert channel.sent[0][1] == "hello"
+    assert queue.get(entry.id).status == "sent"
 
 
 async def test_gateway_uses_delivery_queue_before_send(tmp_path) -> None:

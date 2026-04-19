@@ -13,7 +13,7 @@ from agent.channels.telegram import TelegramChannel
 from agent.config import AgentSettings, ConfigLoader
 from agent.context import ContextGuard
 from agent.cron import CronScheduler
-from agent.delivery import DeliveryQueue, DeliveryRunner
+from agent.delivery import DeliveryDaemon, DeliveryQueue, DeliveryRunner
 from agent.gateway import AgentRouteConfig, BindingTable, Gateway
 from agent.heartbeat import ActivityTracker, HeartbeatConfig, HeartbeatRunner
 from agent.hooks import HookRunner
@@ -501,6 +501,16 @@ async def _run_channel_loop(
         gateway,
         lane_scheduler=lane_scheduler,
     )
+    delivery_daemon = (
+        DeliveryDaemon(
+            runner=gateway.delivery_runner,
+            interval_s=settings.delivery_daemon_interval_s,
+        )
+        if gateway.delivery_runner is not None
+        else None
+    )
+    if delivery_daemon is not None:
+        delivery_daemon.start()
     pending_ticks: set[asyncio.Task[Any]] = set()
     console.print(f"Listening on channel: {settings.channel}. Press Ctrl-C to stop.")
     try:
@@ -516,7 +526,6 @@ async def _run_channel_loop(
                     _schedule_background_tick(pending_ticks, heartbeat_runner.tick())
                 if cron_scheduler is not None:
                     _schedule_background_tick(pending_ticks, cron_scheduler.tick())
-                await gateway.drain_delivery()
             except AgentError as exc:
                 console.print(f"[red]Error:[/red] {exc}")
                 return 1
@@ -529,6 +538,8 @@ async def _run_channel_loop(
     finally:
         for task in pending_ticks:
             task.cancel()
+        if delivery_daemon is not None:
+            await delivery_daemon.stop()
         await lane_scheduler.close()
 
 
@@ -627,6 +638,7 @@ def _settings_from_cli(
     delivery_base_delay: float | None,
     delivery_max_delay: float | None,
     delivery_jitter: float | None,
+    delivery_daemon_interval: float | None,
     heartbeat_enabled: bool,
     heartbeat_interval: float | None,
     heartbeat_min_idle: float | None,
@@ -670,6 +682,7 @@ def _settings_from_cli(
         "delivery_base_delay_s": delivery_base_delay,
         "delivery_max_delay_s": delivery_max_delay,
         "delivery_jitter_s": delivery_jitter,
+        "delivery_daemon_interval_s": delivery_daemon_interval,
         "heartbeat_interval_s": heartbeat_interval,
         "heartbeat_min_idle_s": heartbeat_min_idle,
         "heartbeat_channel": heartbeat_channel,
@@ -734,6 +747,10 @@ def _build_typer_app() -> Any:
         delivery_base_delay: float | None = typer.Option(None, "--delivery-base-delay"),
         delivery_max_delay: float | None = typer.Option(None, "--delivery-max-delay"),
         delivery_jitter: float | None = typer.Option(None, "--delivery-jitter"),
+        delivery_daemon_interval: float | None = typer.Option(
+            None,
+            "--delivery-daemon-interval",
+        ),
         heartbeat_enabled: bool = typer.Option(False, "--heartbeat"),
         heartbeat_interval: float | None = typer.Option(None, "--heartbeat-interval"),
         heartbeat_min_idle: float | None = typer.Option(None, "--heartbeat-min-idle"),
@@ -780,6 +797,7 @@ def _build_typer_app() -> Any:
             delivery_base_delay=delivery_base_delay,
             delivery_max_delay=delivery_max_delay,
             delivery_jitter=delivery_jitter,
+            delivery_daemon_interval=delivery_daemon_interval,
             heartbeat_enabled=heartbeat_enabled,
             heartbeat_interval=heartbeat_interval,
             heartbeat_min_idle=heartbeat_min_idle,

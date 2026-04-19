@@ -2,7 +2,7 @@
 
 基于 `Python + asyncio + litellm + pydantic` 的本地 Coding Agent 实验仓库。
 
-当前已经完成 `docs/ZX-code.md` 中第四阶段，并推进到第五阶段 5A：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime。
+当前已经完成 `docs/ZX-code.md` 中第四阶段，并推进到第五阶段 5B：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime + Delivery Daemon。
 
 第一阶段跑通了下面这个闭环：
 
@@ -52,6 +52,7 @@
 - `--watch` 通道监听模式
 - `DeliveryQueue` 写前日志式可靠投递
 - `DeliveryRunner` 出站消息发送、失败重试和失败目录
+- `DeliveryDaemon` 在 watch 模式中后台持续 drain 投递队列
 - `chunk_message()` 按平台上限切分长消息
 - `HeartbeatRunner` 主动心跳，用户活跃时不抢占对话
 - `CronScheduler` 支持 `at / every / cron` 三类定时任务
@@ -450,7 +451,8 @@ uv run agent \
   --delivery-max-attempts 5 \
   --delivery-base-delay 1 \
   --delivery-max-delay 300 \
-  --delivery-jitter 1
+  --delivery-jitter 1 \
+  --delivery-daemon-interval 1
 ```
 
 含义：
@@ -459,6 +461,24 @@ uv run agent \
 - `--delivery-base-delay`：第一次失败后的基础退避秒数
 - `--delivery-max-delay`：最大退避秒数
 - `--delivery-jitter`：随机抖动秒数，避免固定节奏重试
+- `--delivery-daemon-interval`：watch 模式中后台投递 daemon 的轮询间隔
+
+### Delivery Daemon
+
+第五阶段 5B 把投递重试从“每轮顺手 drain”升级为后台 daemon。
+
+在 `--watch` 模式下，系统会启动 `DeliveryDaemon`：
+
+```text
+DeliveryDaemon -> DeliveryRunner.deliver_ready_once() -> Channel.send()
+```
+
+规则：
+
+- 用户回复仍然会立即尝试发送一次
+- 发送失败后保留在 `queued/`，由后台 daemon 按退避时间继续重试
+- Heartbeat 和 Cron 产生的主动输出进入 `DeliveryQueue` 后，也由后台 daemon 投递
+- `DeliveryRunner` 内部有 async lock，避免同步发送和后台 daemon 同时发送同一条消息
 
 ### Heartbeat
 
@@ -597,6 +617,7 @@ uv run agent --help
 - `--delivery-base-delay`
 - `--delivery-max-delay`
 - `--delivery-jitter`
+- `--delivery-daemon-interval`
 - `--heartbeat`
 - `--heartbeat-interval`
 - `--heartbeat-min-idle`
@@ -629,10 +650,11 @@ uv run pytest -q
 6. `docs/phase-03-通道网关与手机接入讲解.md`：理解第三阶段多通道 Gateway
 7. `docs/phase-04-可靠投递与主动调度讲解.md`：理解第四阶段可靠投递、Heartbeat 和 Cron
 8. `docs/phase-05A-Priority-Lane与Cron状态持久化讲解.md`：理解第五阶段 5A 的协作式调度
-9. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
-10. `src/agent/gateway.py`：看路由、会话隔离和统一派发
-11. `src/agent/lanes.py`：看 `main / cron / heartbeat` 如何按优先级串行
-12. `tests/`：看每个能力如何被验证
+9. `docs/phase-05B-Delivery-Daemon讲解.md`：理解第五阶段 5B 的后台投递 daemon
+10. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
+11. `src/agent/gateway.py`：看路由、会话隔离和统一派发
+12. `src/agent/delivery.py`：看可靠投递、锁和后台 daemon
+13. `tests/`：看每个能力如何被验证
 
 ## 文档维护规则
 
@@ -659,7 +681,8 @@ uv run pytest -q
 │   ├── phase-02-持久化上下文权限记忆讲解.md
 │   ├── phase-03-通道网关与手机接入讲解.md
 │   ├── phase-04-可靠投递与主动调度讲解.md
-│   └── phase-05A-Priority-Lane与Cron状态持久化讲解.md
+│   ├── phase-05A-Priority-Lane与Cron状态持久化讲解.md
+│   └── phase-05B-Delivery-Daemon讲解.md
 ├── src/
 │   └── agent/
 │       ├── channels/
@@ -818,6 +841,8 @@ uv run pytest -q
 - 实现 `DeliveryQueue`
 - 使用 `tmp + fsync + os.replace` 原子写入
 - 实现 `DeliveryRunner`
+- `DeliveryRunner` 使用 async lock 防止并发重复投递
+- 实现 `DeliveryDaemon`，watch 模式后台持续投递 ready entries
 - 实现指数退避、失败目录和 `chunk_message()`
 
 `src/agent/heartbeat.py`
@@ -848,7 +873,6 @@ uv run pytest -q
 
 - 飞书加密事件解密
 - 飞书富文本回复
-- DeliveryRunner 独立后台 daemon
 - MCP / 插件
 - Subagent / Worktree Isolation
 - 多 profile / 多 key / fallback model
@@ -868,15 +892,16 @@ uv run pytest -q
 - `docs/phase-03-通道网关与手机接入讲解.md`
 - `docs/phase-04-可靠投递与主动调度讲解.md`
 - `docs/phase-05A-Priority-Lane与Cron状态持久化讲解.md`
+- `docs/phase-05B-Delivery-Daemon讲解.md`
 
-当前代码对应 `docs/ZX-code.md` 的第五阶段 5A。
+当前代码对应 `docs/ZX-code.md` 的第五阶段 5B。
 
 ## 建议的下一步
 
 比较顺的推进顺序是：
 
-1. 把 DeliveryRunner 拆成独立后台任务
-2. 实现 Subagent，并把 subagent turn 接入 `subagent` lane
-3. 补多 profile / 多 key / fallback model
-4. 补飞书加密事件解密
-5. 推进 MCP、worktree 和完整 ResilienceRunner
+1. 实现 Subagent，并把 subagent turn 接入 `subagent` lane
+2. 补多 profile / 多 key / fallback model
+3. 补飞书加密事件解密
+4. 推进 MCP、worktree 和完整 ResilienceRunner
+5. 第六阶段接入 TraceEvent，记录 delivery daemon 与 lane wait time

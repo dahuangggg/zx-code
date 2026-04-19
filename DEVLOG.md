@@ -10,6 +10,56 @@
 4. Devlog 要写清楚本次改了什么、为什么这么改、怎么验证、读者下一步应该看哪里
 5. `docs/` 是本地学习讲解材料，当前由 `.gitignore` 忽略，不加入 git
 
+## 2026-04-19 - Phase 5B: Delivery Daemon
+
+### 改动内容
+
+- 更新 `src/agent/delivery.py`
+  - 新增 `DeliveryDaemon`
+  - `DeliveryRunner` 增加 async lock，避免同步投递和后台 daemon 重复发送同一条消息
+  - `deliver_ready_once()` 在同一把锁内批量处理 ready entries
+- 更新 `src/agent/main.py`
+  - watch loop 启动 `DeliveryDaemon`
+  - watch loop 退出时关闭 daemon
+  - 主动任务不再依赖每轮手动 `drain_delivery()`
+- 更新 `src/agent/config.py` 和 CLI
+  - 新增 `delivery_daemon_interval_s`
+  - 新增 `--delivery-daemon-interval`
+- 扩展 `tests/test_delivery.py`
+  - 覆盖后台 daemon 自动投递 ready entry
+  - 覆盖并发投递同一条消息不会重复发送
+- 更新 README，并新增第五阶段 5B 讲解文档；`docs/` 继续由 `.gitignore` 忽略，只保留本地
+
+### 为什么这么改
+
+第四阶段虽然有 `DeliveryQueue`，但实际投递依赖用户回复后的同步尝试和 watch loop 中的 `drain_delivery()`。这意味着没有独立后台任务持续处理失败重试和主动输出。
+
+5B 把投递重试独立成 `DeliveryDaemon`。用户回复仍然立即尝试发送一次，失败后保留在 `queued/`；后台 daemon 按 `next_retry_at` 继续投递。Heartbeat 和 Cron 产生的主动输出也走同一个 daemon。
+
+`DeliveryRunner` 加锁是为了防止两个路径同时投递同一个 delivery id：比如用户回复后的同步投递和后台 daemon 恰好同时看到同一条 queued entry。
+
+### 验证
+
+```bash
+uv run pytest tests/test_delivery.py -q
+uv run pytest -q
+uv run agent --help
+```
+
+验证结果：
+
+- 目标测试通过，`8 passed`
+- 完整测试通过，`69 passed`
+- CLI help 正常显示 `--delivery-daemon-interval`
+
+### 读者入口
+
+- 总览入口：`README.md`
+- 第五阶段 5B 讲解：`docs/phase-05B-Delivery-Daemon讲解.md`
+- 可靠投递与 daemon：`src/agent/delivery.py`
+- Watch loop 接入：`src/agent/main.py`
+- 测试：`tests/test_delivery.py`
+
 ## 2026-04-19 - Phase 5A: Priority Lane 与 Cron 状态持久化
 
 ### 改动内容

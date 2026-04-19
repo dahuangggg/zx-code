@@ -56,6 +56,7 @@ class AgentSettings(BaseModel):
     delivery_base_delay_s: float = 1.0
     delivery_max_delay_s: float = 300.0
     delivery_jitter_s: float = 1.0
+    delivery_daemon_interval_s: float = 1.0
     heartbeat_enabled: bool = False
     heartbeat_interval_s: float = 300.0
     heartbeat_min_idle_s: float = 30.0
