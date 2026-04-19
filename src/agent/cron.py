@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -44,10 +46,13 @@ class CronScheduler:
         delivery_queue: DeliveryQueue,
         run_agent_turn: CronTurnHandler,
         jobs: list[CronJob] | None = None,
+        state_path: Path | str | None = None,
     ) -> None:
         self.delivery_queue = delivery_queue
         self.run_agent_turn = run_agent_turn
         self.jobs = jobs or []
+        self.state_path = Path(state_path).expanduser() if state_path else None
+        self._apply_state()
 
     @classmethod
     def from_file(
@@ -56,13 +61,19 @@ class CronScheduler:
         *,
         delivery_queue: DeliveryQueue,
         run_agent_turn: CronTurnHandler,
+        state_path: Path | str | None = None,
     ) -> "CronScheduler":
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         items = raw.get("jobs", raw) if isinstance(raw, dict) else raw
         if not isinstance(items, list):
             raise ValueError("cron file must contain a list or {'jobs': [...]}")
         jobs = [CronJob.model_validate(item) for item in items]
-        return cls(delivery_queue=delivery_queue, run_agent_turn=run_agent_turn, jobs=jobs)
+        return cls(
+            delivery_queue=delivery_queue,
+            run_agent_turn=run_agent_turn,
+            jobs=jobs,
+            state_path=state_path,
+        )
 
     def add_at(
         self,
@@ -143,6 +154,7 @@ class CronScheduler:
                 continue
             job.last_fired_at = current
             job.next_run_at = self._next_run_at(job, current)
+            self._save_state()
             session_id = f"cron:{job.id}"
             text = await self.run_agent_turn(job.prompt, session_id)
             if not text.strip():
@@ -205,6 +217,53 @@ class CronScheduler:
             pass
         return datetime.fromisoformat(when).timestamp()
 
+    def _apply_state(self) -> None:
+        if self.state_path is None or not self.state_path.exists():
+            return
+        raw = json.loads(self.state_path.read_text(encoding="utf-8") or "{}")
+        states = raw.get("jobs", raw) if isinstance(raw, dict) else {}
+        if not isinstance(states, dict):
+            return
+        for job in self.jobs:
+            state = states.get(job.id)
+            if not isinstance(state, dict):
+                continue
+            job.last_fired_at = state.get("last_fired_at")
+            job.next_run_at = state.get("next_run_at")
+
+    def _save_state(self) -> None:
+        if self.state_path is None:
+            return
+        payload = {
+            "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "jobs": {
+                job.id: {
+                    "last_fired_at": job.last_fired_at,
+                    "next_run_at": job.next_run_at,
+                }
+                for job in self.jobs
+            },
+        }
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        fd, tmp_path = tempfile.mkstemp(
+            dir=self.state_path.parent,
+            prefix=f".tmp.{self.state_path.stem}.",
+            suffix=self.state_path.suffix or ".json",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, self.state_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
 
 def _simple_next_cron_run(expression: str, base: datetime) -> float | None:
     cursor = base.replace(second=0, microsecond=0) + timedelta(minutes=1)
@@ -250,4 +309,3 @@ def _normalize_cron_value(raw: str, high: int) -> int:
     if high == 7 and value == 7:
         return 0
     return value
-

@@ -10,6 +10,60 @@
 4. Devlog 要写清楚本次改了什么、为什么这么改、怎么验证、读者下一步应该看哪里
 5. `docs/` 是本地学习讲解材料，当前由 `.gitignore` 忽略，不加入 git
 
+## 2026-04-19 - Phase 5A: Priority Lane 与 Cron 状态持久化
+
+### 改动内容
+
+- 新增 `src/agent/lanes.py`
+  - `LaneScheduler`
+  - `LaneRunRecord`
+  - `main > subagent > cron > heartbeat` 优先级
+  - 基于 `asyncio.PriorityQueue` 的协作式调度
+  - 记录每个 lane job 的等待时间、执行时间和结果状态
+- 更新 `src/agent/main.py`
+  - 用户消息进入 `main` lane
+  - Heartbeat agent turn 进入 `heartbeat` lane
+  - Cron agent turn 进入 `cron` lane
+  - watch loop 中 heartbeat / cron tick 改为后台 task，避免主动任务阻塞通道轮询
+- 更新 `src/agent/cron.py`
+  - `CronScheduler` 支持 `state_path`
+  - 持久化 `last_fired_at / next_run_at` 到 `.agent/cron-state.json`
+  - 进程重启后恢复 cron job 的调度状态
+- 新增 `tests/test_lanes.py`
+- 扩展 `tests/test_heartbeat_cron.py`，覆盖 cron 状态持久化
+- 更新 README，并新增第五阶段 5A 讲解文档；`docs/` 继续由 `.gitignore` 忽略，只保留本地
+
+### 为什么这么改
+
+第五阶段的完整范围很大，包含 resilience、profile fallback、lanes、subagent、MCP、worktree。直接全部实现会让边界失控，所以这次先切出 Phase 5A：把长期运行时最核心的调度秩序补上。
+
+`LaneScheduler` 选择协作式调度而不是抢占式调度，因为 LLM 调用本身无法在 mid-turn 安全暂停。新的高优先级任务会在当前 turn 结束后优先执行，这和真实 Agent Runtime 的约束一致。
+
+Cron 状态持久化补齐了第四阶段的一个运行时缺口：没有状态文件时，watch 进程重启可能导致 `every / cron` 任务重复触发。现在状态跟随 `.agent/cron-state.json` 恢复。
+
+### 验证
+
+```bash
+uv run pytest tests/test_lanes.py tests/test_heartbeat_cron.py -q
+uv run pytest -q
+uv run agent --help
+```
+
+验证结果：
+
+- 目标测试通过，`12 passed`
+- 完整测试通过，`67 passed`
+- CLI help 正常显示
+
+### 读者入口
+
+- 总览入口：`README.md`
+- 第五阶段 5A 讲解：`docs/phase-05A-Priority-Lane与Cron状态持久化讲解.md`
+- Lane 调度：`src/agent/lanes.py`
+- Watch loop 接入：`src/agent/main.py`
+- Cron 状态持久化：`src/agent/cron.py`
+- 测试：`tests/test_lanes.py`、`tests/test_heartbeat_cron.py`
+
 ## 2026-04-18 - Phase 4: 可靠投递与主动调度
 
 ### 改动内容

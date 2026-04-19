@@ -2,7 +2,7 @@
 
 基于 `Python + asyncio + litellm + pydantic` 的本地 Coding Agent 实验仓库。
 
-当前已经完成 `docs/ZX-code.md` 中第四阶段：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron。
+当前已经完成 `docs/ZX-code.md` 中第四阶段，并推进到第五阶段 5A：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime。
 
 第一阶段跑通了下面这个闭环：
 
@@ -55,6 +55,8 @@
 - `chunk_message()` 按平台上限切分长消息
 - `HeartbeatRunner` 主动心跳，用户活跃时不抢占对话
 - `CronScheduler` 支持 `at / every / cron` 三类定时任务
+- `LaneScheduler` 协作式优先级调度，`main > subagent > cron > heartbeat`
+- Cron job 的 `last_fired_at / next_run_at` 会持久化到 `.agent/cron-state.json`
 
 ## 环境要求
 
@@ -531,6 +533,31 @@ uv run agent \
 
 `cron` 表达式优先使用 `croniter`；如果当前环境没有安装 `croniter`，会退回到内置的五字段简单解析，支持 `*`、`*/N`、单值和逗号列表。
 
+Cron job 的运行状态会写入：
+
+```text
+.agent/cron-state.json
+```
+
+这份状态记录 `last_fired_at / next_run_at`。进程重启后，`every` 和 `cron` 类型任务会继续沿用上一次计算好的触发时间，避免 watch 进程重启后立刻重复触发。
+
+## Priority Lane Runtime
+
+第五阶段 5A 引入了协作式 lane 调度。所有 Agent turn 统一经过 `LaneScheduler`：
+
+```text
+main > subagent > cron > heartbeat
+```
+
+规则：
+
+- `main`：用户主动发来的消息，优先级最高
+- `subagent`：后续子代理任务会放到这一层
+- `cron`：定时任务，只在更高优先级任务空闲后运行
+- `heartbeat`：最低优先级，不能抢用户消息
+
+这里选择的是协作式调度，不做抢占。原因是一次 LLM 调用无法在中途安全暂停；新的高优先级任务会在当前 turn 结束后优先执行。
+
 ## CLI 参数
 
 ```bash
@@ -601,10 +628,11 @@ uv run pytest -q
 5. `docs/phase-02-持久化上下文权限记忆讲解.md`：理解第二阶段运行时状态
 6. `docs/phase-03-通道网关与手机接入讲解.md`：理解第三阶段多通道 Gateway
 7. `docs/phase-04-可靠投递与主动调度讲解.md`：理解第四阶段可靠投递、Heartbeat 和 Cron
-8. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
-9. `src/agent/gateway.py`：看路由、会话隔离和统一派发
-10. `src/agent/delivery.py`：看出站消息如何先落盘再发送
-11. `tests/`：看每个能力如何被验证
+8. `docs/phase-05A-Priority-Lane与Cron状态持久化讲解.md`：理解第五阶段 5A 的协作式调度
+9. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
+10. `src/agent/gateway.py`：看路由、会话隔离和统一派发
+11. `src/agent/lanes.py`：看 `main / cron / heartbeat` 如何按优先级串行
+12. `tests/`：看每个能力如何被验证
 
 ## 文档维护规则
 
@@ -630,7 +658,8 @@ uv run pytest -q
 │   ├── phase-01-单Agent核心讲解.md
 │   ├── phase-02-持久化上下文权限记忆讲解.md
 │   ├── phase-03-通道网关与手机接入讲解.md
-│   └── phase-04-可靠投递与主动调度讲解.md
+│   ├── phase-04-可靠投递与主动调度讲解.md
+│   └── phase-05A-Priority-Lane与Cron状态持久化讲解.md
 ├── src/
 │   └── agent/
 │       ├── channels/
@@ -644,6 +673,7 @@ uv run pytest -q
 │       ├── delivery.py
 │       ├── gateway.py
 │       ├── heartbeat.py
+│       ├── lanes.py
 │       ├── main.py
 │       ├── loop.py
 │       ├── memory.py
@@ -672,6 +702,7 @@ uv run pytest -q
     ├── test_delivery.py
     ├── test_gateway.py
     ├── test_heartbeat_cron.py
+    ├── test_lanes.py
     ├── test_loop.py
     ├── test_memory_todo_prompt.py
     ├── test_permissions.py
@@ -802,6 +833,14 @@ uv run pytest -q
 - 实现 `CronScheduler`
 - 支持 `at / every / cron`
 - 支持从 `.zx-code/cron.json` 加载任务
+- 持久化 `last_fired_at / next_run_at` 到 `.agent/cron-state.json`
+
+`src/agent/lanes.py`
+
+- 定义 `LaneScheduler`
+- 使用 `asyncio.PriorityQueue` 做协作式优先级调度
+- 默认优先级为 `main > subagent > cron > heartbeat`
+- 记录每个 lane job 的等待时间、执行时间和结果状态
 
 ## 当前限制
 
@@ -810,9 +849,11 @@ uv run pytest -q
 - 飞书加密事件解密
 - 飞书富文本回复
 - DeliveryRunner 独立后台 daemon
-- Cron 状态文件持久化
 - MCP / 插件
-- 并发车道和子代理
+- Subagent / Worktree Isolation
+- 多 profile / 多 key / fallback model
+- 完整 ResilienceRunner
+- Lane 目前是 turn 级协作式调度，不做 LLM mid-turn 抢占
 
 这些都在 `docs/ZX-code.md` 后续阶段里。
 
@@ -826,15 +867,16 @@ uv run pytest -q
 - `docs/phase-02-持久化上下文权限记忆讲解.md`
 - `docs/phase-03-通道网关与手机接入讲解.md`
 - `docs/phase-04-可靠投递与主动调度讲解.md`
+- `docs/phase-05A-Priority-Lane与Cron状态持久化讲解.md`
 
-当前代码对应 `docs/ZX-code.md` 的第四阶段。
+当前代码对应 `docs/ZX-code.md` 的第五阶段 5A。
 
 ## 建议的下一步
 
 比较顺的推进顺序是：
 
-1. 持久化 Cron job 的 `last_fired_at / next_run_at`
-2. 把 DeliveryRunner 拆成独立后台任务
-3. 实现 `main / cron / heartbeat` 多 lane 优先级
+1. 把 DeliveryRunner 拆成独立后台任务
+2. 实现 Subagent，并把 subagent turn 接入 `subagent` lane
+3. 补多 profile / 多 key / fallback model
 4. 补飞书加密事件解密
-5. 推进 MCP、subagent、worktree 和 resilience
+5. 推进 MCP、worktree 和完整 ResilienceRunner

@@ -251,3 +251,61 @@ async def test_cron_simple_parser_fallback_when_croniter_missing(tmp_path, monke
 
     assert len(entries) == 1
     assert entries[0].text == "fallback cron result"
+
+
+async def test_cron_scheduler_persists_job_state_between_instances(tmp_path) -> None:
+    state_path = tmp_path / "cron-state.json"
+    first_queue = DeliveryQueue(tmp_path / "delivery-1", jitter_s=0)
+    first_calls = 0
+
+    async def first_run_agent_turn(prompt: str, session_id: str) -> str:
+        nonlocal first_calls
+        first_calls += 1
+        return "first result"
+
+    first = CronScheduler(
+        delivery_queue=first_queue,
+        run_agent_turn=first_run_agent_turn,
+        state_path=state_path,
+    )
+    first.add_every(
+        job_id="persisted",
+        interval_s=10,
+        prompt="persist me",
+        channel="telegram",
+        to="peer",
+        now=100,
+    )
+
+    assert len(await first.tick(now=110)) == 1
+    assert first_calls == 1
+    assert state_path.exists()
+
+    second_queue = DeliveryQueue(tmp_path / "delivery-2", jitter_s=0)
+    second_calls = 0
+
+    async def second_run_agent_turn(prompt: str, session_id: str) -> str:
+        nonlocal second_calls
+        second_calls += 1
+        return "second result"
+
+    second = CronScheduler(
+        delivery_queue=second_queue,
+        run_agent_turn=second_run_agent_turn,
+        jobs=[
+            CronJob(
+                id="persisted",
+                kind="every",
+                schedule="10",
+                prompt="persist me",
+                channel="telegram",
+                to="peer",
+            )
+        ],
+        state_path=state_path,
+    )
+
+    assert await second.tick(now=111) == []
+    assert second_calls == 0
+    assert len(await second.tick(now=120)) == 1
+    assert second_calls == 1

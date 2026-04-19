@@ -17,6 +17,7 @@ from agent.delivery import DeliveryQueue, DeliveryRunner
 from agent.gateway import AgentRouteConfig, BindingTable, Gateway
 from agent.heartbeat import ActivityTracker, HeartbeatConfig, HeartbeatRunner
 from agent.hooks import HookRunner
+from agent.lanes import LaneScheduler
 from agent.loop import run_task
 from agent.memory import MemoryStore
 from agent.permissions import PermissionCheck, PermissionManager
@@ -179,7 +180,31 @@ async def _run_agent_text(
     return result.final_text
 
 
-def _build_gateway(settings: AgentSettings, *, emit_cli: bool) -> Gateway:
+def _schedule_background_tick(
+    pending_tasks: set[asyncio.Task[Any]],
+    coro: Any,
+) -> None:
+    task = asyncio.create_task(coro)
+    pending_tasks.add(task)
+
+    def _discard_done(done: asyncio.Task[Any]) -> None:
+        pending_tasks.discard(done)
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            console.print(f"[red]Background task failed:[/red] {exc}")
+
+    task.add_done_callback(_discard_done)
+
+
+def _build_gateway(
+    settings: AgentSettings,
+    *,
+    emit_cli: bool,
+    lane_scheduler: LaneScheduler | None = None,
+) -> Gateway:
     channel_manager = ChannelManager()
     project_root = Path.cwd()
     data_dir = _resolve_project_path(project_root, settings.data_dir)
@@ -247,11 +272,16 @@ def _build_gateway(settings: AgentSettings, *, emit_cli: bool) -> Gateway:
         agent_id: str,
         session_id: str,
     ) -> str:
-        return await _run_agent_text(
-            inbound.text,
-            settings=settings.model_copy(update={"agent_id": agent_id}),
-            session_id=session_id,
-        )
+        async def execute() -> str:
+            return await _run_agent_text(
+                inbound.text,
+                settings=settings.model_copy(update={"agent_id": agent_id}),
+                session_id=session_id,
+            )
+
+        if lane_scheduler is None:
+            return await execute()
+        return await lane_scheduler.run("main", execute, job_id=session_id)
 
     return Gateway(
         channel_manager=channel_manager,
@@ -264,7 +294,12 @@ def _build_gateway(settings: AgentSettings, *, emit_cli: bool) -> Gateway:
     )
 
 
-def _build_heartbeat_runner(settings: AgentSettings, gateway: Gateway) -> HeartbeatRunner | None:
+def _build_heartbeat_runner(
+    settings: AgentSettings,
+    gateway: Gateway,
+    *,
+    lane_scheduler: LaneScheduler | None = None,
+) -> HeartbeatRunner | None:
     if not settings.heartbeat_enabled or gateway.delivery_queue is None:
         return None
     channel = settings.heartbeat_channel or settings.channel
@@ -273,11 +308,16 @@ def _build_heartbeat_runner(settings: AgentSettings, gateway: Gateway) -> Heartb
         return None
 
     async def run_agent_turn(prompt: str, session_id: str) -> str:
-        return await _run_agent_text(
-            prompt,
-            settings=settings.model_copy(update={"stream": False}),
-            session_id=session_id,
-        )
+        async def execute() -> str:
+            return await _run_agent_text(
+                prompt,
+                settings=settings.model_copy(update={"stream": False}),
+                session_id=session_id,
+            )
+
+        if lane_scheduler is None:
+            return await execute()
+        return await lane_scheduler.run("heartbeat", execute, job_id=session_id)
 
     return HeartbeatRunner(
         config=HeartbeatConfig(
@@ -296,7 +336,12 @@ def _build_heartbeat_runner(settings: AgentSettings, gateway: Gateway) -> Heartb
     )
 
 
-def _build_cron_scheduler(settings: AgentSettings, gateway: Gateway) -> CronScheduler | None:
+def _build_cron_scheduler(
+    settings: AgentSettings,
+    gateway: Gateway,
+    *,
+    lane_scheduler: LaneScheduler | None = None,
+) -> CronScheduler | None:
     if gateway.delivery_queue is None:
         return None
 
@@ -312,16 +357,23 @@ def _build_cron_scheduler(settings: AgentSettings, gateway: Gateway) -> CronSche
         return None
 
     async def run_agent_turn(prompt: str, session_id: str) -> str:
-        return await _run_agent_text(
-            prompt,
-            settings=settings.model_copy(update={"stream": False}),
-            session_id=session_id,
-        )
+        async def execute() -> str:
+            return await _run_agent_text(
+                prompt,
+                settings=settings.model_copy(update={"stream": False}),
+                session_id=session_id,
+            )
 
+        if lane_scheduler is None:
+            return await execute()
+        return await lane_scheduler.run("cron", execute, job_id=session_id)
+
+    data_dir = _resolve_project_path(project_root, settings.data_dir)
     return CronScheduler.from_file(
         cron_path,
         delivery_queue=gateway.delivery_queue,
         run_agent_turn=run_agent_turn,
+        state_path=data_dir / "cron-state.json",
     )
 
 
@@ -355,7 +407,12 @@ async def _run_once(
         console.print(runtime["prompt_builder"].debug(runtime["config"]))
         return 0
 
-    gateway = _build_gateway(settings, emit_cli=not settings.stream)
+    lane_scheduler = LaneScheduler()
+    gateway = _build_gateway(
+        settings,
+        emit_cli=not settings.stream,
+        lane_scheduler=lane_scheduler,
+    )
     inbound = InboundMessage.cli(
         task,
         account_id=settings.account_id,
@@ -369,6 +426,8 @@ async def _run_once(
     except AgentError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         return 1
+    finally:
+        await lane_scheduler.close()
     return 0
 
 
@@ -386,7 +445,12 @@ async def _run_channel_once(
     if not _validate_channel_settings(settings):
         return 1
 
-    gateway = _build_gateway(settings, emit_cli=not settings.stream)
+    lane_scheduler = LaneScheduler()
+    gateway = _build_gateway(
+        settings,
+        emit_cli=not settings.stream,
+        lane_scheduler=lane_scheduler,
+    )
     try:
         result = await gateway.receive_once(
             settings.channel,
@@ -398,6 +462,8 @@ async def _run_channel_once(
     except KeyError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         return 1
+    finally:
+        await lane_scheduler.close()
 
     if result is None:
         console.print(f"No inbound message on channel: {settings.channel}")
@@ -419,9 +485,23 @@ async def _run_channel_loop(
     if not _validate_channel_settings(settings):
         return 1
 
-    gateway = _build_gateway(settings, emit_cli=not settings.stream)
-    heartbeat_runner = _build_heartbeat_runner(settings, gateway)
-    cron_scheduler = _build_cron_scheduler(settings, gateway)
+    lane_scheduler = LaneScheduler()
+    gateway = _build_gateway(
+        settings,
+        emit_cli=not settings.stream,
+        lane_scheduler=lane_scheduler,
+    )
+    heartbeat_runner = _build_heartbeat_runner(
+        settings,
+        gateway,
+        lane_scheduler=lane_scheduler,
+    )
+    cron_scheduler = _build_cron_scheduler(
+        settings,
+        gateway,
+        lane_scheduler=lane_scheduler,
+    )
+    pending_ticks: set[asyncio.Task[Any]] = set()
     console.print(f"Listening on channel: {settings.channel}. Press Ctrl-C to stop.")
     try:
         while True:
@@ -433,9 +513,9 @@ async def _run_channel_loop(
                 if result is None:
                     await asyncio.sleep(0.2)
                 if heartbeat_runner is not None:
-                    await heartbeat_runner.tick()
+                    _schedule_background_tick(pending_ticks, heartbeat_runner.tick())
                 if cron_scheduler is not None:
-                    await cron_scheduler.tick()
+                    _schedule_background_tick(pending_ticks, cron_scheduler.tick())
                 await gateway.drain_delivery()
             except AgentError as exc:
                 console.print(f"[red]Error:[/red] {exc}")
@@ -446,6 +526,10 @@ async def _run_channel_loop(
     except KeyboardInterrupt:
         console.print()
         return 0
+    finally:
+        for task in pending_ticks:
+            task.cancel()
+        await lane_scheduler.close()
 
 
 def _run_repl(*, settings: AgentSettings, print_system_prompt: bool) -> int:
