@@ -2,7 +2,7 @@
 
 基于 `Python + asyncio + litellm + pydantic` 的本地 Coding Agent 实验仓库。
 
-当前已经完成 `docs/ZX-code.md` 中第四阶段，并推进到第五阶段 5B：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime + Delivery Daemon。
+当前已经完成 `docs/ZX-code.md` 中第四阶段，并推进到第五阶段 5D：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime + Delivery Daemon + Subagent + Profile Fallback。
 
 第一阶段跑通了下面这个闭环：
 
@@ -57,7 +57,13 @@
 - `HeartbeatRunner` 主动心跳，用户活跃时不抢占对话
 - `CronScheduler` 支持 `at / every / cron` 三类定时任务
 - `LaneScheduler` 协作式优先级调度，`main > subagent > cron > heartbeat`
+- `LaneScheduler` 支持当前 worker 内嵌套执行，避免主 Agent 同步等待子 Agent 时死锁
 - Cron job 的 `last_fired_at / next_run_at` 会持久化到 `.agent/cron-state.json`
+- `SubagentRunner` 支持独立子会话、递归深度限制和 `subagent` lane 调度
+- `subagent_run` 工具允许主 Agent 把聚焦任务交给子 Agent 执行，并返回子会话结果
+- `ModelProfile` 支持多模型 / 多 key 配置
+- `FallbackModelClient` 在 `rate_limit / auth / billing / timeout` 这类可恢复失败时自动切换备用 profile
+- `classify_error()` 支持 `rate_limit / auth / timeout / overflow / billing / unknown` 失败分类
 
 ## 环境要求
 
@@ -315,7 +321,7 @@ uv run agent \
 - 出站消息会先进入 `DeliveryQueue` 再发送
 - 发送失败会按指数退避重试，超过次数后进入失败目录
 
-剩余的投递后台 daemon 和更细的限流恢复会在后续阶段处理。
+更细的限流恢复和平台错误分类会在后续阶段处理。
 
 ## 飞书连接说明
 
@@ -572,11 +578,80 @@ main > subagent > cron > heartbeat
 规则：
 
 - `main`：用户主动发来的消息，优先级最高
-- `subagent`：后续子代理任务会放到这一层
+- `subagent`：子代理任务，优先级低于用户主动消息，高于主动任务
 - `cron`：定时任务，只在更高优先级任务空闲后运行
 - `heartbeat`：最低优先级，不能抢用户消息
 
 这里选择的是协作式调度，不做抢占。原因是一次 LLM 调用无法在中途安全暂停；新的高优先级任务会在当前 turn 结束后优先执行。
+
+`LaneScheduler` 还支持当前 worker 内的嵌套执行：主 Agent 在 `main` lane 中调用 `subagent_run` 时，子 Agent 会直接在当前执行链里跑完并记录为 `subagent` lane，避免“主任务等待子任务、子任务又排在同一个 worker 后面”的死锁。
+
+## Subagent
+
+第五阶段 5C 引入了 `SubagentRunner` 和 `subagent_run` 工具。
+
+主 Agent 可以把一个聚焦任务交给子 Agent，例如“只阅读 gateway 相关文件并总结路由逻辑”。子 Agent 会使用独立 session id：
+
+```text
+<parent-session>:subagent:<label>:<random-id>
+```
+
+这样子 Agent 的消息历史不会直接写进主会话。主会话只会收到 `subagent_run` 的工具结果，里面包含子会话 id、任务、深度和最终文本。
+
+默认递归深度是 `1`，也就是主 Agent 可以创建一层子 Agent，子 Agent 自己不会再拿到 `subagent_run` 工具，避免无限递归。
+
+常用参数：
+
+```bash
+uv run agent --subagent-max-depth 1 "分析这个仓库的 Gateway 代码"
+```
+
+临时关闭子 Agent：
+
+```bash
+uv run agent --no-subagents "只用主 Agent 回答"
+```
+
+当前 Subagent 仍共享同一个项目工作目录和基础工具集合；它解决的是“独立上下文”和“运行时调度”问题，还不是 Git worktree 级别的文件隔离。
+
+## Profile Fallback
+
+第五阶段 5D 引入了模型 profile 和 fallback client。
+
+最简单的临时用法是在 CLI 里给备用模型：
+
+```bash
+uv run agent \
+  --model openai/gpt-4o-mini \
+  --fallback-models "anthropic/claude-3-5-sonnet-latest,openai/gpt-4o" \
+  "总结当前项目"
+```
+
+当主模型抛出 `rate_limit / auth / billing / timeout` 这类可恢复错误时，`FallbackModelClient` 会把当前 profile 放入短期 cooldown，然后尝试下一个 profile。未知错误不会盲目切换，避免把代码 bug、解析 bug 或参数错误伪装成模型供应商故障。
+
+更适合长期运行的方式是在 `.zx-code/config.toml` 中配置多个 profile：
+
+```toml
+[agent]
+model = "openai/gpt-4o-mini"
+
+[[agent.model_profiles]]
+name = "openai-primary"
+model = "openai/gpt-4o-mini"
+api_key_env = "OPENAI_API_KEY"
+
+[[agent.model_profiles]]
+name = "openai-backup"
+model = "openai/gpt-4o-mini"
+api_key_env = "OPENAI_BACKUP_API_KEY"
+
+[[agent.model_profiles]]
+name = "anthropic-backup"
+model = "anthropic/claude-3-5-sonnet-latest"
+api_key_env = "ANTHROPIC_API_KEY"
+```
+
+`api_key_env` 只保存环境变量名，不保存真实 key。运行时会读取环境变量，把值作为 `litellm` 的 `api_key` 参数传入。这样可以实现同模型多 key 轮换，也可以实现跨模型 fallback。
 
 ## CLI 参数
 
@@ -587,6 +662,7 @@ uv run agent --help
 当前支持：
 
 - `--model`
+- `--fallback-models`
 - `--max-turns`
 - `--session-id`
 - `--data-dir`
@@ -626,10 +702,12 @@ uv run agent --help
 - `--heartbeat-prompt`
 - `--heartbeat-sentinel`
 - `--cron-jobs`
+- `--subagent-max-depth`
 - `--watch`
 - `--no-stream`
 - `--no-memory`
 - `--no-todos`
+- `--no-subagents`
 - `--print-system-prompt`
 
 ## 运行测试
@@ -651,10 +729,14 @@ uv run pytest -q
 7. `docs/phase-04-可靠投递与主动调度讲解.md`：理解第四阶段可靠投递、Heartbeat 和 Cron
 8. `docs/phase-05A-Priority-Lane与Cron状态持久化讲解.md`：理解第五阶段 5A 的协作式调度
 9. `docs/phase-05B-Delivery-Daemon讲解.md`：理解第五阶段 5B 的后台投递 daemon
-10. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
-11. `src/agent/gateway.py`：看路由、会话隔离和统一派发
-12. `src/agent/delivery.py`：看可靠投递、锁和后台 daemon
-13. `tests/`：看每个能力如何被验证
+10. `docs/phase-05C-Subagent讲解.md`：理解第五阶段 5C 的子代理运行时
+11. `docs/phase-05D-Profile与Fallback讲解.md`：理解第五阶段 5D 的模型 profile 和 fallback
+12. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
+13. `src/agent/gateway.py`：看路由、会话隔离和统一派发
+14. `src/agent/subagent.py`：看子代理如何隔离会话并限制递归
+15. `src/agent/profiles.py`：看模型 profile 和 fallback client
+16. `src/agent/delivery.py`：看可靠投递、锁和后台 daemon
+17. `tests/`：看每个能力如何被验证
 
 ## 文档维护规则
 
@@ -682,7 +764,9 @@ uv run pytest -q
 │   ├── phase-03-通道网关与手机接入讲解.md
 │   ├── phase-04-可靠投递与主动调度讲解.md
 │   ├── phase-05A-Priority-Lane与Cron状态持久化讲解.md
-│   └── phase-05B-Delivery-Daemon讲解.md
+│   ├── phase-05B-Delivery-Daemon讲解.md
+│   ├── phase-05C-Subagent讲解.md
+│   └── phase-05D-Profile与Fallback讲解.md
 ├── src/
 │   └── agent/
 │       ├── channels/
@@ -703,8 +787,10 @@ uv run pytest -q
 │       ├── models.py
 │       ├── permissions.py
 │       ├── prompt.py
+│       ├── profiles.py
 │       ├── recovery.py
 │       ├── sessions.py
+│       ├── subagent.py
 │       ├── todo.py
 │       ├── providers/
 │       │   ├── base.py
@@ -717,6 +803,7 @@ uv run pytest -q
 │           ├── edit_file.py
 │           ├── grep.py
 │           ├── memory.py
+│           ├── subagent.py
 │           └── todo.py
 └── tests/
     ├── test_channels.py
@@ -727,10 +814,14 @@ uv run pytest -q
     ├── test_heartbeat_cron.py
     ├── test_lanes.py
     ├── test_loop.py
+    ├── test_main.py
     ├── test_memory_todo_prompt.py
     ├── test_permissions.py
+    ├── test_profiles.py
     ├── test_provider_mock.py
+    ├── test_recovery.py
     ├── test_sessions.py
+    ├── test_subagent.py
     └── test_tools.py
 ```
 
@@ -763,6 +854,7 @@ uv run pytest -q
 - 负责把 CLI / Telegram / 飞书入口接入 Gateway
 - 支持 `--watch` 持续监听通道
 - 在 watch loop 中驱动 Delivery、Heartbeat 和 Cron tick
+- 构造 `SubagentRunner`，并控制子 Agent 递归深度
 
 `src/agent/sessions.py`
 
@@ -780,6 +872,13 @@ uv run pytest -q
 
 - 使用 `SystemPromptBuilder` 分层构建 prompt
 - 支持 memory、todo、runtime 注入
+
+`src/agent/profiles.py`
+
+- 定义 `ModelProfile`
+- 从 `api_key_env` 读取运行时 key，不把真实 key 写入配置
+- 定义 `ProfileManager`，管理 profile cooldown
+- 定义 `FallbackModelClient`，在可恢复模型失败时切换备用 profile
 
 `src/agent/permissions.py`
 
@@ -866,6 +965,27 @@ uv run pytest -q
 - 使用 `asyncio.PriorityQueue` 做协作式优先级调度
 - 默认优先级为 `main > subagent > cron > heartbeat`
 - 记录每个 lane job 的等待时间、执行时间和结果状态
+- 支持当前 worker 内嵌套执行，防止同步子 Agent 调用死锁
+
+`src/agent/recovery.py`
+
+- 定义 Agent 运行时错误类型
+- `classify_error()` 将模型错误归类为 `rate_limit / auth / timeout / overflow / billing / unknown`
+- `run_model_turn_with_recovery()` 负责单 profile 内的超时、截断续写、rate limit backoff 和 overflow compact
+
+`src/agent/subagent.py`
+
+- 定义 `SubagentRunner`
+- 为每次子 Agent 调用生成独立 child session id
+- 控制 `subagent_max_depth`，避免无限递归
+- 可选接入 `LaneScheduler`，把子任务记录到 `subagent` lane
+
+`src/agent/tools/subagent.py`
+
+- 定义 `subagent_run` 工具
+- 校验 `task` 和 `label`
+- 调用 `SubagentRunner.run()`
+- 把子会话 id、执行深度和最终文本返回给主 Agent
 
 ## 当前限制
 
@@ -874,10 +994,11 @@ uv run pytest -q
 - 飞书加密事件解密
 - 飞书富文本回复
 - MCP / 插件
-- Subagent / Worktree Isolation
-- 多 profile / 多 key / fallback model
+- Worktree Isolation
 - 完整 ResilienceRunner
 - Lane 目前是 turn 级协作式调度，不做 LLM mid-turn 抢占
+- Subagent 当前共享同一个工作目录和工具集合，还没有文件隔离
+- Profile fallback 当前只处理模型调用阶段，还没有把 overflow compact 和 profile 轮换合并成完整三层 ResilienceRunner
 
 这些都在 `docs/ZX-code.md` 后续阶段里。
 
@@ -893,15 +1014,16 @@ uv run pytest -q
 - `docs/phase-04-可靠投递与主动调度讲解.md`
 - `docs/phase-05A-Priority-Lane与Cron状态持久化讲解.md`
 - `docs/phase-05B-Delivery-Daemon讲解.md`
+- `docs/phase-05C-Subagent讲解.md`
+- `docs/phase-05D-Profile与Fallback讲解.md`
 
-当前代码对应 `docs/ZX-code.md` 的第五阶段 5B。
+当前代码对应 `docs/ZX-code.md` 的第五阶段 5D。
 
 ## 建议的下一步
 
 比较顺的推进顺序是：
 
-1. 实现 Subagent，并把 subagent turn 接入 `subagent` lane
-2. 补多 profile / 多 key / fallback model
-3. 补飞书加密事件解密
-4. 推进 MCP、worktree 和完整 ResilienceRunner
-5. 第六阶段接入 TraceEvent，记录 delivery daemon 与 lane wait time
+1. 把 overflow compact、profile fallback 和 tool-use loop 收敛成完整 `ResilienceRunner`
+2. 补飞书加密事件解密
+3. 推进 MCP 和 worktree isolation
+4. 第六阶段接入 TraceEvent，记录 fallback、delivery daemon、subagent 和 lane wait time

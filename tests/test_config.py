@@ -52,3 +52,44 @@ bash = "deny"
     assert settings.feishu_app_id == "cli_xxx"
     assert settings.feishu_webhook_port == 8787
     assert settings.permission_tools == {"bash": "deny"}
+
+
+def test_config_loader_reads_model_profiles(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_config = project_dir / ".zx-code" / "config.toml"
+    project_config.parent.mkdir(parents=True)
+    project_config.write_text(
+        """
+[agent]
+model = "openai/default"
+fallback_models = "openai/fallback-cli"
+
+[[agent.model_profiles]]
+name = "primary"
+model = "openai/primary"
+api_key_env = "PRIMARY_KEY"
+
+[[agent.model_profiles]]
+name = "backup"
+model = "anthropic/backup"
+api_key_env = "BACKUP_KEY"
+extra_kwargs = { base_url = "https://example.invalid" }
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = ConfigLoader(project_dir=project_dir).load()
+    profiles = settings.resolved_model_profiles()
+
+    assert [profile.name for profile in profiles] == [
+        "primary",
+        "backup",
+        "fallback-1",
+    ]
+    assert [profile.model for profile in profiles] == [
+        "openai/primary",
+        "anthropic/backup",
+        "openai/fallback-cli",
+    ]
+    assert profiles[1].api_key_env == "BACKUP_KEY"
+    assert profiles[1].extra_kwargs == {"base_url": "https://example.invalid"}

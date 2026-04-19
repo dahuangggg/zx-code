@@ -10,6 +10,140 @@
 4. Devlog 要写清楚本次改了什么、为什么这么改、怎么验证、读者下一步应该看哪里
 5. `docs/` 是本地学习讲解材料，当前由 `.gitignore` 忽略，不加入 git
 
+## 2026-04-19 - Phase 5D: Profile 与 Fallback Model
+
+### 改动内容
+
+- 新增 `src/agent/profiles.py`
+  - `ModelProfile`
+  - `ProfileManager`
+  - `FallbackModelClient`
+  - `AllProfilesExhaustedError`
+  - 支持 profile cooldown 和 `api_key_env` 运行时取 key
+- 更新 `src/agent/config.py`
+  - 新增 `fallback_models`
+  - 新增 `model_profiles`
+  - 新增 `resolved_model_profiles()`，合并 TOML profile 和 CLI fallback 模型
+- 更新 `src/agent/main.py`
+  - 新增 `_build_model_client()`
+  - 单 profile 使用 `LiteLLMModelClient`
+  - 多 profile 使用 `FallbackModelClient`
+  - CLI 新增 `--fallback-models`
+- 更新 `src/agent/recovery.py`
+  - `classify_error()` 支持 `rate_limit / auth / timeout / overflow / billing / unknown`
+  - overflow 分类继续接入已有 context compaction 逻辑
+- 新增和扩展测试
+  - `tests/test_profiles.py`
+  - `tests/test_recovery.py`
+  - `tests/test_config.py`
+  - `tests/test_main.py`
+- 更新 README，并新增第五阶段 5D 讲解文档；`docs/` 继续由 `.gitignore` 忽略，只保留本地
+
+### 为什么这么改
+
+第五阶段要求支持多 profile / 多 key / fallback model。这里先实现模型调用层的 fallback，而不是一次性重构完整 `ResilienceRunner`。
+
+设计上保持 Agent loop 不变：`loop.py` 仍然只依赖 `ModelClient` 协议。`FallbackModelClient` 作为 wrapper 包住多个 `LiteLLMModelClient`，对外仍然暴露同一个 `run_turn()` 接口。
+
+Profile 配置只保存环境变量名，不保存真实 key。这样 `.zx-code/config.toml` 可以提交或展示结构，但不会泄漏密钥。运行时再从 `api_key_env` 读取真实 key，并传给 `litellm` 的 `api_key` 参数。
+
+Fallback 只处理 `rate_limit / auth / billing / timeout` 这类可恢复故障；`unknown` 错误直接抛出。这样可以避免把本地代码 bug、tool schema bug 或 provider response 解析 bug 错误地隐藏成“换个模型就好了”。
+
+### 验证
+
+```bash
+uv run pytest tests/test_profiles.py tests/test_recovery.py tests/test_config.py tests/test_main.py -q
+uv run pytest -q
+uv run agent --help
+git check-ignore -v docs/phase-05D-Profile与Fallback讲解.md docs/README.md
+```
+
+验证结果：
+
+- 目标测试通过，`11 passed`
+- 完整测试通过，`82 passed`
+- CLI help 正常显示 `--fallback-models`
+- `git check-ignore` 确认 `docs/` 仍由 `.gitignore` 忽略，不加入 git
+
+### 读者入口
+
+- 总览入口：`README.md`
+- 第五阶段 5D 讲解：`docs/phase-05D-Profile与Fallback讲解.md`
+- Profile 与 fallback：`src/agent/profiles.py`
+- 错误分类：`src/agent/recovery.py`
+- 配置读取：`src/agent/config.py`
+- 运行时接线：`src/agent/main.py`
+- 测试：`tests/test_profiles.py`、`tests/test_recovery.py`、`tests/test_config.py`、`tests/test_main.py`
+
+## 2026-04-19 - Phase 5C: Subagent
+
+### 改动内容
+
+- 新增 `src/agent/subagent.py`
+  - `SubagentRunner`
+  - `SubagentRunResult`
+  - `SubagentRecursionError`
+  - 子 Agent 独立 session id
+  - 最大递归深度限制
+- 新增 `src/agent/tools/subagent.py`
+  - 暴露 `subagent_run` 工具
+  - 支持 `task` 和 `label`
+  - 返回子会话 id、执行深度和最终文本
+- 更新 `src/agent/tools/__init__.py`
+  - `build_default_registry()` 支持按需注入 `SubagentRunner`
+  - 到达最大深度时不注册 `subagent_run`
+- 更新 `src/agent/main.py`
+  - `_build_runtime()` 支持 `lane_scheduler` 和 `subagent_depth`
+  - Gateway / Heartbeat / Cron 触发 Agent turn 时都会传递同一个 `LaneScheduler`
+  - 新增 `--subagent-max-depth` 和 `--no-subagents`
+- 更新 `src/agent/config.py`
+  - 新增 `enable_subagents`
+  - 新增 `subagent_max_depth`
+- 更新 `src/agent/lanes.py`
+  - 支持当前 worker 内的嵌套 lane job
+  - 避免主 Agent 在 `main` lane 中同步等待 `subagent` lane 时死锁
+- 新增和扩展测试
+  - `tests/test_subagent.py`
+  - `tests/test_lanes.py`
+  - `tests/test_main.py`
+- 更新 README，并新增第五阶段 5C 讲解文档；`docs/` 继续由 `.gitignore` 忽略，只保留本地
+
+### 为什么这么改
+
+第五阶段要求补齐 Subagent。这里先做最小但真实可运行的子代理架构，而不是直接做复杂的多 worktree 并发系统。
+
+核心设计是把子代理做成工具能力：主 Agent 通过 `subagent_run` 把聚焦任务交给子 Agent，子 Agent 使用独立 child session 跑完整 Agent loop，再把最终文本作为工具结果返回。这样主会话不会被子 Agent 的中间探索污染。
+
+递归限制没有交给模型自觉遵守，而是在 `_build_runtime()` 里通过工具注册表控制：当 `subagent_depth >= subagent_max_depth` 时，子 Agent 不再获得 `subagent_run` 工具。
+
+Lane 嵌套执行是本阶段的运行时关键点。主 Agent 已经在 `main` lane worker 中执行，如果 `subagent_run` 再把子任务排到同一个 worker 队列里，主任务会等待子任务，而 worker 又无法取出子任务，形成死锁。因此 `LaneScheduler` 用 `ContextVar` 识别当前 worker，遇到同一个 scheduler 的嵌套调用时直接内联执行，同时仍然记录 lane history。
+
+### 验证
+
+```bash
+uv run pytest tests/test_subagent.py tests/test_lanes.py tests/test_main.py -q
+uv run pytest -q
+uv run agent --help
+git check-ignore -v docs/phase-05C-Subagent讲解.md docs/README.md
+```
+
+验证结果：
+
+- 目标测试通过，`11 passed`
+- 完整测试通过，`76 passed`
+- CLI help 正常显示 `--subagent-max-depth` 和 `--no-subagents`
+- `git check-ignore` 确认 `docs/` 仍由 `.gitignore` 忽略，不加入 git
+
+### 读者入口
+
+- 总览入口：`README.md`
+- 第五阶段 5C 讲解：`docs/phase-05C-Subagent讲解.md`
+- 子代理运行时：`src/agent/subagent.py`
+- 子代理工具：`src/agent/tools/subagent.py`
+- 运行时接线：`src/agent/main.py`
+- Lane 嵌套执行：`src/agent/lanes.py`
+- 测试：`tests/test_subagent.py`、`tests/test_lanes.py`、`tests/test_main.py`
+
 ## 2026-04-19 - Phase 5B: Delivery Daemon
 
 ### 改动内容

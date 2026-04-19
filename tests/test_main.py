@@ -3,7 +3,9 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+from agent.config import AgentSettings
 from agent import main
+from agent.profiles import FallbackModelClient, ModelProfile
 
 
 def test_configure_readline_applies_bindings(monkeypatch) -> None:
@@ -37,3 +39,41 @@ def test_configure_readline_ignores_backend_errors(monkeypatch) -> None:
     main._configure_readline()
 
     assert len(calls) == 4
+
+
+def test_build_runtime_registers_subagent_tool_by_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    runtime = main._build_runtime(
+        AgentSettings(enable_memory=False, enable_todos=False),
+    )
+
+    assert runtime["tool_registry"].get("subagent_run") is not None
+
+
+def test_build_runtime_omits_subagent_tool_at_max_depth(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    runtime = main._build_runtime(
+        AgentSettings(enable_memory=False, enable_todos=False, subagent_max_depth=1),
+        subagent_depth=1,
+    )
+
+    assert runtime["tool_registry"].get("subagent_run") is None
+
+
+def test_build_runtime_uses_fallback_client_for_multiple_profiles(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    runtime = main._build_runtime(
+        AgentSettings(
+            enable_memory=False,
+            enable_todos=False,
+            model_profiles=[
+                ModelProfile(name="primary", model="openai/primary"),
+                ModelProfile(name="backup", model="openai/backup"),
+            ],
+        ),
+    )
+
+    assert isinstance(runtime["model_client"], FallbackModelClient)

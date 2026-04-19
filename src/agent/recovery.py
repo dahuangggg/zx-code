@@ -59,6 +59,11 @@ def classify_error(exc: Exception) -> str:
     msg = str(exc).lower()
     exc_type = type(exc).__name__.lower()
 
+    if isinstance(exc, TimeoutError) or "timeout" in exc_type:
+        return "timeout"
+    if any(term in msg for term in ("timeout", "timed out", "deadline exceeded")):
+        return "timeout"
+
     if any(term in msg for term in ("rate_limit", "rate limit", "429", "too many requests")):
         return "rate_limit"
     if any(term in msg for term in ("ratelimit",)):
@@ -67,11 +72,25 @@ def classify_error(exc: Exception) -> str:
         return "rate_limit"
 
     if any(term in msg for term in (
+        "invalid api key", "invalid_api_key", "unauthorized", "401",
+        "forbidden", "403", "authentication", "permission denied",
+    )):
+        return "auth"
+    if any(term in exc_type for term in ("auth", "permission")):
+        return "auth"
+
+    if any(term in msg for term in (
+        "billing", "insufficient_quota", "quota exceeded", "payment required",
+        "credit", "balance",
+    )):
+        return "billing"
+
+    if any(term in msg for term in (
         "context_length", "context length", "maximum context",
         "token limit", "too many tokens", "max_tokens",
         "context window", "exceeds the model",
     )):
-        return "context_overflow"
+        return "overflow"
 
     if any(term in msg for term in ("max_tokens", "length", "truncat")):
         if "finish_reason" in msg or "stop_reason" in msg:
@@ -135,7 +154,7 @@ async def run_model_turn_with_recovery(
                 await asyncio.sleep(delay)
                 continue
 
-            if error_type == "context_overflow" and budget.can_retry("compaction"):
+            if error_type == "overflow" and budget.can_retry("compaction"):
                 budget.record("compaction")
                 if context_guard is not None:
                     messages = await context_guard.compact_history(messages)

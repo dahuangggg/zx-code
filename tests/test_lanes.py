@@ -59,3 +59,26 @@ async def test_lane_scheduler_does_not_preempt_running_lower_priority_job() -> N
     assert order == ["heartbeat-start", "heartbeat-end", "main"]
 
     await scheduler.close()
+
+
+async def test_lane_scheduler_allows_nested_job_from_current_worker() -> None:
+    scheduler = LaneScheduler()
+    order: list[str] = []
+
+    async def subagent_job() -> str:
+        order.append("subagent")
+        return "child"
+
+    async def main_job() -> str:
+        order.append("main-start")
+        result = await scheduler.run("subagent", subagent_job, job_id="child")
+        order.append(f"main-end:{result}")
+        return result
+
+    result = await scheduler.run("main", main_job, job_id="main")
+
+    assert result == "child"
+    assert order == ["main-start", "subagent", "main-end:child"]
+    assert [record.lane for record in scheduler.history] == ["subagent", "main"]
+
+    await scheduler.close()

@@ -4,6 +4,7 @@ from agent.tools.grep import GrepTool
 from agent.tools.memory import MemoryAppendTool
 from agent.tools.read_file import ReadFileTool
 from agent.tools.registry import ToolRegistry
+from agent.tools.subagent import SubagentRunTool
 from agent.tools.todo import (
     TodoCompleteTool,
     TodoCreateTool,
@@ -13,6 +14,7 @@ from agent.tools.todo import (
 from agent.tools.write_file import WriteFileTool
 from agent.memory import MemoryStore
 from agent.permissions import ApprovalCallback, PermissionManager
+from agent.subagent import SubagentRunner
 from agent.todo import TodoManager
 
 
@@ -22,6 +24,7 @@ def build_default_registry(
     approval_callback: ApprovalCallback | None = None,
     todo_manager: TodoManager | None = None,
     memory_store: MemoryStore | None = None,
+    subagent_runner: SubagentRunner | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry(
         permission_manager=permission_manager,
@@ -39,6 +42,8 @@ def build_default_registry(
         registry.register(TodoListTool(todo_manager))
     if memory_store is not None:
         registry.register(MemoryAppendTool(memory_store))
+    if subagent_runner is not None:
+        registry.register(SubagentRunTool(subagent_runner))
     return registry
 
 

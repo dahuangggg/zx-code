@@ -9,12 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.gateway import DMScope
 from agent.models import AgentConfig
 from agent.permissions import PermissionDecision
+from agent.profiles import ModelProfile
 
 
 class AgentSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model: str = "openai/gpt-4o-mini"
+    fallback_models: str = ""
+    model_profiles: list[ModelProfile] = Field(default_factory=list)
     max_iterations: int = 8
     model_timeout_s: float = 60.0
     stream: bool = True
@@ -65,6 +68,8 @@ class AgentSettings(BaseModel):
     heartbeat_prompt: str = "Heartbeat check. Reply HEARTBEAT_OK if no user-facing update is needed."
     heartbeat_sentinel: str = "HEARTBEAT_OK"
     cron_jobs_path: str = ""
+    enable_subagents: bool = True
+    subagent_max_depth: int = Field(default=1, ge=0)
 
     def to_agent_config(self, *, system_prompt: str = "") -> AgentConfig:
         return AgentConfig(
@@ -83,6 +88,14 @@ class AgentSettings(BaseModel):
             enable_todos=self.enable_todos,
         )
 
+    def resolved_model_profiles(self) -> list[ModelProfile]:
+        profiles = list(self.model_profiles)
+        if not profiles:
+            profiles.append(ModelProfile(name="primary", model=self.model))
+        for index, model in enumerate(_split_csv(self.fallback_models), start=1):
+            profiles.append(ModelProfile(name=f"fallback-{index}", model=model))
+        return profiles
+
 
 def _read_toml(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -91,6 +104,10 @@ def _read_toml(path: Path) -> dict[str, Any]:
         loaded = tomllib.load(handle)
     agent_section = loaded.get("agent")
     return agent_section if isinstance(agent_section, dict) else loaded
+
+
+def _split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 class ConfigLoader:

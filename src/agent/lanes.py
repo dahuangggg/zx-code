@@ -4,6 +4,7 @@ import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -18,6 +19,11 @@ LANE_PRIORITIES: dict[str, int] = {
     "cron": 20,
     "heartbeat": 30,
 }
+
+_current_scheduler: ContextVar["LaneScheduler | None"] = ContextVar(
+    "current_lane_scheduler",
+    default=None,
+)
 
 
 class LaneRunRecord(BaseModel):
@@ -99,6 +105,19 @@ class LaneScheduler:
         *,
         job_id: str | None = None,
     ) -> Any:
+        if _current_scheduler.get() is self:
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[Any] = loop.create_future()
+            job = _LaneJob(
+                lane=lane,
+                priority=LANE_PRIORITIES.get(lane, 100),
+                job_id=job_id or uuid.uuid4().hex[:12],
+                submitted_at=time.monotonic(),
+                run=run,
+                future=future,
+            )
+            await self._execute_job(job)
+            return await future
         return await self.submit(lane, run, job_id=job_id)
 
     def start(self) -> None:
@@ -118,31 +137,37 @@ class LaneScheduler:
     async def _worker(self) -> None:
         while True:
             queued = await self._queue.get()
-            job = queued.job
-            started_at = time.monotonic()
-            status: Literal["succeeded", "failed"] = "succeeded"
-            error = ""
             try:
-                result = await job.run()
-            except Exception as exc:
-                status = "failed"
-                error = str(exc)
-                if not job.future.cancelled():
-                    job.future.set_exception(exc)
-            else:
-                if not job.future.cancelled():
-                    job.future.set_result(result)
+                await self._execute_job(queued.job)
             finally:
-                finished_at = time.monotonic()
-                self.history.append(
-                    LaneRunRecord(
-                        job_id=job.job_id,
-                        lane=job.lane,
-                        priority=job.priority,
-                        wait_ms=(started_at - job.submitted_at) * 1000,
-                        duration_ms=(finished_at - started_at) * 1000,
-                        status=status,
-                        error=error,
-                    )
-                )
                 self._queue.task_done()
+
+    async def _execute_job(self, job: _LaneJob) -> None:
+        started_at = time.monotonic()
+        status: Literal["succeeded", "failed"] = "succeeded"
+        error = ""
+        token = _current_scheduler.set(self)
+        try:
+            result = await job.run()
+        except Exception as exc:
+            status = "failed"
+            error = str(exc)
+            if not job.future.cancelled():
+                job.future.set_exception(exc)
+        else:
+            if not job.future.cancelled():
+                job.future.set_result(result)
+        finally:
+            _current_scheduler.reset(token)
+            finished_at = time.monotonic()
+            self.history.append(
+                LaneRunRecord(
+                    job_id=job.job_id,
+                    lane=job.lane,
+                    priority=job.priority,
+                    wait_ms=(started_at - job.submitted_at) * 1000,
+                    duration_ms=(finished_at - started_at) * 1000,
+                    status=status,
+                    error=error,
+                )
+            )

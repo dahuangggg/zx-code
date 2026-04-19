@@ -22,15 +22,28 @@ from agent.loop import run_task
 from agent.memory import MemoryStore
 from agent.permissions import PermissionCheck, PermissionManager
 from agent.prompt import SystemPromptBuilder
+from agent.profiles import FallbackModelClient
 from agent.providers.litellm_client import LiteLLMModelClient
 from agent.recovery import AgentError
 from agent.sessions import SessionStore, safe_session_id
+from agent.subagent import SubagentRunner
 from agent.todo import TodoManager
 from agent.tools import build_default_registry
 
 import typer
 
 console = Console()
+
+
+def _build_model_client(settings: AgentSettings) -> Any:
+    profiles = settings.resolved_model_profiles()
+    if len(profiles) > 1:
+        return FallbackModelClient(profiles)
+    profile = profiles[0]
+    return LiteLLMModelClient(
+        model=profile.model,
+        extra_kwargs=profile.litellm_kwargs(),
+    )
 
 
 def _configure_readline() -> None:
@@ -75,7 +88,13 @@ def _approval_prompt(check: PermissionCheck) -> bool:
     return answer in {"y", "yes"}
 
 
-def _build_runtime(settings: AgentSettings, *, session_id: str | None = None) -> dict[str, Any]:
+def _build_runtime(
+    settings: AgentSettings,
+    *,
+    session_id: str | None = None,
+    lane_scheduler: LaneScheduler | None = None,
+    subagent_depth: int = 0,
+) -> dict[str, Any]:
     effective_settings = (
         settings.model_copy(update={"session_id": session_id})
         if session_id is not None
@@ -119,11 +138,39 @@ def _build_runtime(settings: AgentSettings, *, session_id: str | None = None) ->
         tool_policies=effective_settings.permission_tools,
         default_decision=effective_settings.permission_default,
     )
+    subagent_runner: SubagentRunner | None = None
+    if (
+        effective_settings.enable_subagents
+        and subagent_depth < effective_settings.subagent_max_depth
+    ):
+
+        async def run_subagent_text(
+            task: str,
+            child_session_id: str,
+            next_depth: int,
+        ) -> str:
+            return await _run_agent_text(
+                task,
+                settings=effective_settings.model_copy(update={"stream": False}),
+                session_id=child_session_id,
+                lane_scheduler=lane_scheduler,
+                subagent_depth=next_depth,
+            )
+
+        subagent_runner = SubagentRunner(
+            run_agent_text=run_subagent_text,
+            parent_session_id=effective_settings.session_id,
+            lane_scheduler=lane_scheduler,
+            max_depth=effective_settings.subagent_max_depth,
+            current_depth=subagent_depth,
+        )
+
     registry = build_default_registry(
         permission_manager=permission_manager,
         approval_callback=_approval_prompt,
         todo_manager=todo_manager,
         memory_store=memory_store,
+        subagent_runner=subagent_runner,
     )
     # Resolve hooks file: explicit setting > project default
     hooks_path: Path | None = None
@@ -145,7 +192,7 @@ def _build_runtime(settings: AgentSettings, *, session_id: str | None = None) ->
             compact_model=effective_settings.compact_model,
             model=effective_settings.model,
         ),
-        "model_client": LiteLLMModelClient(model=effective_settings.model),
+        "model_client": _build_model_client(effective_settings),
         "prompt_builder": prompt_builder,
         "session_store": SessionStore(data_dir / "sessions"),
         "tool_registry": registry,
@@ -157,8 +204,15 @@ async def _run_agent_text(
     *,
     settings: AgentSettings,
     session_id: str | None = None,
+    lane_scheduler: LaneScheduler | None = None,
+    subagent_depth: int = 0,
 ) -> str:
-    runtime = _build_runtime(settings, session_id=session_id)
+    runtime = _build_runtime(
+        settings,
+        session_id=session_id,
+        lane_scheduler=lane_scheduler,
+        subagent_depth=subagent_depth,
+    )
 
     try:
         result = await run_task(
@@ -277,6 +331,7 @@ def _build_gateway(
                 inbound.text,
                 settings=settings.model_copy(update={"agent_id": agent_id}),
                 session_id=session_id,
+                lane_scheduler=lane_scheduler,
             )
 
         if lane_scheduler is None:
@@ -313,6 +368,7 @@ def _build_heartbeat_runner(
                 prompt,
                 settings=settings.model_copy(update={"stream": False}),
                 session_id=session_id,
+                lane_scheduler=lane_scheduler,
             )
 
         if lane_scheduler is None:
@@ -362,6 +418,7 @@ def _build_cron_scheduler(
                 prompt,
                 settings=settings.model_copy(update={"stream": False}),
                 session_id=session_id,
+                lane_scheduler=lane_scheduler,
             )
 
         if lane_scheduler is None:
@@ -608,6 +665,7 @@ def _run_cli(
 def _settings_from_cli(
     *,
     model: str | None,
+    fallback_models: str | None,
     max_turns: int | None,
     session_id: str | None,
     data_dir: str | None,
@@ -647,12 +705,15 @@ def _settings_from_cli(
     heartbeat_prompt: str | None,
     heartbeat_sentinel: str | None,
     cron_jobs_path: str | None,
+    subagent_max_depth: int | None,
     no_stream: bool,
     no_memory: bool,
     no_todos: bool,
+    no_subagents: bool,
 ) -> AgentSettings:
     overrides: dict[str, Any] = {
         "model": model,
+        "fallback_models": fallback_models,
         "max_iterations": max_turns,
         "session_id": session_id,
         "data_dir": data_dir,
@@ -690,6 +751,7 @@ def _settings_from_cli(
         "heartbeat_prompt": heartbeat_prompt,
         "heartbeat_sentinel": heartbeat_sentinel,
         "cron_jobs_path": cron_jobs_path,
+        "subagent_max_depth": subagent_max_depth,
     }
     if feishu_is_lark:
         overrides["feishu_is_lark"] = True
@@ -701,6 +763,8 @@ def _settings_from_cli(
         overrides["enable_memory"] = False
     if no_todos:
         overrides["enable_todos"] = False
+    if no_subagents:
+        overrides["enable_subagents"] = False
     return ConfigLoader(project_dir=Path.cwd()).load(overrides)
 
 
@@ -711,6 +775,7 @@ def _build_typer_app() -> Any:
     def cli(
         task: list[str] | None = typer.Argument(None),
         model: str | None = typer.Option(None),
+        fallback_models: str | None = typer.Option(None, "--fallback-models"),
         max_turns: int | None = typer.Option(None, "--max-turns"),
         session_id: str | None = typer.Option(None, "--session-id"),
         data_dir: str | None = typer.Option(None, "--data-dir"),
@@ -759,14 +824,17 @@ def _build_typer_app() -> Any:
         heartbeat_prompt: str | None = typer.Option(None, "--heartbeat-prompt"),
         heartbeat_sentinel: str | None = typer.Option(None, "--heartbeat-sentinel"),
         cron_jobs_path: str | None = typer.Option(None, "--cron-jobs"),
+        subagent_max_depth: int | None = typer.Option(None, "--subagent-max-depth"),
         watch: bool = typer.Option(False, "--watch"),
         no_stream: bool = typer.Option(False, "--no-stream"),
         no_memory: bool = typer.Option(False, "--no-memory"),
         no_todos: bool = typer.Option(False, "--no-todos"),
+        no_subagents: bool = typer.Option(False, "--no-subagents"),
         print_system_prompt: bool = typer.Option(False, "--print-system-prompt"),
     ) -> None:
         settings = _settings_from_cli(
             model=model,
+            fallback_models=fallback_models,
             max_turns=max_turns,
             session_id=session_id,
             data_dir=data_dir,
@@ -806,9 +874,11 @@ def _build_typer_app() -> Any:
             heartbeat_prompt=heartbeat_prompt,
             heartbeat_sentinel=heartbeat_sentinel,
             cron_jobs_path=cron_jobs_path,
+            subagent_max_depth=subagent_max_depth,
             no_stream=no_stream,
             no_memory=no_memory,
             no_todos=no_todos,
+            no_subagents=no_subagents,
         )
         exit_code = _run_cli(
             task=" ".join(task).strip() if task else None,
