@@ -16,16 +16,14 @@
 """
 from __future__ import annotations
 
-import asyncio
-
 from agent.core.context import ContextGuard
+from agent.core.tool_executor import ToolCallExecutor
 from agent.hooks import HookRunner
 from agent.models import (
     RuntimeConfig,
     AgentRunResult,
     AgentState,
     Message,
-    ToolCall,
     ToolResult,
 )
 from agent.prompt import DEFAULT_SYSTEM_PROMPT
@@ -106,8 +104,6 @@ async def run_task(
                 session_id=runtime_config.session_id,
             )
 
-        hooks = hook_runner or HookRunner.empty()
-
         async def append_tool_result(result: ToolResult) -> None:
             state.tool_results.append(result)
             tool_message = result.to_message()
@@ -115,67 +111,13 @@ async def run_task(
             if session_store is not None:
                 session_store.append_message(runtime_config.session_id, tool_message)
 
-        async def run_post_hook(call: ToolCall, result: ToolResult) -> None:
-            await hooks.run("post_tool_use", {
-                "event": "post_tool_use",
-                "tool_name": call.name,
-                "arguments": call.arguments,
-                "result": result.content,
-                "is_error": result.is_error,
-                "session_id": runtime_config.session_id,
-            })
-
-        async def execute_call(call: ToolCall) -> ToolResult:
-            return await tool_registry.execute(
-                call.name,
-                call.arguments,
-                call_id=call.id,
-            )
-
-        async def flush_safe_batch(batch: list[ToolCall]) -> None:
-            if not batch:
-                return
-            results = await asyncio.gather(*(execute_call(call) for call in batch))
-            for call, result in zip(batch, results, strict=True):
-                await append_tool_result(result)
-                await run_post_hook(call, result)
-            batch.clear()
-
-        safe_batch: list[ToolCall] = []
-        for call in turn.tool_calls:
-            pre_payload = {
-                "event": "pre_tool_use",
-                "tool_name": call.name,
-                "arguments": call.arguments,
-                "session_id": runtime_config.session_id,
-            }
-            hook_result = await hooks.run("pre_tool_use", pre_payload)
-            if hook_result.denied:
-                await flush_safe_batch(safe_batch)
-                denied_result = ToolResult(
-                    call_id=call.id,
-                    name=call.name,
-                    content=f"[hook denied]: {hook_result.reason}",
-                    is_error=True,
-                )
-                await append_tool_result(denied_result)
-                continue
-
-            tool = tool_registry.get(call.name)
-            is_safe = (
-                tool is not None
-                and tool.is_concurrency_safe(call.arguments)
-            )
-            if is_safe:
-                safe_batch.append(call)
-                continue
-
-            await flush_safe_batch(safe_batch)
-            result = await execute_call(call)
+        executor = ToolCallExecutor(
+            tool_registry=tool_registry,
+            hook_runner=hook_runner or HookRunner.empty(),
+            session_id=runtime_config.session_id,
+        )
+        for result in await executor.execute_many(turn.tool_calls):
             await append_tool_result(result)
-            await run_post_hook(call, result)
-
-        await flush_safe_batch(safe_batch)
 
     raise MaxIterationsExceededError(
         f"agent hit max iterations: {state.max_iterations}"
