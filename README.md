@@ -2,7 +2,7 @@
 
 基于 `Python + asyncio + litellm + pydantic` 的本地 Coding Agent 实验仓库。
 
-当前已经完成 `docs/ZX-code.md` 中第四阶段，并推进到第五阶段 5E：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime + Delivery Daemon + Subagent + Profile Fallback + ResilienceRunner。
+当前已经完成 `docs/ZX-code.md` 中第五阶段：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime + Delivery Daemon + Subagent + Profile Fallback + ResilienceRunner + MCP + Worktree Isolation + Plugin System。并按 `docs/12-Python实战技术选型.md` 补齐了除 `s15-s17 Agent Teams` 外的 Skill Loading、DAG Task System、通用 Background Task Manager 和若干兼容入口。
 
 第一阶段跑通了下面这个闭环：
 
@@ -34,7 +34,11 @@
 - 上下文裁剪与 compact
 - 分层 system prompt builder
 - `.memory/MEMORY.md` 记忆系统
+- 命名 memory record API，可把结构化记忆保存成 `.memory/<name>.md` 并更新索引
 - 持久 TodoManager
+- `SkillStore` 两层技能加载：prompt 只注入技能索引，`load_skill` 按需加载完整 markdown
+- `TaskStore` 文件持久化 DAG 任务系统，支持 `blocked_by`、依赖解锁和 `task_create / task_complete / task_list`
+- `SystemPromptBuilder` 注入当前日期、模型名、平台信息和真实工具索引
 - `allow / deny / ask` 权限系统，覆盖 bash 危险命令、`write_file` / `edit_file` 敏感路径和工作目录外写入
 - 文件工具 symlink 检测，拒绝跟踪符号链接
 - 持久化原子写入：session 加文件锁，memory / todo 使用 write-to-temp + rename
@@ -60,11 +64,20 @@
 - `LaneScheduler` 支持当前 worker 内嵌套执行，避免主 Agent 同步等待子 Agent 时死锁
 - Cron job 的 `last_fired_at / next_run_at` 会持久化到 `.agent/cron-state.json`
 - `SubagentRunner` 支持独立子会话、递归深度限制和 `subagent` lane 调度
+- `SubagentRunner.spawn_background()` 支持 `asyncio.create_task + Queue` 风格的后台子代理结果通知
 - `subagent_run` 工具允许主 Agent 把聚焦任务交给子 Agent 执行，并返回子会话结果
+- `BackgroundTaskManager` 提供通用后台任务运行和结果队列
 - `ModelProfile` 支持多模型 / 多 key 配置
 - `FallbackModelClient` 在 `rate_limit / auth / billing / timeout` 这类可恢复失败时自动切换备用 profile
 - `classify_error()` 支持 `rate_limit / auth / timeout / overflow / billing / unknown` 失败分类
 - `ResilienceRunner` 统一封装单次模型 turn 的 timeout、rate limit backoff、截断续写和 overflow compact
+- `StdioMCPClient` 基于官方 `mcp` Python SDK 接入 stdio transport
+- `MCPToolRouter` 会把 MCP server 工具发现并注册成 `mcp__server__tool`
+- MCP 工具复用 `ToolRegistry` 和现有 `PermissionManager`
+- `WorktreeManager` 支持按任务创建独立 git worktree 和 branch
+- `worktree_create / worktree_cleanup` 工具允许 Agent 显式管理隔离工作区
+- `PluginManager` 支持从 `plugin.json` 发现命令型插件工具
+- 插件工具注册为 `plugin__plugin__tool`，同样经过统一权限系统
 
 ## 环境要求
 
@@ -689,6 +702,172 @@ ResilienceRunner      -> timeout / backoff / overflow compact / continuation
 Agent loop            -> tool-use loop 与 max iterations
 ```
 
+## MCP、Worktree 和 Plugin
+
+第五阶段最后补齐了三个平台化扩展点。
+
+### MCP
+
+当前实现基于官方 `mcp` Python SDK 的 stdio transport：
+
+```toml
+[agent]
+
+[[agent.mcp_servers]]
+name = "filesystem"
+command = "python"
+args = ["./mcp_servers/filesystem_server.py"]
+env = { TOKEN = "optional" }
+```
+
+运行时会启动 server，建立 `ClientSession`，执行 initialize，然后通过 SDK 完成：
+
+```text
+list_tools -> call_tool
+```
+
+发现到的 MCP 工具会注册成：
+
+```text
+mcp__filesystem__read_file
+```
+
+这些工具不是绕过安全系统直接执行，而是进入同一个 `ToolRegistry`，因此可以继续用 `.zx-code/permissions.toml` 控制：
+
+```toml
+[[rules]]
+tool = "mcp__filesystem__*"
+decision = "ask"
+```
+
+### Worktree Isolation
+
+启用 worktree 工具：
+
+```bash
+uv run agent \
+  --worktree-isolation \
+  --worktree-dir .agent/worktrees \
+  "给这个任务创建隔离工作区并修改代码"
+```
+
+或者在配置中开启：
+
+```toml
+[agent]
+enable_worktree_isolation = true
+worktree_dir = ".agent/worktrees"
+```
+
+启用后会注册两个工具：
+
+```text
+worktree_create
+worktree_cleanup
+```
+
+`worktree_create` 会基于当前 git 仓库创建独立 branch 和 worktree。Agent 后续可以把返回的 `path` 传给 `bash(workdir=...)`，或对该路径下的文件执行读写，从而把并行任务的文件修改隔离出去。
+
+### Plugin System
+
+插件是本地目录中的 `plugin.json`：
+
+```json
+{
+  "name": "demo",
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo input",
+      "command": "python echo.py",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" }
+        },
+        "required": ["text"]
+      }
+    }
+  ]
+}
+```
+
+配置插件目录：
+
+```toml
+[agent]
+plugin_dirs = [".zx-code/plugins"]
+```
+
+发现到的工具会注册成：
+
+```text
+plugin__demo__echo
+```
+
+插件命令会收到 JSON 参数作为 stdin，stdout 作为工具结果返回。插件工具同样经过 `ToolRegistry` 和 `PermissionManager`。
+
+## Skill Loading 和 DAG Task System
+
+这次按 `docs/12-Python实战技术选型.md` 补齐了两块原来缺失的能力。
+
+### Skill Loading
+
+默认技能目录是：
+
+```text
+skills/
+```
+
+如果项目没有 `skills/`，但存在 `workspace/skills/`，运行时会自动使用后者。
+
+`SystemPromptBuilder` 只把技能索引注入 prompt：
+
+```text
+## Skills
+Available skills. Load the full markdown with load_skill when needed:
+- review - Review code for regressions first.
+```
+
+完整技能正文通过工具按需加载：
+
+```text
+load_skill({ "name": "review" })
+```
+
+这样符合“两层加载”：常驻 prompt 只放名字和描述，真正用到时再把 markdown 拉进上下文。
+
+### DAG Task System
+
+Todo 负责“当前会话内的轻量清单”，Task System 负责“跨压缩、跨重启、可表达依赖的任务 DAG”。
+
+默认任务目录是：
+
+```text
+.tasks/
+```
+
+每个任务一个 JSON 文件，字段包括：
+
+```json
+{
+  "id": "task-1234abcd",
+  "title": "run verification",
+  "status": "blocked",
+  "blocked_by": ["task-parent"]
+}
+```
+
+注册给 Agent 的工具：
+
+```text
+task_create
+task_complete
+task_list
+```
+
+当上游任务完成时，`TaskStore.complete()` 会检查所有 blocked task；如果它们的 `blocked_by` 都已完成，就自动解锁为 `pending`。
+
 ## CLI 参数
 
 ```bash
@@ -704,6 +883,8 @@ uv run agent --help
 - `--data-dir`
 - `--context-max-tokens`
 - `--compact-model`
+- `--skills-dir`
+- `--tasks-dir`
 - `--channel`
 - `--account-id`
 - `--agent-id`
@@ -739,11 +920,15 @@ uv run agent --help
 - `--heartbeat-sentinel`
 - `--cron-jobs`
 - `--subagent-max-depth`
+- `--worktree-dir`
 - `--watch`
 - `--no-stream`
 - `--no-memory`
+- `--no-skills`
 - `--no-todos`
+- `--no-tasks`
 - `--no-subagents`
+- `--worktree-isolation`
 - `--print-system-prompt`
 
 ## 运行测试
@@ -768,13 +953,21 @@ uv run pytest -q
 10. `docs/phase-05C-Subagent讲解.md`：理解第五阶段 5C 的子代理运行时
 11. `docs/phase-05D-Profile与Fallback讲解.md`：理解第五阶段 5D 的模型 profile 和 fallback
 12. `docs/phase-05E-ResilienceRunner讲解.md`：理解第五阶段 5E 的模型 turn 恢复器
-13. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
-14. `src/agent/gateway.py`：看路由、会话隔离和统一派发
-15. `src/agent/subagent.py`：看子代理如何隔离会话并限制递归
-16. `src/agent/profiles.py`：看模型 profile 和 fallback client
-17. `src/agent/recovery.py`：看 `ResilienceRunner` 和错误分类
-18. `src/agent/delivery.py`：看可靠投递、锁和后台 daemon
-19. `tests/`：看每个能力如何被验证
+13. `docs/phase-05F-MCP-Worktree-Plugin讲解.md`：理解第五阶段最后的 MCP、worktree 和 plugin
+14. `docs/phase-05G-12技术选型对齐讲解.md`：理解 Skill Loading、DAG Task、BackgroundTaskManager
+15. `src/agent/main.py`：看 CLI 如何组装运行时和 Gateway
+16. `src/agent/gateway.py`：看路由、会话隔离和统一派发
+17. `src/agent/skills.py`：看技能索引和按需加载
+18. `src/agent/tasks.py`：看 DAG 任务持久化和依赖解锁
+19. `src/agent/background.py`：看通用后台任务结果队列
+20. `src/agent/subagent.py`：看子代理如何隔离会话并限制递归
+21. `src/agent/profiles.py`：看模型 profile 和 fallback client
+22. `src/agent/recovery.py`：看 `ResilienceRunner` 和错误分类
+23. `src/agent/mcp/`：看 MCP stdio client 和工具路由
+24. `src/agent/worktree.py`：看 git worktree 隔离
+25. `src/agent/plugins.py`：看插件 manifest 和命令工具
+26. `src/agent/delivery.py`：看可靠投递、锁和后台 daemon
+27. `tests/`：看每个能力如何被验证
 
 ## 文档维护规则
 
@@ -805,9 +998,12 @@ uv run pytest -q
 │   ├── phase-05B-Delivery-Daemon讲解.md
 │   ├── phase-05C-Subagent讲解.md
 │   ├── phase-05D-Profile与Fallback讲解.md
-│   └── phase-05E-ResilienceRunner讲解.md
+│   ├── phase-05E-ResilienceRunner讲解.md
+│   ├── phase-05F-MCP-Worktree-Plugin讲解.md
+│   └── phase-05G-12技术选型对齐讲解.md
 ├── src/
 │   └── agent/
+│       ├── background.py
 │       ├── channels/
 │       │   ├── base.py
 │       │   ├── cli.py
@@ -815,6 +1011,7 @@ uv run pytest -q
 │       │   └── feishu.py
 │       ├── config.py
 │       ├── context.py
+│       ├── compact.py
 │       ├── cron.py
 │       ├── delivery.py
 │       ├── gateway.py
@@ -823,14 +1020,23 @@ uv run pytest -q
 │       ├── main.py
 │       ├── loop.py
 │       ├── memory.py
+│       ├── mcp_client.py
+│       ├── mcp/
+│       │   ├── client.py
+│       │   └── router.py
 │       ├── models.py
 │       ├── permissions.py
+│       ├── planning.py
+│       ├── plugins.py
 │       ├── prompt.py
 │       ├── profiles.py
 │       ├── recovery.py
 │       ├── sessions.py
+│       ├── skills.py
 │       ├── subagent.py
+│       ├── tasks.py
 │       ├── todo.py
+│       ├── worktree.py
 │       ├── providers/
 │       │   ├── base.py
 │       │   └── litellm_client.py
@@ -842,10 +1048,14 @@ uv run pytest -q
 │           ├── edit_file.py
 │           ├── grep.py
 │           ├── memory.py
+│           ├── skill.py
 │           ├── subagent.py
-│           └── todo.py
+│           ├── tasks.py
+│           ├── todo.py
+│           └── worktree.py
 └── tests/
     ├── test_channels.py
+    ├── test_background_tasks.py
     ├── test_config.py
     ├── test_context.py
     ├── test_delivery.py
@@ -853,16 +1063,20 @@ uv run pytest -q
     ├── test_heartbeat_cron.py
     ├── test_lanes.py
     ├── test_loop.py
-    ├── test_main.py
     ├── test_memory_todo_prompt.py
+    ├── test_mcp.py
     ├── test_permissions.py
+    ├── test_plugins.py
     ├── test_profiles.py
     ├── test_provider_mock.py
     ├── test_recovery.py
     ├── test_resilience_runner.py
     ├── test_sessions.py
+    ├── test_skill_loading.py
     ├── test_subagent.py
-    └── test_tools.py
+    ├── test_task_dag.py
+    ├── test_tools.py
+    └── test_worktree.py
 ```
 
 ## 已实现模块说明
@@ -885,6 +1099,7 @@ uv run pytest -q
 - 负责工具注册
 - 负责输出工具 schema
 - 负责执行工具并统一处理参数错误和运行错误
+- MCP、worktree、plugin 工具最终都会进入这里，统一走权限检查
 
 `src/agent/main.py`
 
@@ -895,6 +1110,7 @@ uv run pytest -q
 - 支持 `--watch` 持续监听通道
 - 在 watch loop 中驱动 Delivery、Heartbeat 和 Cron tick
 - 构造 `SubagentRunner`，并控制子 Agent 递归深度
+- 注册 MCP 工具、worktree 工具和 plugin 工具
 
 `src/agent/sessions.py`
 
@@ -911,7 +1127,10 @@ uv run pytest -q
 `src/agent/prompt.py`
 
 - 使用 `SystemPromptBuilder` 分层构建 prompt
-- 支持 memory、todo、runtime 注入
+- 支持 project instructions、skills、memory、tasks、todo、runtime 注入
+- prompt 只注入技能索引，不直接塞入完整技能正文
+- Runtime section 包含当前日期、模型、平台和 Python 版本
+- Tools section 从实际 `ToolRegistry.schemas()` 渲染工具名、描述和参数名
 
 `src/agent/profiles.py`
 
@@ -931,7 +1150,31 @@ uv run pytest -q
 
 - 管理 `.memory/MEMORY.md`
 - 使用 frontmatter + markdown 存储长期记忆
+- 支持 `MemoryRecord` 命名记忆，把单条结构化记忆保存为 `.memory/<name>.md`
+- `MEMORY.md` 可作为索引注入 prompt
 - 写入使用原子替换（write-to-temp + rename），防止中断丢数据
+
+`src/agent/skills.py`
+
+- 定义 `SkillStore`
+- 从 `skills/` 或 `workspace/skills/` 读取 markdown 技能
+- 解析 frontmatter 中的 `description`
+- 给 prompt 渲染轻量技能索引
+- 完整正文通过 `load_skill` 工具按需读取
+
+`src/agent/tasks.py`
+
+- 定义 `TaskStore`
+- 每个任务一个 JSON 文件，默认保存在 `.tasks/`
+- 使用 `blocked_by` 表达 DAG 依赖
+- 上游任务完成后自动解锁下游 pending 任务
+- 可渲染当前 DAG 任务状态给 prompt
+
+`src/agent/background.py`
+
+- 定义 `BackgroundTaskManager`
+- 使用 `asyncio.create_task` 启动后台协程
+- 用 `asyncio.Queue` 返回成功或失败结果
 
 `src/agent/todo.py`
 
@@ -1014,12 +1257,28 @@ uv run pytest -q
 - 定义 `ResilienceRunner`，统一处理单次模型 turn 的超时、截断续写、rate limit backoff 和 overflow compact
 - `run_model_turn_with_recovery()` 保持旧入口兼容，内部委托给 `ResilienceRunner`
 
+`src/agent/mcp/client.py`
+
+- 定义 `MCPServerConfig`
+- 定义 `MCPToolDefinition`
+- 实现 `StdioMCPClient`
+- 基于官方 `mcp` Python SDK 创建 stdio client 和 `ClientSession`
+- 支持通过 SDK `list_tools()` 和 `call_tool()`
+
+`src/agent/mcp/router.py`
+
+- 定义 `MCPToolRouter`
+- 把 MCP server 工具名转成 `mcp__server__tool`
+- 定义 `MCPProxyTool`
+- MCP 工具调用最终进入现有 `ToolRegistry` 和 `PermissionManager`
+
 `src/agent/subagent.py`
 
 - 定义 `SubagentRunner`
 - 为每次子 Agent 调用生成独立 child session id
 - 控制 `subagent_max_depth`，避免无限递归
 - 可选接入 `LaneScheduler`，把子任务记录到 `subagent` lane
+- 提供 `spawn_background()`，用 `asyncio.create_task + Queue` 返回后台子 Agent 结果
 
 `src/agent/tools/subagent.py`
 
@@ -1028,17 +1287,39 @@ uv run pytest -q
 - 调用 `SubagentRunner.run()`
 - 把子会话 id、执行深度和最终文本返回给主 Agent
 
+`src/agent/worktree.py`
+
+- 定义 `WorktreeManager`
+- 使用 `git worktree add -b` 创建独立分支和工作区
+- 使用 `git worktree remove --force` 清理工作区
+- 定义 `WorktreeLease`，记录 task id、branch 和 path
+
+`src/agent/tools/worktree.py`
+
+- 定义 `worktree_create`
+- 定义 `worktree_cleanup`
+- 让 Agent 可以通过工具显式管理隔离工作区
+
+`src/agent/plugins.py`
+
+- 定义 `PluginManifest`
+- 定义 `PluginToolConfig`
+- 定义 `PluginManager`
+- 从插件目录读取 `plugin.json`
+- 把插件命令注册成 `plugin__plugin__tool`
+
 ## 当前限制
 
 当前还没有：
 
 - 飞书加密事件解密
 - 飞书富文本回复
-- MCP / 插件
-- Worktree Isolation
 - Lane 目前是 turn 级协作式调度，不做 LLM mid-turn 抢占
-- Subagent 当前共享同一个工作目录和工具集合，还没有文件隔离
+- Subagent 当前不会自动分配 worktree；需要显式使用 `worktree_create`
 - ResilienceRunner 当前聚焦单次模型 turn，还没有把恢复事件持久化成 TraceEvent
+- MCP 当前只接入 stdio transport，还没有 SSE/HTTP transport
+- Plugin 当前是本地命令型插件，还没有远程 marketplace、签名校验或安装器
+- `s15-s17 Agent Teams` 按当前计划暂未实现
 
 这些都在 `docs/ZX-code.md` 后续阶段里。
 
@@ -1057,14 +1338,17 @@ uv run pytest -q
 - `docs/phase-05C-Subagent讲解.md`
 - `docs/phase-05D-Profile与Fallback讲解.md`
 - `docs/phase-05E-ResilienceRunner讲解.md`
+- `docs/phase-05F-MCP-Worktree-Plugin讲解.md`
+- `docs/phase-05G-12技术选型对齐讲解.md`
 
-当前代码对应 `docs/ZX-code.md` 的第五阶段 5E。
+当前代码对应 `docs/ZX-code.md` 的第五阶段完成态，并补齐 `docs/12-Python实战技术选型.md` 中除 Agent Teams 外的关键实现点。
 
 ## 建议的下一步
 
 比较顺的推进顺序是：
 
-1. 推进 MCP 客户端与工具路由
-2. 推进 worktree isolation
-3. 补飞书加密事件解密
-4. 第六阶段接入 TraceEvent，记录 fallback、resilience、delivery daemon、subagent 和 lane wait time
+1. 进入第六阶段 TraceEvent / TraceWriter / TraceReader
+2. 接入 `agent trace show <run_id>`
+3. 做 Eval Harness 和 case runner
+4. 做 Budget Optimizer，用 trace + eval 数据证明策略有效
+5. 可并行补飞书加密事件解密和 MCP transport 扩展

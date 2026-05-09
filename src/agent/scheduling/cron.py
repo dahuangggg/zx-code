@@ -1,4 +1,20 @@
+"""scheduling.cron — 定时调度器（s14）。
+
+``CronScheduler`` 支持三种调度模式：
+  at      — 在指定时间点执行一次（ISO 字符串、Unix 时间戳、datetime）
+  every   — 每隔 N 秒执行一次
+  cron    — 标准 cron 表达式（分 时 日 月 周），依赖 ``croniter`` 库；
+            库不可用时降级为内置 ``_simple_cron_matches``（仅支持基本语法）
+
+每次 ``tick()`` 遍历所有 job，对到期的 job：
+  1. 运行 agent（``run_agent_turn``）
+  2. 将 agent 回复通过 ``DeliveryQueue`` 投递给目标用户
+
+状态持久化（last_fired_at / next_run_at）到 JSON 文件，跨重启不丢调度记录。
+"""
+
 from __future__ import annotations
+
 
 import json
 import os
@@ -11,7 +27,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.delivery import DeliveryEntry, DeliveryQueue
+from agent.channels.delivery import DeliveryEntry, DeliveryQueue
 
 try:
     from croniter import croniter

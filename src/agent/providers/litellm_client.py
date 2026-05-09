@@ -1,4 +1,22 @@
+"""providers.litellm_client — 基于 litellm 的统一 LLM 客户端。
+
+``LiteLLMModelClient`` 实现 ModelClient Protocol，通过 litellm 支持 100+ 模型。
+litellm 的 model 字符串格式：``<provider>/<model_name>``，例如：
+  - ``openai/gpt-4o-mini``
+  - ``anthropic/claude-sonnet-4-6``
+  - ``ollama/llama3``
+
+流式处理：
+  - stream=True 时，逐 chunk 调用 stream_handler 实现实时输出
+  - 同时收集完整文本和 tool_calls，最终组装为 ModelTurn
+
+工具调用收集：
+  - 跨多个 chunk 累积 tool_calls（litellm 流式返回时分片）
+  - arguments 字段为字符串，最终 JSON 解析
+"""
+
 from __future__ import annotations
+
 
 import json
 from collections.abc import Sequence

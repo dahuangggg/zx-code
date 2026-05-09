@@ -1,4 +1,18 @@
+"""scheduling.heartbeat — 周期性心跳（主动推送）。
+
+``HeartbeatRunner.tick()`` 被 channel loop 按间隔调用：
+  1. 检查间隔是否到期（next_run_at）
+  2. 检查 ActivityTracker 判断用户是否空闲（min_idle_s 控制冷静期）
+  3. 在独立 session_id 下运行 agent，执行 heartbeat prompt
+  4. 若 agent 回复不是 sentinel（默认 "HEARTBEAT_OK"），则推送给用户
+
+典型用途：
+  - 定期检查进行中的任务是否有需要告知用户的进展
+  - 长时间无用户消息时主动发送状态更新
+"""
+
 from __future__ import annotations
+
 
 import time
 from collections.abc import Awaitable, Callable
@@ -6,50 +20,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from agent.channels.base import InboundMessage
-from agent.delivery import DeliveryEntry, DeliveryQueue
+from agent.scheduling.activity import ActivityTracker
+from agent.channels.delivery import DeliveryEntry, DeliveryQueue
 
 
 HeartbeatTurnHandler = Callable[[str, str], Awaitable[str]]
-
-
-class ActivityTracker:
-    def __init__(self) -> None:
-        self._active: set[tuple[str, str, str]] = set()
-        self._last_user_at: dict[tuple[str, str, str], float] = {}
-
-    def mark_inbound(self, inbound: InboundMessage, *, now: float | None = None) -> None:
-        self._last_user_at[self._key(inbound.channel, inbound.account_id, inbound.peer_id)] = (
-            time.time() if now is None else now
-        )
-
-    def mark_agent_start(self, inbound: InboundMessage) -> None:
-        self._active.add(self._key(inbound.channel, inbound.account_id, inbound.peer_id))
-
-    def mark_agent_end(self, inbound: InboundMessage) -> None:
-        self._active.discard(self._key(inbound.channel, inbound.account_id, inbound.peer_id))
-
-    def is_busy(
-        self,
-        *,
-        channel: str,
-        account_id: str,
-        peer_id: str,
-        min_idle_s: float,
-        now: float | None = None,
-    ) -> bool:
-        key = self._key(channel, account_id, peer_id)
-        if key in self._active:
-            return True
-        last_user_at = self._last_user_at.get(key)
-        if last_user_at is None:
-            return False
-        current = time.time() if now is None else now
-        return current - last_user_at < min_idle_s
-
-    def _key(self, channel: str, account_id: str, peer_id: str) -> tuple[str, str, str]:
-        return channel, account_id, peer_id
-
 
 class HeartbeatConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")

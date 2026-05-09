@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
-from agent.lanes import LaneScheduler
-from agent.subagent import SubagentRecursionError, SubagentRunner
+from agent.scheduling.lanes import LaneScheduler
+from agent.agents.subagent import SubagentRecursionError, SubagentRunner
 from agent.tools import build_default_registry
 
 
@@ -63,6 +64,21 @@ async def test_subagent_runner_records_subagent_lane() -> None:
     assert scheduler.history[-1].lane == "subagent"
 
     await scheduler.close()
+
+
+async def test_subagent_runner_can_spawn_background_result_queue() -> None:
+    async def run_agent_text(task: str, session_id: str, depth: int) -> str:
+        return f"{task}:{depth}:{session_id}"
+
+    runner = SubagentRunner(
+        run_agent_text=run_agent_text,
+        parent_session_id="parent",
+    )
+
+    queue = runner.spawn_background("scan docs", label="docs")
+    result = await asyncio.wait_for(queue.get(), timeout=1)
+
+    assert result.final_text.startswith("scan docs:1:parent:subagent:docs:")
 
 
 async def test_subagent_tool_executes_runner() -> None:

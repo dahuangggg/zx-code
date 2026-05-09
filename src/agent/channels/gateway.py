@@ -1,21 +1,29 @@
+"""channels.gateway — 统一消息入口与 Agent 路由。
+
+``Gateway`` 是所有外部消息的处理核心：
+  1. ``receive_once()`` 从指定通道拉取一条消息
+  2. ``ActivityTracker.mark_inbound()`` 记录消息时间
+  3. ``BindingTable.resolve()`` 查找处理该消息的 agent_id
+  4. ``build_session_key()`` 按 DMScope 计算 session_id（会话隔离粒度）
+  5. 调用 ``run_agent_turn()``（闭包，内部调用 ``_run_agent_text()``）
+  6. 将回复通过 ``DeliveryQueue`` 异步投递给用户
+
+``BindingTable`` 支持按 channel/account_id/peer_id 绑定特定 agent，
+未匹配时回退到 default_agent_id。
+
+``build_session_key()`` 实现 DMScope 四种隔离粒度（见 models.DMScope）。
+"""
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.scheduling.activity import ActivityTracker
 from agent.channels.base import ChannelManager, InboundMessage
-from agent.delivery import DeliveryQueue, DeliveryRunner
-from agent.heartbeat import ActivityTracker
-
-
-DMScope = Literal[
-    "per-account-channel-peer",
-    "per-channel-peer",
-    "per-peer",
-    "per-agent",
-]
+from agent.channels.delivery import DeliveryQueue, DeliveryRunner
+from agent.models import DMScope
 
 AgentTurnHandler = Callable[[InboundMessage, str, str], Awaitable[str]]
 

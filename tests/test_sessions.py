@@ -5,9 +5,9 @@ from typing import Any
 
 import pytest
 
-from agent.loop import run_task
-from agent.models import AgentConfig, Message, ModelTurn
-from agent.sessions import SessionStore, safe_session_id
+from agent.core.loop import run_task
+from agent.models import RuntimeConfig, Message, ModelTurn
+from agent.state.sessions import SessionStore, safe_session_id
 from agent.tools import build_default_registry
 
 
@@ -51,7 +51,7 @@ async def test_run_task_rebuilds_previous_session(tmp_path: Path) -> None:
         "first task",
         model_client=first,
         tool_registry=registry,
-        config=AgentConfig(session_id="demo", stream=False),
+        config=RuntimeConfig(session_id="demo", stream=False),
         session_store=store,
     )
 
@@ -60,7 +60,7 @@ async def test_run_task_rebuilds_previous_session(tmp_path: Path) -> None:
         "second task",
         model_client=second,
         tool_registry=registry,
-        config=AgentConfig(session_id="demo", stream=False),
+        config=RuntimeConfig(session_id="demo", stream=False),
         session_store=store,
     )
 

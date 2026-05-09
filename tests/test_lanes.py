@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from agent.lanes import LaneScheduler
+from agent.scheduling.lanes import LaneScheduler
 
 
 async def test_lane_scheduler_runs_high_priority_jobs_first_when_waiting() -> None:

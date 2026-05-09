@@ -1,4 +1,21 @@
+"""scheduling.lanes — 优先级泳道调度器。
+
+``LaneScheduler`` 解决的问题：多个异步调用（主对话、子代理、cron、心跳）
+同时需要调用 LLM 时，应该按优先级有序执行，而不是随机并发。
+
+工作原理：
+  - 每个任务提交到 asyncio.PriorityQueue，按优先级数字排序（数字越小越优先）
+  - 后台单一 worker 协程依序取出任务并 await 执行
+  - 当前任务执行期间新到的高优先级任务会等待，不会抢占
+
+泳道优先级（LANE_PRIORITIES）：
+  main=0 > subagent=10 > cron=20 > heartbeat=30
+
+``ContextVar`` 防止泳道内部任务被再次入队（直接内联执行，避免死锁）。
+"""
+
 from __future__ import annotations
+
 
 import asyncio
 import time

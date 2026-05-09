@@ -1,4 +1,23 @@
+"""permissions — 多层规则引擎权限系统（s07）。
+
+``PermissionManager.decide()`` 按优先级依次评估三层规则：
+
+  1. 每工具策略（``tool_policies`` 配置项，优先级最高）
+  2. 文件规则（``.zx-code/permissions.toml`` 的 [[rules]] 数组，fnmatch 匹配）
+     - 规则类型：deny → allow → ask（deny 最先检查）
+  3. 内置安全模式（兜底，无需配置）
+     - bash：正则匹配危险命令（rm -rf、sudo、dd 等）
+     - write_file/edit_file：符号链接检查、敏感路径检查、工作目录越界检查
+     - memory_append：默认需审批
+
+结果为三态：
+  allow — 直接执行
+  deny  — 返回错误 ToolResult
+  ask   — 调用 ApprovalCallback（CLI 模式下弹出 y/N 提示）
+"""
+
 from __future__ import annotations
+
 
 import fnmatch
 import re

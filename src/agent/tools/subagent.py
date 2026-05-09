@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.subagent import SubagentRunner
+from agent.agents.subagent import SubagentRunner
 from agent.tools.base import Tool
 
 

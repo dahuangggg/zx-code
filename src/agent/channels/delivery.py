@@ -1,3 +1,15 @@
+"""channels.delivery — 带指数退避重试的异步消息投递队列。
+
+解决的问题：agent 生成回复后，外部通道（Telegram/Feishu API）可能临时不可用，
+需要可靠地重试投递，而不阻塞 agent 主循环。
+
+``DeliveryQueue`` — 消息持久化队列（JSON 文件），含重试状态
+``DeliveryRunner`` — 异步投递执行器，``flush_due()`` 处理到期的重试
+``DeliveryDaemon`` — 后台定时调用 flush_due() 的守护任务
+
+重试策略：指数退避（base_delay * 2^n + jitter），上限 max_delay。
+``chunk_message()`` 按通道最大字符限制自动分割长消息。
+"""
 from __future__ import annotations
 
 import asyncio

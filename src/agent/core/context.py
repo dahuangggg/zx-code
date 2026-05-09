@@ -1,3 +1,22 @@
+"""core.context — 上下文窗口管理与历史压缩（s06）。
+
+ContextGuard 在每次 LLM 调用前被调用（``prepare()``），执行两个任务：
+
+1. **截断超大工具结果**
+   单条工具输出超过 ``tool_result_max_chars`` 时截断，附上省略字节数提示。
+   这是轻量级保护，不影响历史结构。
+
+2. **历史压缩（Compact）**
+   总 token 超过 ``max_tokens`` 时触发：
+   - 保留最近 ``keep_recent`` 条消息的原文（近场保留）
+   - 对更早的消息生成摘要（远程压缩），策略优先级：
+       a. LLM 摘要（``compact_model`` 指定的廉价模型，如 gpt-4o-mini）
+       b. 机械摘要兜底（LLM 调用失败时降级）
+   - 摘要作为一条 system 消息插入，替换旧历史
+
+Token 计数使用 ``litellm.token_counter()``（自动选择正确 tokenizer），
+不可用时降级为 ``len(text) // 3 + 1`` 的估算。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -178,21 +197,3 @@ class ContextGuard:
             trimmed.append(message.model_copy(update={"content": content}))
         return trimmed
 
-    def _drop_orphan_tool_messages(self, messages: list[Message]) -> list[Message]:
-        normalized: list[Message] = []
-        tool_context_open = False
-
-        for message in messages:
-            if message.role == "assistant":
-                normalized.append(message)
-                tool_context_open = bool(message.tool_calls)
-                continue
-            if message.role == "tool":
-                if tool_context_open:
-                    normalized.append(message)
-                continue
-
-            normalized.append(message)
-            tool_context_open = False
-
-        return normalized

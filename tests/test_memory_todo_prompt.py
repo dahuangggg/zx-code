@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
-from agent.memory import MemoryStore
-from agent.models import AgentConfig
+from agent.state.memory import MemoryRecord, MemoryStore
+from agent.models import RuntimeConfig
 from agent.prompt import SystemPromptBuilder
-from agent.todo import TodoManager
+from agent.state.todo import TodoManager
 from agent.tools import build_default_registry
 
 
@@ -22,6 +23,23 @@ def test_memory_store_uses_frontmatter_and_renders_prompt(tmp_path: Path) -> Non
     assert text.startswith("---")
     assert "format: agent-memory-v1" in text
     assert "Prefer concise Chinese explanations." in rendered
+
+
+def test_memory_store_can_save_named_markdown_records(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / ".memory" / "MEMORY.md")
+    record = MemoryRecord(
+        name="project-rules",
+        description="Rules for this repository",
+        type="project",
+        content="Keep docs out of git.",
+    )
+
+    path = store.save_record(record)
+    index = store.load_index()
+
+    assert path.name == "project-rules.md"
+    assert "description: Rules for this repository" in path.read_text(encoding="utf-8")
+    assert "[project-rules](project-rules.md)" in index
 
 
 def test_todo_manager_persists_items(tmp_path: Path) -> None:
@@ -46,13 +64,34 @@ def test_system_prompt_builder_includes_memory_and_todos(tmp_path: Path) -> None
         project_root=tmp_path,
         memory_store=memory,
         todo_manager=todos,
-    ).build(AgentConfig(session_id="demo"))
+    ).build(RuntimeConfig(session_id="demo"))
 
     assert "## Memory" in prompt
     assert "must not override source code" in prompt
     assert "Use pathlib for filesystem code." in prompt
     assert item.id in prompt
     assert "## Runtime" in prompt
+
+
+def test_system_prompt_builder_includes_runtime_metadata_and_real_tool_index(
+    tmp_path: Path,
+) -> None:
+    registry = build_default_registry()
+
+    prompt = SystemPromptBuilder(project_root=tmp_path).build(
+        RuntimeConfig(model="openai/test-model", session_id="demo"),
+        tool_schemas=registry.schemas(),
+    )
+
+    assert "Current date:" in prompt
+    assert re.search(r"Current date: \d{4}-\d{2}-\d{2}", prompt)
+    assert "Model: openai/test-model" in prompt
+    assert "Platform:" in prompt
+    assert "Python:" in prompt
+    assert "Available tools:" in prompt
+    assert "- read_file:" in prompt
+    assert "- write_file:" in prompt
+    assert "arguments:" in prompt
 
 
 @pytest.mark.asyncio

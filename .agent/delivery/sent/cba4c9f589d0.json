@@ -1,0 +1,29 @@
+{
+  "account_id": "local",
+  "channel": "cli",
+  "created_at": 1776660828.4648151,
+  "id": "cba4c9f589d0",
+  "last_error": "",
+  "max_attempts": 5,
+  "metadata": {
+    "agent_id": "default",
+    "inbound": {
+      "account_id": "local",
+      "channel": "cli",
+      "guild_id": "",
+      "is_group": false,
+      "media": [],
+      "peer_id": "default",
+      "raw": {},
+      "sender_id": "local-user",
+      "text": "你好"
+    },
+    "session_id": "agent:default:cli:local:direct:default"
+  },
+  "next_retry_at": 0.0,
+  "retry_count": 0,
+  "status": "sent",
+  "text": "你好，大黄哥！有什么我可以帮助你的吗？",
+  "to": "default",
+  "updated_at": 1776660828.4662359
+}

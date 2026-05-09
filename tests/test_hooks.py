@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from agent.hooks import HookResult, HookRunner
-from agent.loop import run_task
-from agent.models import AgentConfig, Message, ModelTurn
+from agent.core.loop import run_task
+from agent.models import RuntimeConfig, Message, ModelTurn
 from agent.tools.registry import ToolRegistry
 
 
@@ -135,7 +135,7 @@ async def test_hook_denial_surfaces_as_error_in_run_task(tmp_path: Path) -> None
         "do something",
         model_client=_DummyClient(),
         tool_registry=registry,
-        config=AgentConfig(model_timeout_s=30),
+        config=RuntimeConfig(model_timeout_s=30),
         hook_runner=runner,
     )
 

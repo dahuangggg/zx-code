@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-import agent.cron as cron_module
+import agent.scheduling.cron as cron_module
 from agent.channels.base import InboundMessage
-from agent.cron import CronJob, CronScheduler
-from agent.delivery import DeliveryQueue
-from agent.heartbeat import ActivityTracker, HeartbeatConfig, HeartbeatRunner
+from agent.scheduling.cron import CronJob, CronScheduler
+from agent.channels.delivery import DeliveryQueue
+from agent.scheduling.heartbeat import ActivityTracker, HeartbeatConfig, HeartbeatRunner
 
 
 async def test_heartbeat_skips_when_user_lane_is_busy(tmp_path) -> None:
@@ -91,6 +91,24 @@ async def test_heartbeat_ignores_sentinel(tmp_path) -> None:
 
     assert await runner.tick(now=100) is None
     assert queue.ready(now=100) == []
+
+
+async def test_heartbeat_tick_uses_current_time_when_now_is_omitted(tmp_path) -> None:
+    queue = DeliveryQueue(tmp_path, jitter_s=0)
+
+    async def run_agent_turn(prompt: str, session_id: str) -> str:
+        return "current time update"
+
+    runner = HeartbeatRunner(
+        config=HeartbeatConfig(enabled=True, channel="telegram", to="peer"),
+        delivery_queue=queue,
+        run_agent_turn=run_agent_turn,
+    )
+
+    entry = await runner.tick()
+
+    assert entry is not None
+    assert entry.text == "current time update"
 
 
 async def test_cron_every_job_enqueues_delivery(tmp_path) -> None:

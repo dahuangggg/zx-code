@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent.recovery import classify_error
+from agent.core.recovery import classify_error
 
 
 def test_classify_error_identifies_recoverable_model_failures() -> None:

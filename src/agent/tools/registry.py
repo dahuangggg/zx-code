@@ -1,4 +1,22 @@
+"""tools.registry — 工具注册表，负责路由、权限检查和错误包装。
+
+``ToolRegistry`` 是工具系统的中心：
+  - 存储所有已注册工具（按名称索引）
+  - ``schemas()`` 返回所有工具的 JSON Schema 列表，传给 LLM
+  - ``execute()`` 执行流程：
+      1. 按名称查找工具（未知工具返回错误 ToolResult）
+      2. 调用 PermissionManager.decide()
+         - allow → 继续
+         - deny  → 直接返回错误
+         - ask   → 调用 ApprovalCallback（用户审批）
+      3. 调用 tool.execute()，捕获 ValidationError 和其他异常
+
+所有工具执行结果（包括错误）均返回 ToolResult，
+不会向调用方（loop.py）抛出工具级别的异常。
+"""
+
 from __future__ import annotations
+
 
 import traceback
 from typing import Any

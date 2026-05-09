@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.memory import MemoryStore
+from agent.state.memory import MemoryStore
 from agent.tools.base import Tool
 
 

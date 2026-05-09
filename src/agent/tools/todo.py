@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from agent.todo import TodoManager, TodoStatus
+from agent.state.todo import TodoManager, TodoStatus
 from agent.tools.base import Tool
 
 

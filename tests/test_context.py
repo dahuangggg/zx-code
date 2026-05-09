@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from agent.context import ContextGuard
+from agent.core.context import ContextGuard
 from agent.models import Message, ToolCall
 
 

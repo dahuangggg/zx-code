@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agent.channels import ChannelManager, CLIChannel, InboundMessage
-from agent.gateway import (
+from agent.channels.gateway import (
     AgentRouteConfig,
     Binding,
     BindingTable,

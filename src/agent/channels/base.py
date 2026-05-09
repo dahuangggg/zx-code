@@ -1,3 +1,15 @@
+"""channels.base — 消息通道抽象基类与核心数据模型。
+
+``InboundMessage`` 是通道无关的消息载体，包含：
+  text       — 消息文本内容
+  channel    — 来源通道名称（"cli" / "telegram" / "feishu"）
+  account_id — 机器人账号标识（同一通道可有多个账号）
+  peer_id    — 发送者 ID（用户/群组唯一标识）
+  guild_id   — 群组 ID（私信为空）
+
+``ChannelManager`` 管理多个通道适配器，按名称路由消息。
+新增通道只需实现 ChannelAdapter 接口并注册到 ChannelManager。
+"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

@@ -59,3 +59,5 @@ class GrepTool(Tool):
             "matches": lines[: arguments.max_results],
         }
 
+    def is_concurrency_safe(self, arguments: dict[str, object] | BaseModel) -> bool:
+        return True

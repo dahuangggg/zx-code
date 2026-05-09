@@ -10,6 +10,241 @@
 4. Devlog 要写清楚本次改了什么、为什么这么改、怎么验证、读者下一步应该看哪里
 5. `docs/` 是本地学习讲解材料，当前由 `.gitignore` 忽略，不加入 git
 
+## 2026-04-20 - Prompt Runtime Metadata 与真实工具索引
+
+### 改动内容
+
+- 更新 `src/agent/prompt.py`
+  - `SystemPromptBuilder.build()` 支持传入 `tool_schemas`
+  - `Tools` section 会从真实工具 schema 渲染工具名、描述和参数名
+  - `Runtime` section 新增当前日期、模型名、平台信息和 Python 版本
+- 更新 `src/agent/runtime/builder.py`
+  - `_build_runtime()` 在工具注册完成后再生成 system prompt
+  - plugin 工具会进入最终 prompt 工具索引
+  - `_attach_mcp_tools()` 发现 MCP 工具后刷新 system prompt，让 MCP 工具也进入索引
+- 更新 `src/agent/runtime/runner.py`
+  - `--print-system-prompt` 直接输出 runtime 已生成的 `config.system_prompt`
+  - 避免打印时重新 build prompt 导致工具索引丢失
+- 更新测试
+  - `tests/test_memory_todo_prompt.py`
+  - `tests/test_runtime.py`
+- 更新 README 和本地阶段讲解文档；`docs/` 继续由 `.gitignore` 忽略，不加入 git
+
+### 为什么这么改
+
+`docs/12-Python实战技术选型.md` 的 prompt 管线要求动态部分包含日期、模型、平台信息，并且 prompt 里要有真实工具索引。之前 `SystemPromptBuilder` 的 `Tools` section 只是通用说明，且 system prompt 在 `ToolRegistry` 构建前生成，导致 plugin/MCP 这类动态工具不会出现在 prompt 中。
+
+这次把 prompt 生成移动到工具注册之后，并允许 `SystemPromptBuilder` 接收 `ToolRegistry.schemas()`。这样 prompt 中展示的工具索引和实际模型可调用的工具 schema 来自同一个数据源，避免文档、prompt 和 registry 三份信息漂移。
+
+### 验证
+
+```bash
+uv run pytest tests/test_memory_todo_prompt.py tests/test_runtime.py -q
+uv run pytest -q
+uv run agent --print-system-prompt --no-memory --no-todos --no-skills --no-tasks
+git check-ignore -v docs/phase-05G-12技术选型对齐讲解.md
+```
+
+验证结果：
+
+- Prompt/runtime 目标测试通过，`14 passed`
+- 完整测试通过，见本次最终回复
+- `--print-system-prompt` 可看到 `Current date`、`Model`、`Platform` 和 `Available tools`
+
+### 读者入口
+
+- Prompt builder：`src/agent/prompt.py`
+- Runtime 接线：`src/agent/runtime/builder.py`
+- Prompt 测试：`tests/test_memory_todo_prompt.py`
+- Runtime 测试：`tests/test_runtime.py`
+
+## 2026-04-20 - Phase 5G: 12 技术选型对齐补强
+
+### 改动内容
+
+- 新增 `src/agent/skills.py`
+  - `SkillStore`
+  - `SkillMetadata`
+  - `SkillDocument`
+  - 支持扫描 `skills/` 或 `workspace/skills/` 的 markdown 技能
+  - prompt 只渲染技能索引，完整正文按需加载
+- 新增 `src/agent/tools/skill.py`
+  - `load_skill` 工具
+  - 支持 `name` 和 `max_chars`
+- 新增 `src/agent/tasks.py`
+  - `TaskStore`
+  - `TaskRecord`
+  - 每个 DAG task 一个 JSON 文件
+  - 支持 `blocked_by`、`ready()` 和完成上游后自动解锁下游
+- 新增 `src/agent/tools/tasks.py`
+  - `task_create`
+  - `task_complete`
+  - `task_list`
+- 新增 `src/agent/background.py`
+  - `BackgroundTaskManager`
+  - `BackgroundResult`
+  - 使用 `asyncio.create_task + asyncio.Queue` 返回后台任务结果
+- 更新 `src/agent/prompt.py`
+  - 新增 `Project Instructions` section，读取项目根目录 `CLAUDE.md`
+  - 新增 `Skills` section
+  - 新增 `Tasks` section
+- 更新 `src/agent/runtime/builder.py`
+  - 创建并注入 `SkillStore`
+  - 创建并注入 `TaskStore`
+  - 注册 `load_skill` 和 `task_*` 工具
+- 更新 `src/agent/main.py` / `src/agent/config.py`
+  - 新增 `--skills-dir / --tasks-dir`
+  - 新增 `--no-skills / --no-tasks`
+  - 新增 `enable_skills / skills_dir / enable_tasks / tasks_dir`
+- 更新 `src/agent/memory.py`
+  - 新增 `MemoryRecord`
+  - 新增 `save_record()`，支持 `.memory/<name>.md` 命名记忆文件
+  - 新增 `load_index()`
+- 更新工具系统
+  - `Tool.is_concurrency_safe()` 默认返回 false
+  - `read_file` 支持 12 文档里的 `file_path / offset / limit`
+  - `read_file` 和 `grep` 标记为并发安全
+- 更新 `src/agent/subagent.py`
+  - 新增 `spawn_background()`，返回后台子代理结果队列
+- 更新 `src/agent/heartbeat.py`
+  - 修复 `tick(now=None)` 真实运行路径缺少 `time` import 的问题
+- 新增兼容入口
+  - `src/agent/planning.py`
+  - `src/agent/compact.py`
+  - `src/agent/mcp_client.py`
+- 新增和扩展测试
+  - `tests/test_skill_loading.py`
+  - `tests/test_task_dag.py`
+  - `tests/test_background_tasks.py`
+  - `tests/test_tools.py`
+  - `tests/test_memory_todo_prompt.py`
+  - `tests/test_subagent.py`
+  - `tests/test_heartbeat_cron.py`
+- 更新 README，并新增本地阶段讲解文档；`docs/` 继续由 `.gitignore` 忽略，不加入 git
+
+### 为什么这么改
+
+用户要求以 `docs/12-Python实战技术选型.md` 为规格补实现，而不是把文档改成现状。这次排除 `s15-s17 Agent Teams`，集中补齐文档中已经写明但代码缺口较大的能力。
+
+Skill Loading 采用两层加载：prompt 只放技能索引，避免所有技能全文长期占用上下文；模型需要时再通过 `load_skill` 拉取完整 markdown。
+
+Todo 和 Task System 明确拆开：Todo 是单会话轻量计划，Task System 是跨压缩/重启的 DAG 编排。DAG 用 `blocked_by` 表达依赖，不引入数据库，保持 JSON 文件可读、可调试。
+
+BackgroundTaskManager 是对 12 文档里 `asyncio.create_task + Queue` 模式的通用实现。现有 DeliveryDaemon、Heartbeat、Cron 继续保留各自的业务循环；通用后台任务管理器用于后续长任务和后台子代理复用。
+
+新增 `planning.py / compact.py / mcp_client.py` 只是兼容入口，不改变内部结构。这样读 12 文档时能按模块名跳到代码，同时真实实现仍保持当前更细的分层。
+
+### 验证
+
+```bash
+uv run pytest tests/test_skill_loading.py tests/test_task_dag.py tests/test_background_tasks.py tests/test_tools.py tests/test_memory_todo_prompt.py tests/test_config.py -q
+uv run pytest tests/test_subagent.py -q
+uv run pytest tests/test_heartbeat_cron.py -q
+uv run pytest -q
+uv run agent --help
+git check-ignore -v docs/phase-05G-12技术选型对齐讲解.md docs/12-Python实战技术选型.md
+```
+
+验证结果：
+
+- 目标测试通过，`20 passed`
+- Subagent 目标测试通过，`5 passed`
+- Heartbeat/Cron 目标测试通过，`11 passed`
+- 完整测试通过，`110 passed`
+- CLI help 正常显示 `--skills-dir / --tasks-dir / --no-skills / --no-tasks`
+- `git check-ignore` 确认 `docs/` 仍由 `.gitignore` 忽略，不加入 git
+
+### 读者入口
+
+- 总览入口：`README.md`
+- 本阶段讲解：`docs/phase-05G-12技术选型对齐讲解.md`
+- Skill Loading：`src/agent/skills.py`、`src/agent/tools/skill.py`
+- DAG Task System：`src/agent/tasks.py`、`src/agent/tools/tasks.py`
+- Background Tasks：`src/agent/background.py`
+- Prompt 接线：`src/agent/prompt.py`
+- 运行时接线：`src/agent/runtime/builder.py`
+- 测试：`tests/test_skill_loading.py`、`tests/test_task_dag.py`、`tests/test_background_tasks.py`
+
+## 2026-04-19 - Phase 5F: MCP、Worktree 与 Plugin System
+
+### 改动内容
+
+- 新增 `src/agent/mcp/`
+  - `MCPServerConfig`
+  - `MCPToolDefinition`
+  - `StdioMCPClient`
+  - `MCPToolRouter`
+  - `MCPProxyTool`
+  - 支持 `initialize / tools/list / tools/call`
+- 更新 `src/agent/config.py`
+  - 新增 `mcp_servers`
+  - 新增 `plugin_dirs`
+  - 新增 `enable_worktree_isolation`
+  - 新增 `worktree_dir`
+- 更新 `src/agent/main.py`
+  - 运行时发现并注册 MCP 工具
+  - 运行时发现并注册 plugin 工具
+  - `--worktree-isolation` 开启后注册 worktree 工具
+  - 新增 `--worktree-dir`
+- 新增 `src/agent/worktree.py`
+  - `WorktreeManager`
+  - `WorktreeLease`
+  - 基于 `git worktree add -b` 创建隔离工作区
+  - 支持清理 worktree 和可选删除 branch
+- 新增 `src/agent/tools/worktree.py`
+  - `worktree_create`
+  - `worktree_cleanup`
+- 新增 `src/agent/plugins.py`
+  - `PluginManifest`
+  - `PluginToolConfig`
+  - `PluginManager`
+  - `PluginCommandTool`
+- 新增和扩展测试
+  - `tests/test_mcp.py`
+  - `tests/test_worktree.py`
+  - `tests/test_plugins.py`
+  - `tests/test_config.py`
+  - `tests/test_main.py`
+- 更新 README，并新增第五阶段 5F 讲解文档；`docs/` 继续由 `.gitignore` 忽略，只保留本地
+
+### 为什么这么改
+
+第五阶段剩余的硬缺口是 MCP、worktree isolation 和 plugin system。这里选择最小但真实可运行的实现。
+
+MCP 没有引入新依赖，而是先做 stdio JSON-RPC 子集：`initialize`、`tools/list`、`tools/call`。这样不用额外安装 SDK，也能展示 MCP 的核心工具发现与调用路径。发现到的工具被包装成 `mcp__server__tool`，进入同一个 `ToolRegistry`，因此权限系统、hook 和错误处理都能复用。
+
+Worktree 没有直接把 Subagent 强行改成自动隔离，因为那会牵动文件工具的相对路径解析。当前先提供 `WorktreeManager` 和 `worktree_create / worktree_cleanup` 工具。Agent 可以显式创建 worktree，再把返回的 path 传给 `bash(workdir=...)` 或文件工具使用。
+
+Plugin System 先做本地命令型插件：每个插件目录有 `plugin.json`，工具命令从 stdin 接收 JSON 参数，stdout 返回工具结果。插件工具同样进入 `ToolRegistry`，不会绕过权限系统。
+
+### 验证
+
+```bash
+uv run pytest tests/test_mcp.py tests/test_worktree.py tests/test_plugins.py tests/test_config.py tests/test_main.py -q
+uv run pytest -q
+uv run agent --help
+git check-ignore -v docs/phase-05F-MCP-Worktree-Plugin讲解.md docs/README.md
+```
+
+验证结果：
+
+- 目标测试通过，`18 passed`
+- 完整测试通过，`95 passed`
+- CLI help 正常显示 `--worktree-isolation` 和 `--worktree-dir`
+- `git check-ignore` 确认 `docs/` 仍由 `.gitignore` 忽略，不加入 git
+
+### 读者入口
+
+- 总览入口：`README.md`
+- 第五阶段 5F 讲解：`docs/phase-05F-MCP-Worktree-Plugin讲解.md`
+- MCP client：`src/agent/mcp/client.py`
+- MCP router：`src/agent/mcp/router.py`
+- Worktree：`src/agent/worktree.py`
+- Worktree 工具：`src/agent/tools/worktree.py`
+- Plugin：`src/agent/plugins.py`
+- 运行时接线：`src/agent/main.py`
+- 测试：`tests/test_mcp.py`、`tests/test_worktree.py`、`tests/test_plugins.py`
+
 ## 2026-04-19 - Phase 5E: ResilienceRunner
 
 ### 改动内容

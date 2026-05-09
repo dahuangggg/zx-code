@@ -49,6 +49,38 @@ async def test_write_then_read_then_edit(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_file_supports_documented_file_path_offset_limit(tmp_path: Path) -> None:
+    registry = build_default_registry()
+    file_path = tmp_path / "note.txt"
+    file_path.write_text("zero\none\ntwo\nthree\n", encoding="utf-8")
+
+    result = await registry.execute(
+        "read_file",
+        {
+            "file_path": str(file_path),
+            "offset": 1,
+            "limit": 2,
+        },
+        call_id="read-docs-shape",
+    )
+    payload = json.loads(result.content)
+
+    assert not result.is_error
+    assert payload["start_line"] == 2
+    assert payload["end_line"] == 3
+    assert "2: one" in payload["content"]
+    assert "3: two" in payload["content"]
+
+
+def test_read_and_grep_tools_are_concurrency_safe() -> None:
+    registry = build_default_registry()
+
+    assert registry.get("read_file").is_concurrency_safe({}) is True
+    assert registry.get("grep").is_concurrency_safe({}) is True
+    assert registry.get("write_file").is_concurrency_safe({}) is False
+
+
+@pytest.mark.asyncio
 async def test_grep_returns_matches(tmp_path: Path) -> None:
     registry = build_default_registry()
     target = tmp_path / "sample.py"
@@ -93,4 +125,3 @@ async def test_validation_errors_are_readable(tmp_path: Path) -> None:
     )
     assert result.is_error
     assert "invalid arguments" in result.content
-

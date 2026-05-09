@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.tools.base import Tool
 
@@ -10,9 +10,24 @@ from agent.tools.base import Tool
 class ReadFileInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    path: str
+    path: str = ""
+    file_path: str = ""
     start_line: int = Field(default=1, ge=1)
     end_line: int | None = Field(default=None, ge=1)
+    offset: int | None = Field(default=None, ge=0)
+    limit: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def normalize_documented_aliases(self) -> "ReadFileInput":
+        if not self.path and self.file_path:
+            self.path = self.file_path
+        if not self.path:
+            raise ValueError("path or file_path is required")
+        if self.offset is not None:
+            self.start_line = self.offset + 1
+        if self.limit is not None:
+            self.end_line = self.start_line + self.limit - 1
+        return self
 
 
 class ReadFileTool(Tool):
@@ -45,3 +60,5 @@ class ReadFileTool(Tool):
             "content": "\n".join(numbered),
         }
 
+    def is_concurrency_safe(self, arguments: dict[str, object] | BaseModel) -> bool:
+        return True

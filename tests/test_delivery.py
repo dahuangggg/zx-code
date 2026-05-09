@@ -4,8 +4,8 @@ import asyncio
 from typing import Any
 
 from agent.channels.base import Channel, ChannelManager, InboundMessage
-from agent.delivery import DeliveryDaemon, DeliveryQueue, DeliveryRunner, chunk_message
-from agent.gateway import AgentRouteConfig, BindingTable, Gateway
+from agent.channels.delivery import DeliveryDaemon, DeliveryQueue, DeliveryRunner, chunk_message
+from agent.channels.gateway import AgentRouteConfig, BindingTable, Gateway
 
 
 class FakeChannel(Channel):

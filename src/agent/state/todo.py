@@ -1,4 +1,17 @@
+"""state.todo — 会话内 Todo 列表（s03）。
+
+``TodoManager`` 管理当前会话的 todo 清单，提供增删改查和状态流转。
+数据持久化为单个 JSON 文件（每个 session 一个），跨上下文压缩存活。
+
+与 tasks.py 的区别：
+  - todo  — 轻量、会话级、线性列表，适合当前任务的分解步骤
+  - tasks — 重量、跨会话、DAG 结构，适合多步骤项目的任务编排
+
+``render_for_prompt()`` 输出注入 system prompt 的底部（动态频繁更新）。
+"""
+
 from __future__ import annotations
+
 
 import json
 import os

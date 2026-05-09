@@ -1,4 +1,20 @@
+"""profiles — 多模型 Fallback 客户端（供应商无关架构）。
+
+``FallbackModelClient`` 管理一组 ``ModelProfile``，按序尝试：
+  - 若当前 profile 成功，直接返回结果
+  - 若失败，根据错误类型（rate_limit / auth / billing / timeout）
+    将该 profile 放入冷却队列一段时间，然后尝试下一个 profile
+  - 所有 profile 都在冷却中时，抛出 ``AllProfilesExhaustedError``
+
+``ProfileManager`` 维护冷却时间表（monotonic clock），
+``available_profiles()`` 过滤出当前可用的 profiles。
+
+典型配置：primary=claude-opus-4-6，fallback=gpt-4o-mini，
+限流时自动切换，对上层调用方透明。
+"""
+
 from __future__ import annotations
+
 
 import os
 import time
@@ -10,7 +26,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.models import Message, ModelTurn
 from agent.providers.base import ModelClient, StreamHandler
 from agent.providers.litellm_client import LiteLLMModelClient
-from agent.recovery import AgentError, classify_error
+from agent.errors import AgentError
+from agent.core.recovery import classify_error
 
 
 class AllProfilesExhaustedError(AgentError):

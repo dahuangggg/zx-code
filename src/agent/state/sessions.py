@@ -1,4 +1,19 @@
+"""state.sessions — 消息历史持久化，支持跨重启恢复。
+
+``SessionStore`` 将每个 session_id 的消息历史存为 JSONL 文件
+（每行一条 Message 的 JSON 序列化）。
+
+用途：
+  - agent 重启后可从上次中断的位置继续（``rebuild_messages()``）
+  - 子代理使用独立 session_id，其历史与父代理完全隔离
+  - 心跳、cron 各自有固定格式的 session_id，历史独立追踪
+
+``safe_session_id()`` 将 session_id 中的非文件名字符替换为下划线，
+确保文件路径合法。
+"""
+
 from __future__ import annotations
+
 
 import fcntl
 import json
@@ -19,6 +34,8 @@ def safe_session_id(session_id: str) -> str:
 
 
 class SessionRecord(BaseModel):
+    """JSONL 文件中的单条记录。type 区分记录种类（如 "message"），payload 存具体数据。"""
+
     model_config = ConfigDict(extra="forbid")
 
     type: str
@@ -29,6 +46,11 @@ class SessionRecord(BaseModel):
 
 
 class SessionStore:
+    """将 session 历史持久化到 JSONL 文件，每个 session_id 对应独立文件。
+
+    写入时持文件级排他锁，防止并发追加乱序。
+    """
+
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root).expanduser()
 
