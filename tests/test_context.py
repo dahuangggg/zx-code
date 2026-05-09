@@ -51,6 +51,22 @@ def test_context_guard_safe_split_skips_orphan_tool_messages() -> None:
     assert prepared[-1].content == "recent"
 
 
+def test_context_guard_does_not_keep_orphan_tool_inside_recent_window() -> None:
+    guard = ContextGuard(max_tokens=25, keep_recent=3)
+    messages = [
+        Message.user("old " + "x" * 100),
+        Message.user("recent question"),
+        Message.tool("call-1", "read_file", "orphaned result"),
+        Message.assistant("recent answer"),
+    ]
+
+    prepared = _run(guard.prepare(messages))
+
+    assert [message.role for message in prepared] == ["system", "user", "assistant"]
+    assert prepared[-2].content == "recent question"
+    assert prepared[-1].content == "recent answer"
+
+
 def test_context_guard_keeps_tool_message_with_recent_assistant_call() -> None:
     guard = ContextGuard(max_tokens=20, keep_recent=2)
     messages = [

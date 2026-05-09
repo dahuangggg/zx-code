@@ -67,6 +67,37 @@ def _format_for_summary(messages: list[Message], *, max_chars_per_entry: int = 3
     return "\n".join(lines)
 
 
+def _message_groups(messages: list[Message]) -> list[tuple[list[Message], bool]]:
+    """Group messages along tool-call protocol boundaries.
+
+    The boolean marks whether the group is safe to keep verbatim in the recent
+    window. Orphan tool messages and incomplete assistant tool-call groups are
+    summarized instead of sent back to the model as invalid protocol messages.
+    """
+    groups: list[tuple[list[Message], bool]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        if message.role == "assistant" and message.tool_calls:
+            expected_ids = {call.id for call in message.tool_calls}
+            seen_ids: set[str] = set()
+            group = [message]
+            index += 1
+            while index < len(messages) and messages[index].role == "tool":
+                tool_message = messages[index]
+                if tool_message.tool_call_id not in expected_ids:
+                    break
+                seen_ids.add(tool_message.tool_call_id or "")
+                group.append(tool_message)
+                index += 1
+            groups.append((group, seen_ids == expected_ids))
+            continue
+
+        groups.append(([message], message.role != "tool"))
+        index += 1
+    return groups
+
+
 SUMMARY_PROMPT = (
     "Compress the following conversation into a concise summary. "
     "Preserve: file paths, key decisions, errors encountered, pending tasks, "
@@ -113,21 +144,39 @@ class ContextGuard:
         if len(messages) <= self.keep_recent:
             return self._trim_recent(messages)
 
-        split = self._safe_split_index(messages, len(messages) - self.keep_recent)
-        older = messages[:split]
-        recent = messages[split:]
+        older, recent = self._split_for_compaction(messages)
         summary = await self._summarize(older)
         compacted = [Message.system(summary), *recent]
         return self._trim_recent(compacted)
 
-    def _safe_split_index(self, messages: list[Message], target: int) -> int:
-        """Find a split point that doesn't orphan tool messages from their assistant."""
-        split = max(0, min(target, len(messages)))
-        while split < len(messages) and messages[split].role == "tool":
-            split += 1
-        if split >= len(messages):
-            split = target
-        return split
+    def _split_for_compaction(self, messages: list[Message]) -> tuple[list[Message], list[Message]]:
+        groups = _message_groups(messages)
+        split = len(groups)
+        recent_count = 0
+
+        while split > 0 and recent_count < self.keep_recent:
+            split -= 1
+            group, _ = groups[split]
+            recent_count += len(group)
+
+        older = [
+            message
+            for group, _ in groups[:split]
+            for message in group
+        ]
+        older.extend(
+            message
+            for group, safe_to_keep in groups[split:]
+            if not safe_to_keep
+            for message in group
+        )
+        recent = [
+            message
+            for group, safe_to_keep in groups[split:]
+            if safe_to_keep
+            for message in group
+        ]
+        return older, recent
 
     async def _summarize(self, messages: list[Message]) -> str:
         formatted = _format_for_summary(messages)
@@ -196,4 +245,3 @@ class ContextGuard:
             )
             trimmed.append(message.model_copy(update={"content": content}))
         return trimmed
-
