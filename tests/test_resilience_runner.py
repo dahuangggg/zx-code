@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent.models import Message, ModelTurn
-from agent.recovery import ResilienceRunner
+from agent.core.recovery import ResilienceRunner
 
 
 class _ScriptedClient:
@@ -54,7 +54,7 @@ async def test_resilience_runner_continues_after_truncated_answer() -> None:
         tools=[],
     )
 
-    assert turn.text == "complete"
+    assert turn.text == "partialcomplete"
     assert len(client.calls) == 2
     assert client.calls[1][-2] == Message.assistant("partial")
     assert "continue" in client.calls[1][-1].content.lower()
