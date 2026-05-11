@@ -19,8 +19,9 @@
 from __future__ import annotations
 
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agent.config import AgentSettings
 from agent.core.context import ContextGuard
@@ -35,6 +36,7 @@ from agent.plugins import PluginManager
 from agent.profiles import FallbackModelClient
 from agent.prompt import SystemPromptBuilder
 from agent.providers.litellm_client import LiteLLMModelClient
+from agent.runtime.markdown_stream import MarkdownStreamRenderer
 from agent.runtime.utils import _approval_prompt, _resolve_project_path, _stream_printer, console
 from agent.state.sessions import SessionStore, safe_session_id
 from agent.state.skills import SkillStore
@@ -43,6 +45,25 @@ from agent.state.tasks import TaskStore
 from agent.state.todo import TodoManager
 from agent.tools import build_default_registry
 from agent.agents.worktree import WorktreeManager
+
+
+@dataclass
+class StreamOutput:
+    handler: Callable[[str], Any] | None = None
+    renderer: MarkdownStreamRenderer | None = None
+
+    def flush(self) -> None:
+        if self.renderer is not None:
+            self.renderer.flush()
+
+
+def _build_stream_output(settings: AgentSettings) -> StreamOutput:
+    if not settings.stream:
+        return StreamOutput()
+    if settings.render_markdown and settings.markdown_streaming:
+        renderer = MarkdownStreamRenderer(console)
+        return StreamOutput(handler=renderer.write, renderer=renderer)
+    return StreamOutput(handler=_stream_printer)
 
 
 def _build_model_client(settings: AgentSettings) -> Any:
@@ -263,6 +284,7 @@ async def _run_agent_text(
         subagent_depth=subagent_depth,
     )
     mcp_router = await _attach_mcp_tools(runtime, runtime["settings"])
+    stream_output = _build_stream_output(settings)
 
     try:
         result = await run_task(
@@ -270,7 +292,7 @@ async def _run_agent_text(
             model_client=runtime["model_client"],
             tool_registry=runtime["tool_registry"],
             config=runtime["config"],
-            stream_handler=_stream_printer if settings.stream else None,
+            stream_handler=stream_output.handler,
             session_store=runtime["session_store"],
             context_guard=runtime["context_guard"],
             prompt_builder=runtime["prompt_builder"],
@@ -279,9 +301,10 @@ async def _run_agent_text(
     except AgentError as exc:
         raise exc
     finally:
+        stream_output.flush()
         if mcp_router is not None:
             await mcp_router.close()
 
-    if settings.stream and result.final_text:
+    if settings.stream and result.final_text and stream_output.renderer is None:
         console.print()
     return result.final_text

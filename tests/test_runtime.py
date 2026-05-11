@@ -7,7 +7,8 @@ import json
 from agent.config import AgentSettings
 from agent.mcp import MCPServerConfig
 from agent.profiles import FallbackModelClient, ModelProfile
-from agent.runtime.builder import _attach_mcp_tools, _build_runtime
+from agent.runtime.builder import _attach_mcp_tools, _build_runtime, _build_stream_output
+from agent.runtime.markdown_stream import MarkdownStreamRenderer
 from agent.runtime.utils import _configure_readline
 
 
@@ -80,6 +81,45 @@ def test_build_runtime_uses_fallback_client_for_multiple_profiles(monkeypatch, t
     )
 
     assert isinstance(runtime["model_client"], FallbackModelClient)
+
+
+def test_build_stream_output_uses_markdown_renderer_for_streaming_markdown() -> None:
+    output = _build_stream_output(
+        AgentSettings(
+            stream=True,
+            render_markdown=True,
+            markdown_streaming=True,
+        )
+    )
+
+    assert isinstance(output.renderer, MarkdownStreamRenderer)
+    assert output.handler == output.renderer.write
+
+
+def test_build_stream_output_falls_back_to_raw_stream_printer() -> None:
+    output = _build_stream_output(
+        AgentSettings(
+            stream=True,
+            render_markdown=False,
+            markdown_streaming=True,
+        )
+    )
+
+    assert output.renderer is None
+    assert output.handler is not None
+
+
+def test_build_stream_output_disabled_when_stream_is_false() -> None:
+    output = _build_stream_output(
+        AgentSettings(
+            stream=False,
+            render_markdown=True,
+            markdown_streaming=True,
+        )
+    )
+
+    assert output.renderer is None
+    assert output.handler is None
 
 
 def test_build_runtime_registers_plugin_tools(monkeypatch, tmp_path) -> None:

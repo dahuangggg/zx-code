@@ -49,6 +49,8 @@ class AgentSettings(BaseModel):
     max_iterations: int = 8
     model_timeout_s: float = 60.0
     stream: bool = True
+    render_markdown: bool = True
+    markdown_streaming: bool = True
     session_id: str = "default"
     data_dir: str = ".agent"
     context_max_tokens: int = 12000
