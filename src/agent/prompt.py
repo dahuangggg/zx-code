@@ -134,6 +134,12 @@ class SystemPromptBuilder:
                 "Use tools for repository inspection and file edits. "
                 "Prefer narrow reads, validate before writing, and report tool failures clearly."
             )
+        guidance += (
+            "\nWhen a task requires understanding an unfamiliar codebase, architecture "
+            "boundaries, ownership, or natural-language code locations, prefer code_search "
+            "before broad grep/read_file exploration. Use read_file after code_search when "
+            "you need exact surrounding lines or when preparing edits."
+        )
         index = self._tool_index(tool_schemas)
         return "\n\n".join(part for part in (guidance, index) if part.strip())
 

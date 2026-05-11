@@ -9,7 +9,7 @@
   通道选择    — --channel, --watch
   功能开关    — --no-memory, --no-todos, --no-tasks, --no-skills, --no-subagents
   外部通道    — --telegram-token, --feishu-*, --heartbeat-*, --cron-*
-  调试        — --system-prompt（打印 system prompt 后退出）
+  调试        — --print-system-prompt / --debug-log
   任务输入    — 最后的可选位置参数
 
 运行入口：``agent`` CLI 命令（pyproject.toml scripts 定义）。
@@ -79,6 +79,8 @@ def _settings_from_cli(
     no_tasks: bool,
     no_subagents: bool,
     worktree_isolation: bool,
+    debug_log: bool,
+    debug_log_path: str | None,
 ) -> AgentSettings:
     overrides: dict[str, Any] = {
         "model": model,
@@ -124,6 +126,7 @@ def _settings_from_cli(
         "cron_jobs_path": cron_jobs_path,
         "subagent_max_depth": subagent_max_depth,
         "worktree_dir": worktree_dir,
+        "debug_log_path": debug_log_path,
     }
     if feishu_is_lark:
         overrides["feishu_is_lark"] = True
@@ -143,6 +146,8 @@ def _settings_from_cli(
         overrides["enable_subagents"] = False
     if worktree_isolation:
         overrides["enable_worktree_isolation"] = True
+    if debug_log:
+        overrides["debug_log_enabled"] = True
     return ConfigLoader(project_dir=Path.cwd()).load(overrides)
 
 
@@ -214,6 +219,8 @@ def _build_typer_app() -> Any:
         no_tasks: bool = typer.Option(False, "--no-tasks"),
         no_subagents: bool = typer.Option(False, "--no-subagents"),
         worktree_isolation: bool = typer.Option(False, "--worktree-isolation"),
+        debug_log: bool = typer.Option(False, "--debug-log"),
+        debug_log_path: str | None = typer.Option(None, "--debug-log-path"),
         print_system_prompt: bool = typer.Option(False, "--print-system-prompt"),
     ) -> None:
         settings = _settings_from_cli(
@@ -269,6 +276,8 @@ def _build_typer_app() -> Any:
             no_tasks=no_tasks,
             no_subagents=no_subagents,
             worktree_isolation=worktree_isolation,
+            debug_log=debug_log,
+            debug_log_path=debug_log_path,
         )
         exit_code = _run_cli(
             task=" ".join(task).strip() if task else None,

@@ -33,6 +33,10 @@ feishu_webhook_port = 8787
 plugin_dirs = [".zx-code/plugins"]
 enable_worktree_isolation = true
 worktree_dir = ".agent/worktrees"
+debug_log_enabled = true
+debug_log_path = ".agent/trace.jsonl"
+render_markdown = true
+markdown_streaming = true
 
 [[agent.mcp_servers]]
 name = "fake"
@@ -63,6 +67,10 @@ bash = "deny"
     assert settings.plugin_dirs == [".zx-code/plugins"]
     assert settings.enable_worktree_isolation is True
     assert settings.worktree_dir == ".agent/worktrees"
+    assert settings.debug_log_enabled is True
+    assert settings.debug_log_path == ".agent/trace.jsonl"
+    assert settings.render_markdown is True
+    assert settings.markdown_streaming is True
     assert settings.permission_tools == {"bash": "deny"}
     assert settings.mcp_servers[0].name == "fake"
     assert settings.mcp_servers[0].command == "python"

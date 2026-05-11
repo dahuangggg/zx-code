@@ -23,6 +23,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from agent.debuglog import DebugLog
 from agent.models import ToolResult
 from agent.permissions import ApprovalCallback, PermissionManager, maybe_await_bool
 from agent.tools.base import Tool
@@ -34,10 +35,12 @@ class ToolRegistry:
         *,
         permission_manager: PermissionManager | None = None,
         approval_callback: ApprovalCallback | None = None,
+        debug_log: DebugLog | None = None,
     ) -> None:
         self._tools: dict[str, Tool] = {}
         self.permission_manager = permission_manager
         self.approval_callback = approval_callback
+        self.debug_log = debug_log
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -59,6 +62,7 @@ class ToolRegistry:
     ) -> ToolResult:
         tool = self._tools.get(name)
         if tool is None:
+            self._debug("tool.registry.unknown", {"tool_name": name, "call_id": call_id})
             return ToolResult(
                 call_id=call_id,
                 name=name,
@@ -73,6 +77,14 @@ class ToolRegistry:
         try:
             return await tool.execute(arguments, call_id=call_id)
         except ValidationError as exc:
+            self._debug(
+                "tool.registry.validation_error",
+                {
+                    "tool_name": name,
+                    "call_id": call_id,
+                    "errors": exc.errors(include_url=False),
+                },
+            )
             return ToolResult(
                 call_id=call_id,
                 name=name,
@@ -81,6 +93,16 @@ class ToolRegistry:
             )
         except Exception as exc:
             tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
+            self._debug(
+                "tool.registry.exception",
+                {
+                    "tool_name": name,
+                    "call_id": call_id,
+                    "exception_type": type(exc).__name__,
+                    "exception": str(exc),
+                    "traceback": tb,
+                },
+            )
             return ToolResult(
                 call_id=call_id,
                 name=name,
@@ -98,6 +120,16 @@ class ToolRegistry:
             return None
 
         check = self.permission_manager.decide(name, arguments)
+        self._debug(
+            "tool.permission",
+            {
+                "tool_name": name,
+                "call_id": call_id,
+                "arguments": arguments,
+                "decision": check.decision,
+                "reason": check.reason,
+            },
+        )
         if check.decision == "allow":
             return None
         if check.decision == "deny":
@@ -125,3 +157,7 @@ class ToolRegistry:
             content=f"permission rejected: {check.reason}",
             is_error=True,
         )
+
+    def _debug(self, event: str, payload: dict[str, Any]) -> None:
+        if self.debug_log is not None:
+            self.debug_log.event(event, payload)

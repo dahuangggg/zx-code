@@ -1,0 +1,29 @@
+{
+  "account_id": "local",
+  "channel": "cli",
+  "created_at": 1778434726.283984,
+  "id": "d90dab6290bd",
+  "last_error": "",
+  "max_attempts": 5,
+  "metadata": {
+    "agent_id": "default",
+    "inbound": {
+      "account_id": "local",
+      "channel": "cli",
+      "guild_id": "",
+      "is_group": false,
+      "media": [],
+      "peer_id": "default",
+      "raw": {},
+      "sender_id": "local-user",
+      "text": "你现在是什么模型"
+    },
+    "session_id": "agent:default:cli:local:direct:default"
+  },
+  "next_retry_at": 0.0,
+  "retry_count": 0,
+  "status": "sent",
+  "text": "我这次会话里用的模型是 **openai/gpt-5.2**。",
+  "to": "default",
+  "updated_at": 1778434726.286059
+}

@@ -43,8 +43,8 @@ class AgentSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    model: str = "openai/gpt-4o-mini"
-    fallback_models: str = ""
+    model: str = "openai/gpt-5.4-mini"
+    fallback_models: str = "openai/gpt-5.5"
     model_profiles: list[ModelProfile] = Field(default_factory=list)
     max_iterations: int = 8
     model_timeout_s: float = 60.0
@@ -108,6 +108,15 @@ class AgentSettings(BaseModel):
     subagent_max_depth: int = Field(default=1, ge=0)
     enable_worktree_isolation: bool = False
     worktree_dir: str = ".agent/worktrees"
+    code_context_enabled: bool = False
+    code_context_path: str = ".agent/code-context/chroma"
+    code_context_snapshot_dir: str = ".agent/code-context/snapshots"
+    code_context_collection: str = "agent_code_context"
+    code_context_top_k: int = Field(default=5, ge=1, le=20)
+    code_context_max_result_chars: int = Field(default=4000, ge=500)
+    code_context_max_total_chars: int = Field(default=12000, ge=1000)
+    debug_log_enabled: bool = False
+    debug_log_path: str = ".agent/debug.jsonl"
 
     def to_runtime_config(self, *, system_prompt: str = "") -> RuntimeConfig:
         return RuntimeConfig(
@@ -124,6 +133,8 @@ class AgentSettings(BaseModel):
             memory_path=self.memory_path,
             enable_memory=self.enable_memory,
             enable_todos=self.enable_todos,
+            debug_log_enabled=self.debug_log_enabled,
+            debug_log_path=self.debug_log_path,
         )
 
     def resolved_model_profiles(self) -> list[ModelProfile]:

@@ -128,7 +128,7 @@ class RuntimeConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    model: str = "openai/gpt-4o-mini"
+    model: str = "openai/gpt-5.3-codex"
     system_prompt: str = ""
     max_iterations: int = 8
     model_timeout_s: float = 60.0
@@ -141,6 +141,8 @@ class RuntimeConfig(BaseModel):
     memory_path: str = ".memory/MEMORY.md"
     enable_memory: bool = True
     enable_todos: bool = True
+    debug_log_enabled: bool = False
+    debug_log_path: str = ".agent/debug.jsonl"
 
 
 class AgentState(BaseModel):

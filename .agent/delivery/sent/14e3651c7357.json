@@ -1,0 +1,29 @@
+{
+  "account_id": "local",
+  "channel": "cli",
+  "created_at": 1778433513.90485,
+  "id": "14e3651c7357",
+  "last_error": "",
+  "max_attempts": 5,
+  "metadata": {
+    "agent_id": "default",
+    "inbound": {
+      "account_id": "local",
+      "channel": "cli",
+      "guild_id": "",
+      "is_group": false,
+      "media": [],
+      "peer_id": "default",
+      "raw": {},
+      "sender_id": "local-user",
+      "text": "test"
+    },
+    "session_id": "agent:default:cli:local:direct:default"
+  },
+  "next_retry_at": 0.0,
+  "retry_count": 0,
+  "status": "sent",
+  "text": "",
+  "to": "default",
+  "updated_at": 1778433513.906152
+}

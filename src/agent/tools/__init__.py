@@ -1,4 +1,10 @@
 from agent.tools.bash import BashTool
+from agent.tools.code_context import (
+    CodeIndexClearTool,
+    CodeIndexStatusTool,
+    CodeIndexTool,
+    CodeSearchTool,
+)
 from agent.tools.edit import EditFileTool
 from agent.tools.grep import GrepTool
 from agent.tools.memory import MemoryAppendTool
@@ -22,6 +28,8 @@ from agent.agents.subagent import SubagentRunner
 from agent.state.tasks import TaskStore
 from agent.state.todo import TodoManager
 from agent.agents.worktree import WorktreeManager
+from agent.code_context.indexer import CodeContextIndexer
+from agent.debuglog import DebugLog
 
 
 def build_default_registry(
@@ -34,10 +42,13 @@ def build_default_registry(
     task_store: TaskStore | None = None,
     subagent_runner: SubagentRunner | None = None,
     worktree_manager: WorktreeManager | None = None,
+    code_context_indexer: CodeContextIndexer | None = None,
+    debug_log: DebugLog | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry(
         permission_manager=permission_manager,
         approval_callback=approval_callback,
+        debug_log=debug_log,
     )
     registry.register(BashTool())
     registry.register(ReadFileTool())
@@ -62,6 +73,11 @@ def build_default_registry(
     if worktree_manager is not None:
         registry.register(WorktreeCreateTool(worktree_manager))
         registry.register(WorktreeCleanupTool(worktree_manager))
+    if code_context_indexer is not None:
+        registry.register(CodeIndexTool(code_context_indexer))
+        registry.register(CodeSearchTool(code_context_indexer))
+        registry.register(CodeIndexStatusTool(code_context_indexer))
+        registry.register(CodeIndexClearTool(code_context_indexer))
     return registry
 
 

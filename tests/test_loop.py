@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -9,6 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from agent.core.loop import run_task
+from agent.debuglog import DebugLog
 from agent.models import RuntimeConfig, Message, ModelTurn, ToolCall
 from agent.errors import MaxIterationsExceededError
 from agent.state.sessions import SessionStore
@@ -196,3 +198,61 @@ async def test_loop_runs_concurrency_safe_tool_calls_together() -> None:
     assert result.final_text == "done"
     assert [tool_result.content for tool_result in result.tool_results] == ["one", "two"]
     assert all(not tool_result.is_error for tool_result in result.tool_results)
+
+
+@pytest.mark.asyncio
+async def test_debug_log_records_prompt_model_and_tool_events(tmp_path: Path) -> None:
+    target = tmp_path / "answer.txt"
+    log_path = tmp_path / "debug.jsonl"
+    registry = build_default_registry()
+    client = ScriptedModelClient(
+        [
+            ModelTurn(
+                text="writing",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": str(target), "content": "done\n"},
+                    )
+                ],
+            ),
+            ModelTurn(text="done", tool_calls=[]),
+        ]
+    )
+
+    await run_task(
+        "write a file",
+        model_client=client,
+        tool_registry=registry,
+        config=RuntimeConfig(
+            system_prompt="system",
+            max_iterations=4,
+            session_id="debug-session",
+        ),
+        debug_log=DebugLog(log_path, session_id="debug-session"),
+    )
+
+    events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert [event["event"] for event in events] == [
+        "run.system_prompt",
+        "run.user_message",
+        "run.model_input",
+        "run.assistant_message",
+        "tool.call.requested",
+        "tool.hook.pre",
+        "tool.call.result",
+        "tool.hook.post",
+        "run.model_input",
+        "run.assistant_message",
+    ]
+    assert {event["session_id"] for event in events} == {"debug-session"}
+    assert events[0]["payload"]["system_prompt"] == "system"
+    assert events[1]["payload"]["message"]["content"] == "write a file"
+    assert events[4]["payload"]["call"]["name"] == "write_file"
+    tool_result = json.loads(events[6]["payload"]["result"]["content"])
+    assert tool_result["path"] == str(target)

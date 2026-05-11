@@ -224,12 +224,12 @@ class PermissionManager:
                         reason=f"path is outside working directory: {resolved}",
                     )
 
-        if tool_name in {"memory_append"}:
+        if tool_name in {"memory_append", "code_index_clear"}:
             return PermissionCheck(
                 tool_name=tool_name,
                 arguments=arguments,
                 decision="ask",
-                reason="memory changes should be approved",
+                reason=f"{tool_name} changes durable local state and should be approved",
             )
 
         return PermissionCheck(
@@ -238,4 +238,3 @@ class PermissionManager:
             decision=self.default_decision,
             reason=f"default policy: {self.default_decision}",
         )
-

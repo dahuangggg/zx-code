@@ -10,6 +10,166 @@
 4. Devlog 要写清楚本次改了什么、为什么这么改、怎么验证、读者下一步应该看哪里
 5. `docs/` 是本地学习讲解材料，当前由 `.gitignore` 忽略，不加入 git
 
+## 2026-05-11 - Debug Log 全链路调试日志
+
+### 改动内容
+
+- 新增 `src/agent/debuglog.py`
+  - `DebugLog` 以 JSONL 追加写事件
+  - `to_debug_json()` 将 Pydantic、dict、list、SDK 对象转成可 JSON 化结构
+  - 日志写入失败不会中断 Agent 主流程
+- 更新 `src/agent/config.py` 和 `src/agent/models.py`
+  - 新增 `debug_log_enabled`
+  - 新增 `debug_log_path`
+- 更新 `src/agent/main.py`
+  - 新增 CLI 参数 `--debug-log`
+  - 新增 CLI 参数 `--debug-log-path`
+- 更新 `src/agent/runtime/builder.py`
+  - 根据配置创建 `DebugLog`
+  - 注入 model client、tool registry 和 core loop
+- 更新 `src/agent/core/loop.py`
+  - 记录实际 system prompt、用户请求、发给模型的 messages/tool schemas、assistant message
+- 更新 `src/agent/providers/litellm_client.py`
+  - 记录 LiteLLM request
+  - 记录非流式 raw response
+  - 记录流式 raw summary，避免供应商按字符切 chunk 时把日志刷爆
+  - 记录归一化后的 `ModelTurn`
+  - 对 `api_key/token/secret` 类 request 字段做脱敏
+- 更新 `src/agent/core/tool_executor.py` 和 `src/agent/tools/registry.py`
+  - 记录工具调用、pre/post hook、工具结果、权限判断、工具异常
+- 更新 README
+  - 增加调试日志使用方式、配置模板和事件范围说明
+- 更新测试
+  - 配置加载覆盖 debug 字段
+  - loop 调试事件顺序
+  - provider raw response 日志和密钥脱敏
+
+### 为什么这么改
+
+调试 Agent 时，问题通常不在单个函数里，而在“用户请求 → system prompt → model payload → raw model response → tool call → tool result → 下一轮 model input”的链路上。已有 `SessionStore` 只保存会话消息，不保存模型 SDK raw 返回、tool schema、权限决策和 hook 细节，排查 provider/tool-call 兼容问题时信息不够。
+
+这次把日志设计为独立 `DebugLog`，由 runtime composition root 注入到 loop、provider 和 tools 边界。这样业务工具不需要知道调试系统，默认关闭时也不会改变现有执行路径。JSONL 适合长时间运行和增量查看，每行独立事件，后续可以用 `jq` 或脚本分析。
+
+### 验证
+
+```bash
+uv run pytest tests/test_config.py tests/test_loop.py tests/test_provider_mock.py tests/test_runtime.py -q
+uv run pytest -q
+```
+
+本次验证结果：`155 passed, 1 skipped, 9 warnings`。warnings 来自 ChromaDB legacy embedding function config，不是本次调试日志改动引入。
+
+### 读者入口
+
+- 调试日志核心：`src/agent/debuglog.py`
+- 核心循环埋点：`src/agent/core/loop.py`
+- 模型 raw 日志：`src/agent/providers/litellm_client.py`
+- 工具调用日志：`src/agent/core/tool_executor.py`、`src/agent/tools/registry.py`
+- 配置入口：`src/agent/config.py`、`src/agent/main.py`
+
+## 2026-05-10 - Phase 06: CodeContext RAG 上下文层
+
+## 2026-05-11 - CodeContext 后台索引与 Hybrid Search
+
+### 改动内容
+
+- 更新 `src/agent/code_context/indexer.py`
+  - 新增 `start_background_index()`，支持进程内后台索引
+  - 新增 `wait_background_index()`，方便测试和内部等待
+  - 索引状态持久化到 `<codebase_id>.status.json`
+  - `get_status()` 返回 `indexing / indexed / indexfailed / not_found`、`percentage`、`phase`、`current`、`total`
+  - `search_code()` 改为 hybrid 检索：vector candidates + keyword candidates + RRF + line-range dedupe
+- 新增 `src/agent/code_context/ranker.py`
+  - BM25-like 关键词检索
+  - RRF 排名融合
+- 更新 `src/agent/code_context/chroma_store.py`
+  - 新增 `documents_for_codebase()`，用于本地关键词通道
+- 更新 `src/agent/tools/code_context.py`
+  - `code_index` 新增 `background: bool`
+- 更新测试
+  - 后台索引进度和完成状态
+  - `code_index(background=true)` 工具入口
+  - exact identifier 通过关键词通道被提升
+  - 重叠行区间结果去重
+
+### 为什么这么改
+
+同步索引闭环简单，但面试追问生产化时会问长任务如何不阻塞。后台索引和进度状态能展示从 MVP 到更接近 `claude-context` 的演进路径，同时复用现有工具模型，不引入新的服务进程。
+
+纯向量搜索对代码里的精确标识符、配置名、错误码不够稳定。Hybrid search 用 dense/vector 处理语义相似，用 BM25-like keyword channel 处理精确词和符号，再用 RRF 融合两路排名。最后按文件和行区间去重，避免同一段代码重复占用上下文。
+
+### 验证
+
+```bash
+uv run pytest tests/test_code_context_indexer.py tests/test_code_context_tools.py -q
+uv run pytest -q
+```
+
+验证结果见本次最终回复。
+
+### 读者入口
+
+- 后台索引状态：`src/agent/code_context/indexer.py`
+- Hybrid ranker：`src/agent/code_context/ranker.py`
+- Chroma 文档枚举：`src/agent/code_context/chroma_store.py`
+- 工具入口：`src/agent/tools/code_context.py`
+
+### 改动内容
+
+- 新增 `src/agent/code_context/`
+  - `models.py`：CodeChunk、CodeSearchResult、CodeIndexStats、CodeIndexStatus
+  - `file_rules.py`：默认支持扩展名、默认忽略规则、`.gitignore` / `.contextignore` 加载和代码文件遍历
+  - `splitter.py`：Python AST-aware splitter 和通用 line-based splitter
+  - `chroma_store.py`：ChromaDB `PersistentClient` 封装，固定 collection `agent_code_context`
+  - `indexer.py`：同步 index/search/status/clear，文件级 sha256 snapshot 增量索引
+- 新增 `src/agent/tools/code_context.py`
+  - `code_index`
+  - `code_search`
+  - `code_index_status`
+  - `code_index_clear`
+- 更新 `src/agent/config.py`
+  - 增加 `code_context_enabled`、Chroma 路径、collection 名、返回限长等配置
+- 更新 `src/agent/runtime/builder.py`
+  - 当 `code_context_enabled=true` 时创建 `CodeContextIndexer` 并注册工具
+- 更新 `src/agent/prompt.py`
+  - 增加 CodeContext 工具使用策略：陌生代码库、架构边界、自然语言代码定位时优先 `code_search`
+- 更新 `src/agent/permissions.py`
+  - `code_index_clear` 默认走审批，因为它会删除本地持久索引状态
+- 新增测试
+  - `tests/test_code_context_file_rules.py`
+  - `tests/test_code_context_splitter.py`
+  - `tests/test_code_context_indexer.py`
+  - `tests/test_code_context_tools.py`
+- 新增面试文档
+  - `docs/phase-06-CodeContext-RAG讲解.md`
+  - `docs/interview-04-CodeContext-RAG问答.md`
+
+### 为什么这么改
+
+原来的 `ContextGuard` 只解决 conversation context 的压缩问题，无法解决 codebase context 过大的问题。`claude-context` 的核心启发是把代码库作为外部语义上下文，通过索引和搜索按需召回代码片段。
+
+这次没有直接接入 `@zilliz/claude-context-mcp`，而是在 Python Runtime 内实现 CodeContext 子系统。这样面试时可以讲清楚 Agent Context Management 的两层边界：`ContextGuard` 管对话上下文，`CodeContext` 管代码库上下文。ChromaDB 只作为向量存储后端，文件规则、chunking、增量索引、权限和工具语义都由本项目控制。
+
+第一版选择同步索引、文件级 sha256 snapshot、单 Chroma collection + metadata filter，是为了保持闭环简单、测试清晰、面试可解释。后台索引、Merkle DAG、hybrid search、MMR 和 tree-sitter 多语言 AST 都作为后续演进点。
+
+### 验证
+
+```bash
+uv run pytest tests/test_code_context_file_rules.py tests/test_code_context_splitter.py tests/test_code_context_indexer.py tests/test_code_context_tools.py
+uv run pytest -q
+```
+
+验证结果见本次最终回复。
+
+### 读者入口
+
+- CodeContext 核心：`src/agent/code_context/indexer.py`
+- Chroma store：`src/agent/code_context/chroma_store.py`
+- Agent 工具：`src/agent/tools/code_context.py`
+- Runtime 接线：`src/agent/runtime/builder.py`
+- 阶段讲解：`docs/phase-06-CodeContext-RAG讲解.md`
+- 面试问答：`docs/interview-04-CodeContext-RAG问答.md`
+
 ## 2026-04-20 - Prompt Runtime Metadata 与真实工具索引
 
 ### 改动内容

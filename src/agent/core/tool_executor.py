@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import Protocol
 
+from agent.debuglog import DebugLog
 from agent.hooks import HookRunner, HookResult
 from agent.models import ToolCall, ToolResult
 from agent.tools.registry import ToolRegistry
@@ -23,10 +24,12 @@ class ToolCallExecutor:
         tool_registry: ToolRegistry,
         hook_runner: ToolHookRunner | None = None,
         session_id: str,
+        debug_log: DebugLog | None = None,
     ) -> None:
         self.tool_registry = tool_registry
         self.hook_runner = hook_runner or HookRunner.empty()
         self.session_id = session_id
+        self.debug_log = debug_log
 
     async def execute_many(self, calls: list[ToolCall]) -> list[ToolResult]:
         results: list[ToolResult] = []
@@ -45,7 +48,23 @@ class ToolCallExecutor:
                 await self._run_post_hook(call, result)
 
         for call in calls:
+            if self.debug_log is not None:
+                self.debug_log.event(
+                    "tool.call.requested",
+                    {"call": call},
+                    session_id=self.session_id,
+                )
             hook_result = await self._run_pre_hook(call)
+            if self.debug_log is not None:
+                self.debug_log.event(
+                    "tool.hook.pre",
+                    {
+                        "tool_name": call.name,
+                        "denied": hook_result.denied,
+                        "reason": hook_result.reason,
+                    },
+                    session_id=self.session_id,
+                )
             if hook_result.denied:
                 await flush_safe_batch()
                 results.append(
@@ -93,13 +112,30 @@ class ToolCallExecutor:
                 "session_id": self.session_id,
             },
         )
+        if self.debug_log is not None:
+            self.debug_log.event(
+                "tool.hook.post",
+                {
+                    "tool_name": call.name,
+                    "is_error": result.is_error,
+                    "result": result.content,
+                },
+                session_id=self.session_id,
+            )
 
     async def _execute_allowed(self, call: ToolCall) -> ToolResult:
-        return await self.tool_registry.execute(
+        result = await self.tool_registry.execute(
             call.name,
             call.arguments,
             call_id=call.id,
         )
+        if self.debug_log is not None:
+            self.debug_log.event(
+                "tool.call.result",
+                {"call": call, "result": result},
+                session_id=self.session_id,
+            )
+        return result
 
     def _is_concurrency_safe(self, call: ToolCall) -> bool:
         tool = self.tool_registry.get(call.name)

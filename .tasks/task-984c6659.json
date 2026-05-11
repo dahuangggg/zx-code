@@ -1,0 +1,10 @@
+{
+  "blocked_by": [],
+  "created_at": "2026-05-11T14:56:38+00:00",
+  "description": "递归扫描项目根目录下所有文件/目录，生成树状清单，并将结果写入一个 Markdown 文档（例如 docs/project-tree.md）。",
+  "id": "task-984c6659",
+  "result": "- Created task: task-984c6659\n- Generated repository directory tree (excluding .git/.venv/__pycache__/.pytest_cache/.DS_Store)\n- Wrote Markdown output to docs/project-tree.md",
+  "status": "completed",
+  "title": "生成项目目录树并写入MD",
+  "updated_at": "2026-05-11T14:58:00+00:00"
+}

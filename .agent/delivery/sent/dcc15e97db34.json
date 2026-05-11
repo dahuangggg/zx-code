@@ -1,0 +1,29 @@
+{
+  "account_id": "local",
+  "channel": "cli",
+  "created_at": 1778434864.65963,
+  "id": "dcc15e97db34",
+  "last_error": "",
+  "max_attempts": 5,
+  "metadata": {
+    "agent_id": "default",
+    "inbound": {
+      "account_id": "local",
+      "channel": "cli",
+      "guild_id": "",
+      "is_group": false,
+      "media": [],
+      "peer_id": "default",
+      "raw": {},
+      "sender_id": "local-user",
+      "text": "git相关的skill有吗"
+    },
+    "session_id": "agent:default:cli:local:direct:default"
+  },
+  "next_retry_at": 0.0,
+  "retry_count": 0,
+  "status": "sent",
+  "text": "没有名为 `git` 的 skill（我刚用 `load_skill(\"git\")` 试了，返回 `skill not found: git`）。\n\n我现在也没法直接“列出所有 skill 名称”。你可以：\n1) 告诉我你记得的 skill 名称/文件名片段，我来加载验证；或  \n2) 我在仓库里搜一下 skills 目录/清单，找出所有可用的 skill 名称（你确认我可以直接在 `/Users/dahuangggg/Github/agent-deep-dive` 里扫一遍吗？我会用 `bash`/`grep` 做一次快速定位）。",
+  "to": "default",
+  "updated_at": 1778434864.660647
+}
