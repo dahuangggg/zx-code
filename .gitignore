@@ -65,6 +65,7 @@ logs/
 
 # docs
 docs/
+interview/
 
 # Local agent runtime state / project config
 .agent/
