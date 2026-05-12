@@ -65,3 +65,10 @@ logs/
 
 # docs
 docs/
+
+# Local agent runtime state / project config
+.agent/
+.tasks/
+.memory/
+.zx-code/*
+!.zx-code/config.toml.example

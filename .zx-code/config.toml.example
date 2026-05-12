@@ -1,0 +1,88 @@
+[agent]
+# Project-level config is loaded from .zx-code/config.toml.
+# User-level config is loaded from ~/.zx-code/config.toml.
+# CLI options override both.
+
+model = "openai/gpt-5.4-mini"
+fallback_models = "openai/gpt-5.5"
+max_iterations = 30
+model_timeout_s = 300.0
+stream = true
+render_markdown = true
+markdown_streaming = true
+
+session_id = "default"
+data_dir = ".agent"
+
+context_max_tokens = 128000
+context_keep_recent = 15
+context_tool_result_max_chars = 6000
+compact_model = ""
+
+enable_memory = true
+memory_path = ".memory/MEMORY.md"
+
+enable_skills = true
+skills_dir = "skills"
+
+enable_todos = true
+enable_tasks = true
+tasks_dir = ".tasks"
+
+permission_default = "allow"
+permission_rules_path = ""
+hooks_path = ""
+
+plugin_dirs = []
+
+agent_id = "default"
+default_agent_id = "default"
+force_agent_id = ""
+dm_scope = "per-account-channel-peer"
+channel = "cli"
+account_id = "local"
+
+enable_subagents = true
+subagent_max_depth = 1
+enable_worktree_isolation = false
+worktree_dir = ".agent/worktrees"
+
+code_context_enabled = false
+code_context_path = ".agent/code-context/chroma"
+code_context_snapshot_dir = ".agent/code-context/snapshots"
+code_context_collection = "agent_code_context"
+code_context_top_k = 5
+code_context_max_result_chars = 4000
+code_context_max_total_chars = 12000
+
+debug_log_enabled = false
+debug_log_path = ".agent/debug.jsonl"
+
+[agent.permission_tools]
+# bash = "ask"
+# edit = "allow"
+
+[[agent.model_profiles]]
+name = "primary"
+model = "openai/gpt-5.4-mini"
+api_key_env = "OPENAI_API_KEY"
+
+[[agent.model_profiles]]
+name = "backup"
+model = "openai/gpt-5.5"
+api_key_env = "OPENAI_API_KEY"
+
+# For an OpenAI-compatible Chat Completions endpoint, set base_url here.
+# If the endpoint only supports /responses, config alone is not enough.
+# [[agent.model_profiles]]
+# name = "custom"
+# model = "openai/gpt-5.4-mini"
+# api_key_env = "CUSTOM_API_KEY"
+# extra_kwargs = { base_url = "https://example.com/v1" }
+
+# Optional MCP server example.
+# [[agent.mcp_servers]]
+# name = "filesystem"
+# command = "python"
+# args = ["./mcp_servers/filesystem_server.py"]
+# env = { TOKEN = "env-or-placeholder-only" }
