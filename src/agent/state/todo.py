@@ -110,7 +110,7 @@ class TodoManager:
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.rename(tmp_path, self.path)
+            os.replace(tmp_path, self.path)
         except BaseException:
             try:
                 os.unlink(tmp_path)

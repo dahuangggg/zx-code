@@ -166,10 +166,17 @@ class LiteLLMModelClient:
         messages: Sequence[Message],
     ) -> list[dict[str, Any]]:
         payload: list[dict[str, Any]] = []
-        if system_prompt:
-            payload.append({"role": "system", "content": system_prompt})
+
+        # 将消息列表中的 system 消息（来自上下文压缩摘要）合并到系统提示里，
+        # 避免向模型发送多条 system 消息（部分模型不支持）
+        compaction_summaries = [m.content for m in messages if m.role == "system" and m.content]
+        combined_system = "\n\n---\n\n".join(filter(None, [system_prompt, *compaction_summaries]))
+        if combined_system:
+            payload.append({"role": "system", "content": combined_system})
 
         for message in messages:
+            if message.role == "system":
+                continue  # 已合并到 combined_system，跳过
             item: dict[str, Any] = {
                 "role": message.role,
                 "content": message.content,
@@ -256,7 +263,7 @@ class LiteLLMModelClient:
             tool_calls=_normalize_tool_calls(
                 [raw_tool_calls[index] for index in sorted(raw_tool_calls)]
             ),
-            stop_reason="end_turn",
+            stop_reason=finish_reasons[-1] if finish_reasons else "end_turn",
         )
         if self.debug_log is not None:
             self.debug_log.event("model.response.normalized", {"turn": turn})

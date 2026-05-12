@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+import json
 import sys
 from types import SimpleNamespace
-import json
 
+import pytest
+
+from agent.channels import InboundMessage
+from agent.channels.gateway import build_session_key
 from agent.config import AgentSettings
+from agent.models import Message
 from agent.mcp import MCPServerConfig
 from agent.profiles import FallbackModelClient, ModelProfile
-from agent.runtime.builder import _attach_mcp_tools, _build_runtime, _build_stream_output
+from agent.runtime.builder import (
+    CLIProgressReporter,
+    _attach_mcp_tools,
+    _build_runtime,
+    _build_stream_output,
+)
 from agent.runtime.markdown_stream import MarkdownStreamRenderer
+from agent.runtime.runner import _run_once, _run_repl
 from agent.runtime.utils import _configure_readline
+from agent.state.sessions import SessionStore
 
 
 def test_configure_readline_applies_bindings(monkeypatch) -> None:
@@ -53,6 +65,161 @@ def test_build_runtime_registers_subagent_tool_by_default(monkeypatch, tmp_path)
     )
 
     assert runtime["tool_registry"].get("subagent_run") is not None
+
+
+@pytest.mark.asyncio
+async def test_repl_prints_status_banner_and_session_prompt(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    prompts: list[str] = []
+    inputs = iter(["/session", "exit"])
+
+    def fake_input(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(inputs)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    exit_code = await _run_repl(
+        settings=AgentSettings(
+            model="openai/test-model",
+            enable_memory=False,
+            enable_todos=False,
+        ),
+        print_system_prompt=False,
+        resume_session_id="demo",
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "zx-code" in output
+    assert "openai/test-model" in output
+    assert "demo" in output
+    assert "resumed" in output
+    assert "uv run agent --resume demo" in output
+    assert prompts == [
+        f"\033[36mzx-code\033[0m \033[2m[\033[0m\033[32m{tmp_path.name}\033[0m\033[2m]\033[0m \033[36m>\033[0m ",
+        f"\033[36mzx-code\033[0m \033[2m[\033[0m\033[32m{tmp_path.name}\033[0m\033[2m]\033[0m \033[36m>\033[0m ",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repl_help_command_lists_available_commands(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(["/help", "exit"])
+
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    exit_code = await _run_repl(
+        settings=AgentSettings(enable_memory=False, enable_todos=False),
+        print_system_prompt=False,
+        resume_session_id="demo",
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "/help" in output
+    assert "/session" in output
+    assert "/clear" in output
+
+
+@pytest.mark.asyncio
+async def test_repl_resume_prints_recent_session_messages(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(["exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    settings = AgentSettings(enable_memory=False, enable_todos=False)
+    session_key = build_session_key(
+        agent_id=settings.default_agent_id,
+        channel="cli",
+        account_id=settings.account_id,
+        peer_id="demo",
+        dm_scope=settings.dm_scope,
+    )
+    store = SessionStore(tmp_path / settings.data_dir / "sessions")
+    store.append_message(session_key, Message.user("old question"))
+    store.append_message(session_key, Message.assistant("old answer"))
+    store.append_message(session_key, Message.tool("call-1", "bash", "tool output"))
+    store.append_message(session_key, Message.user("recent question"))
+    store.append_message(session_key, Message.assistant("recent answer"))
+
+    exit_code = await _run_repl(
+        settings=settings,
+        print_system_prompt=False,
+        resume_session_id="demo",
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "recent conversation" in output
+    assert "recent question" in output
+    assert "recent answer" in output
+    assert "tool output" not in output
+
+
+@pytest.mark.asyncio
+async def test_run_once_uses_fresh_cli_session_when_not_resuming(monkeypatch) -> None:
+    seen_peer_ids: list[str] = []
+    generated = iter(["cli:one", "cli:two"])
+
+    class FakeGateway:
+        async def handle_inbound(
+            self,
+            inbound: InboundMessage,
+            *,
+            force_agent_id: str | None = None,
+        ) -> None:
+            seen_peer_ids.append(inbound.peer_id)
+
+    class FakeLaneScheduler:
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("agent.runtime.runner._new_cli_session_id", lambda: next(generated))
+    monkeypatch.setattr("agent.runtime.runner.LaneScheduler", FakeLaneScheduler)
+    monkeypatch.setattr("agent.runtime.runner._build_gateway", lambda *args, **kwargs: FakeGateway())
+
+    settings = AgentSettings(session_id="configured", enable_memory=False, enable_todos=False)
+
+    assert await _run_once("first", settings=settings, print_system_prompt=False) == 0
+    assert await _run_once("second", settings=settings, print_system_prompt=False) == 0
+
+    assert seen_peer_ids == ["cli:one", "cli:two"]
+
+
+@pytest.mark.asyncio
+async def test_run_once_uses_resume_session_when_provided(monkeypatch) -> None:
+    seen_peer_ids: list[str] = []
+
+    class FakeGateway:
+        async def handle_inbound(
+            self,
+            inbound: InboundMessage,
+            *,
+            force_agent_id: str | None = None,
+        ) -> None:
+            seen_peer_ids.append(inbound.peer_id)
+
+    class FakeLaneScheduler:
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("agent.runtime.runner.LaneScheduler", FakeLaneScheduler)
+    monkeypatch.setattr("agent.runtime.runner._build_gateway", lambda *args, **kwargs: FakeGateway())
+
+    settings = AgentSettings(session_id="configured", enable_memory=False, enable_todos=False)
+
+    assert (
+        await _run_once(
+            "continued",
+            settings=settings,
+            print_system_prompt=False,
+            resume_session_id="demo",
+        )
+        == 0
+    )
+
+    assert seen_peer_ids == ["demo"]
 
 
 def test_build_runtime_omits_subagent_tool_at_max_depth(monkeypatch, tmp_path) -> None:
@@ -120,6 +287,52 @@ def test_build_stream_output_disabled_when_stream_is_false() -> None:
 
     assert output.renderer is None
     assert output.handler is None
+
+
+def test_cli_progress_reporter_stops_thinking_and_prints_tools() -> None:
+    class FakeStatus:
+        def __init__(self) -> None:
+            self.started = False
+            self.stopped = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    class FakeConsole:
+        def __init__(self) -> None:
+            self.statuses: list[FakeStatus] = []
+            self.prints: list[str] = []
+
+        def status(self, message: str, *, spinner: str) -> FakeStatus:
+            self.prints.append(f"status:{message}:{spinner}")
+            status = FakeStatus()
+            self.statuses.append(status)
+            return status
+
+        def print(self, message: str) -> None:
+            self.prints.append(message)
+
+    fake_console = FakeConsole()
+    flushed: list[bool] = []
+    reporter = CLIProgressReporter(fake_console, flush_output=lambda: flushed.append(True))
+
+    reporter.handle("model.start", {"turn": 1})
+    reporter.handle("model.chunk", {"turn": 1, "chunk": "hello"})
+    reporter.handle(
+        "tool.start",
+        {"tool_name": "bash", "arguments": {"command": "ls -la"}},
+    )
+    reporter.handle("tool.end", {"tool_name": "bash", "is_error": False})
+
+    assert fake_console.statuses[0].started is True
+    assert fake_console.statuses[0].stopped is True
+    assert any("thinking" in item and "dots" in item for item in fake_console.prints)
+    assert any("bash" in item and "ls -la" in item for item in fake_console.prints)
+    assert any("done" in item for item in fake_console.prints)
+    assert flushed == [True]
 
 
 def test_build_runtime_registers_plugin_tools(monkeypatch, tmp_path) -> None:

@@ -60,6 +60,69 @@ class StreamOutput:
             self.renderer.flush()
 
 
+class CLIProgressReporter:
+    def __init__(
+        self,
+        output_console: Any,
+        *,
+        flush_output: Callable[[], Any] | None = None,
+    ) -> None:
+        self.console = output_console
+        self.flush_output = flush_output
+        self._status: Any | None = None
+
+    def handle(self, event: str, payload: dict[str, Any]) -> None:
+        if event == "model.start":
+            self._start_thinking()
+            return
+        if event in {"model.chunk", "model.end"}:
+            self.stop()
+            return
+        if event == "tool.start":
+            self.stop()
+            if self.flush_output is not None:
+                self.flush_output()
+            tool_name = str(payload.get("tool_name") or "tool")
+            arguments = payload.get("arguments")
+            summary = _summarize_tool_arguments(arguments)
+            suffix = f" [dim]{summary}[/dim]" if summary else ""
+            self.console.print(f"[dim]tool[/dim] [cyan]{tool_name}[/cyan]{suffix}")
+            return
+        if event == "tool.end":
+            tool_name = str(payload.get("tool_name") or "tool")
+            is_error = bool(payload.get("is_error"))
+            label = "[red]failed[/red]" if is_error else "[green]done[/green]"
+            self.console.print(f"[dim]tool[/dim] [cyan]{tool_name}[/cyan] {label}")
+
+    def stop(self) -> None:
+        if self._status is None:
+            return
+        self._status.stop()
+        self._status = None
+
+    def _start_thinking(self) -> None:
+        self.stop()
+        self._status = self.console.status("[cyan]thinking[/cyan]", spinner="dots")
+        self._status.start()
+
+
+def _summarize_tool_arguments(arguments: Any) -> str:
+    if not isinstance(arguments, dict) or not arguments:
+        return ""
+    for key in ("command", "path", "file_path", "pattern", "name", "label"):
+        value = arguments.get(key)
+        if value:
+            return _truncate_inline(f"{key}={value}")
+    return _truncate_inline(", ".join(sorted(str(key) for key in arguments)[:3]))
+
+
+def _truncate_inline(text: str, limit: int = 88) -> str:
+    single_line = " ".join(text.split())
+    if len(single_line) <= limit:
+        return single_line
+    return f"{single_line[: limit - 3]}..."
+
+
 def _build_stream_output(settings: AgentSettings) -> StreamOutput:
     if not settings.stream:
         return StreamOutput()
@@ -323,6 +386,11 @@ async def _run_agent_text(
     )
     mcp_router = await _attach_mcp_tools(runtime, runtime["settings"])
     stream_output = _build_stream_output(settings)
+    progress_reporter = (
+        CLIProgressReporter(console, flush_output=stream_output.flush)
+        if settings.stream and settings.channel == "cli"
+        else None
+    )
 
     try:
         result = await run_task(
@@ -336,10 +404,17 @@ async def _run_agent_text(
             prompt_builder=runtime["prompt_builder"],
             hook_runner=runtime["hook_runner"],
             debug_log=runtime.get("debug_log"),
+            progress_handler=(
+                progress_reporter.handle
+                if progress_reporter is not None
+                else None
+            ),
         )
     except AgentError as exc:
         raise exc
     finally:
+        if progress_reporter is not None:
+            progress_reporter.stop()
         stream_output.flush()
         if mcp_router is not None:
             await mcp_router.close()

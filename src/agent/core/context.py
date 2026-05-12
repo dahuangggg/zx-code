@@ -19,9 +19,12 @@ Token 计数使用 ``litellm.token_counter()``（自动选择正确 tokenizer）
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from agent.models import Message
+
+logger = logging.getLogger(__name__)
 
 
 def _count_tokens(text: str, model: str) -> int:
@@ -217,7 +220,7 @@ class ContextGuard:
         return self._mechanical_summary(messages)
 
     async def _llm_summarize(self, formatted: str, *, model: str) -> str:
-        """用廉价模型（如 gpt-4o-mini）生成摘要；任何异常都吞掉返回空串，让上层走降级。"""
+        """用廉价模型（如 gpt-4o-mini）生成摘要；任何异常都记录后返回空串，让上层走降级。"""
         try:
             from litellm import acompletion
 
@@ -231,7 +234,8 @@ class ContextGuard:
             )
             content = response.choices[0].message.content
             return content.strip() if content else ""
-        except Exception:
+        except Exception as exc:
+            logger.warning("LLM summarization failed (model=%s), falling back to mechanical summary: %s", model, exc)
             return ""
 
     def _mechanical_summary(self, messages: list[Message]) -> str:

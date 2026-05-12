@@ -35,7 +35,12 @@ from agent.models import Message, ModelTurn
 from agent.providers.base import ModelClient
 
 class RecoveryBudget:
-    """Track per-category retry attempts to prevent infinite loops."""
+    """Track per-category retry attempts to prevent infinite loops.
+
+    分类说明：
+      - continuation / compaction：单次 LLM 调用内的重试预算，每轮应通过 reset_turn() 重置
+      - backoff：跨轮全局限流预算，不重置（累计反映实际限流压力）
+    """
 
     def __init__(self, max_retries: int = 3) -> None:
         self.max = max_retries
@@ -50,6 +55,11 @@ class RecoveryBudget:
 
     def record(self, category: str) -> None:
         self.attempts[category] = self.attempts.get(category, 0) + 1
+
+    def reset_turn(self) -> None:
+        """每个新 agent 循环轮次开始前调用，重置轮次内预算，保留跨轮的 backoff 计数。"""
+        self.attempts["continuation"] = 0
+        self.attempts["compaction"] = 0
 
     def backoff_delay(self) -> float:
         # random.random() 加抖动避免多请求同时重试造成请求风暴；上限 60s 防止等待过久

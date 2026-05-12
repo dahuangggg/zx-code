@@ -9,6 +9,7 @@
   通道选择    — --channel, --watch
   功能开关    — --no-memory, --no-todos, --no-tasks, --no-skills, --no-subagents
   外部通道    — --telegram-token, --feishu-*, --heartbeat-*, --cron-*
+  会话        — --resume / --session-id
   调试        — --print-system-prompt / --debug-log
   任务输入    — 最后的可选位置参数
 
@@ -160,6 +161,7 @@ def _build_typer_app() -> Any:
         model: str | None = typer.Option(None),
         fallback_models: str | None = typer.Option(None, "--fallback-models"),
         max_turns: int | None = typer.Option(None, "--max-turns"),
+        resume: str | None = typer.Option(None, "--resume"),
         session_id: str | None = typer.Option(None, "--session-id"),
         data_dir: str | None = typer.Option(None, "--data-dir"),
         context_max_tokens: int | None = typer.Option(None, "--context-max-tokens"),
@@ -284,6 +286,7 @@ def _build_typer_app() -> Any:
             settings=settings,
             print_system_prompt=print_system_prompt,
             watch=watch,
+            resume_session_id=resume or session_id,
         )
         raise typer.Exit(exit_code)
 

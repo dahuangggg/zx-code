@@ -1,0 +1,29 @@
+{
+  "account_id": "local",
+  "channel": "cli",
+  "created_at": 1778523138.951404,
+  "id": "580d0ab93763",
+  "last_error": "",
+  "max_attempts": 5,
+  "metadata": {
+    "agent_id": "default",
+    "inbound": {
+      "account_id": "local",
+      "channel": "cli",
+      "guild_id": "",
+      "is_group": false,
+      "media": [],
+      "peer_id": "cli:20260511T172917Z:b9b076ab",
+      "raw": {},
+      "sender_id": "local-user",
+      "text": "什么是pydantic"
+    },
+    "session_id": "agent:default:cli:local:direct:cli:20260511T172917Z:b9b076ab"
+  },
+  "next_retry_at": 0.0,
+  "retry_count": 0,
+  "status": "sent",
+  "text": "Pydantic 是 Python 里一个用来做**数据校验（validation）**和**数据解析/序列化（parsing & serialization）**的库。你用它定义“数据模型”（Model），然后把外部输入（比如 HTTP JSON、环境变量、配置文件、字典）喂进去，Pydantic 会：\n\n- 按你声明的类型/约束自动检查数据是否合规（不合规就报错）\n- 做必要的类型转换（能转就转，比如 `\"123\"` → `123`）\n- 生成结构化对象，方便你在代码里用属性访问\n- 生成 JSON-friendly 的输出（dict / json）\n\n在 FastAPI 里，Pydantic 的作用尤其大：**请求体校验、响应体格式、以及自动生成 OpenAPI/Swagger 文档**，基本都依赖它。\n\n### 一个最小例子\n```py\nfrom pydantic import BaseModel, Field\n\nclass ItemIn(BaseModel):\n    name: str = Field(min_length=1, max_length=200)\n    price: float = Field(gt=0)\n\nitem = ItemIn.model_validate({\"name\": \"apple\", \"price\": \"3.5\"})\nprint(item.price)          # 3.5（已转成 float）\nprint(item.model_dump())   # {'name': 'apple', 'price': 3.5}\n```\n\n如果这样：\n```py\nItemIn.model_validate({\"name\": \"\", \"price\": -1})\n```\n会直接抛出校验错误（告诉你 name 太短、price 必须 >0）。\n\n### 你这个 demo 里怎么用的\n- `schemas.py` 里 `class ItemIn(BaseModel): ...` 就是 Pydantic 模型  \n- FastAPI 在接收 `/items` POST 时，会用 `ItemIn` 自动校验请求 JSON\n- `response_model=Item` 会让 FastAPI 用 `Item` 规范响应结构，并体现在 `/docs` 文档里\n\n补充：现在 FastAPI 常用的是 **Pydantic v2**（你代码里用到的 `model_dump()`、`model_validate()` 这些就是 v2 风格）。",
+  "to": "cli:20260511T172917Z:b9b076ab",
+  "updated_at": 1778523138.952192
+}

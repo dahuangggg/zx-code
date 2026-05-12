@@ -46,15 +46,15 @@ class AgentSettings(BaseModel):
     model: str = "openai/gpt-5.4-mini"
     fallback_models: str = "openai/gpt-5.5"
     model_profiles: list[ModelProfile] = Field(default_factory=list)
-    max_iterations: int = 8
-    model_timeout_s: float = 60.0
+    max_iterations: int = 30
+    model_timeout_s: float = 300.0
     stream: bool = True
     render_markdown: bool = True
     markdown_streaming: bool = True
     session_id: str = "default"
     data_dir: str = ".agent"
-    context_max_tokens: int = 12000
-    context_keep_recent: int = 6
+    context_max_tokens: int = 128000
+    context_keep_recent: int = 15
     context_tool_result_max_chars: int = 6000
     compact_model: str = ""
     memory_path: str = ".memory/MEMORY.md"

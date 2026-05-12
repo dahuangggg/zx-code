@@ -161,11 +161,13 @@ uv run agent --no-stream "总结当前目录"
 uv run agent --max-turns 6 "帮我列出当前项目结构"
 ```
 
-指定会话：
+恢复指定会话：
 
 ```bash
-uv run agent --session-id demo "继续上次任务"
+uv run agent --resume demo "继续上次任务"
 ```
+
+默认情况下，每次打开 CLI 都会创建一个新的 session。`--session-id demo` 仍作为兼容别名保留，等价于 `--resume demo`。
 
 打印 system prompt：
 
@@ -190,6 +192,17 @@ uv run agent --no-memory --no-todos "只做一次临时分析"
 ```bash
 uv run agent
 ```
+
+REPL 启动时会显示当前 model、session、mode 和 cwd。输入提示中的方括号显示当前文件夹名，例如 `zx-code [agent-deep-dive] >`。如果通过 `--resume <session-id>` 进入，会自动展示该 session 最近几条 user/assistant 对话。退出时会打印恢复当前 session 的命令，例如 `uv run agent --resume <session-id>`。
+
+模型响应前会显示 `thinking` 动画；当 Agent 调用工具时，会输出工具名和关键参数摘要，工具结束后显示 `done` 或 `failed`，方便观察长任务进度。
+
+可用命令：
+
+- `/help`：查看 REPL 命令
+- `/session`：查看当前 session id
+- `/clear`：清屏并重绘状态面板
+- `exit` / `quit`：退出
 
 也可以直接跑模块入口：
 
@@ -924,6 +937,7 @@ uv run agent --help
 - `--model`
 - `--fallback-models`
 - `--max-turns`
+- `--resume`
 - `--session-id`
 - `--data-dir`
 - `--context-max-tokens`

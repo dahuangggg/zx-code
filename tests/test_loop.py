@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from inspect import isawaitable
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -35,7 +36,9 @@ class ScriptedModelClient:
         turn = self.turns[self.calls]
         self.calls += 1
         if stream_handler and turn.text:
-            stream_handler(turn.text)
+            result = stream_handler(turn.text)
+            if isawaitable(result):
+                await result
         return turn
 
 
@@ -82,6 +85,48 @@ async def test_loop_runs_tool_call_and_returns_final_answer(tmp_path: Path) -> N
         "I'll write the file first.",
         "Done. The file has been written.",
     ]
+
+
+@pytest.mark.asyncio
+async def test_loop_emits_model_and_tool_progress_events(tmp_path: Path) -> None:
+    target = tmp_path / "answer.txt"
+    registry = build_default_registry()
+    client = ScriptedModelClient(
+        [
+            ModelTurn(
+                text="writing",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": str(target), "content": "done\n"},
+                    )
+                ],
+            ),
+            ModelTurn(text="done", tool_calls=[]),
+        ]
+    )
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    await run_task(
+        "write a file",
+        model_client=client,
+        tool_registry=registry,
+        config=RuntimeConfig(max_iterations=4, stream=False),
+        progress_handler=lambda event, payload: events.append((event, payload)),
+    )
+
+    event_names = [event for event, _ in events]
+    assert event_names == [
+        "model.start",
+        "model.end",
+        "tool.start",
+        "tool.end",
+        "model.start",
+        "model.end",
+    ]
+    assert events[2][1]["tool_name"] == "write_file"
+    assert events[3][1]["is_error"] is False
 
 
 @pytest.mark.asyncio

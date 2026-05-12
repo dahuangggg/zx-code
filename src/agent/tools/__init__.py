@@ -12,7 +12,7 @@ from agent.tools.read import ReadFileTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.skill import LoadSkillTool
 from agent.tools.subagent import SubagentRunTool
-from agent.tools.tasks import TaskCompleteTool, TaskCreateTool, TaskListTool
+from agent.tools.tasks import TaskCancelTool, TaskCompleteTool, TaskCreateTool, TaskListTool, TaskUpdateTool
 from agent.tools.todo import (
     TodoCompleteTool,
     TodoCreateTool,
@@ -67,6 +67,8 @@ def build_default_registry(
     if task_store is not None:
         registry.register(TaskCreateTool(task_store))
         registry.register(TaskCompleteTool(task_store))
+        registry.register(TaskCancelTool(task_store))
+        registry.register(TaskUpdateTool(task_store))
         registry.register(TaskListTool(task_store))
     if subagent_runner is not None:
         registry.register(SubagentRunTool(subagent_runner))
