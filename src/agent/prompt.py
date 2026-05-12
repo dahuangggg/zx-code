@@ -131,15 +131,39 @@ class SystemPromptBuilder:
         guidance = self._read_workspace_file("TOOLS.md").strip()
         if not guidance:
             guidance = (
-                "Use tools for repository inspection and file edits. "
-                "Prefer narrow reads, validate before writing, and report tool failures clearly."
+                "Use tools for repository inspection, file edits, validation, and runtime "
+                "state management. Prefer narrow reads, validate before writing, and report "
+                "tool failures clearly.\n\n"
+                "Prefer wrapped agent tools over raw shell commands when they can express "
+                "the task. read_file, write_file, edit_file, and grep go through the "
+                "agent's normal permission, validation, logging, and error-handling path, "
+                "so use them for ordinary file inspection, file edits, and repository "
+                "search. Use bash mainly for command execution that cannot be represented "
+                "by a narrower wrapped tool, such as running tests, builds, scripts, git "
+                "inspection, or environment checks.\n\n"
+                "Use tool_search when the tool you need is not currently available in the "
+                "active tool list, or when you are unsure which tool fits the task. Search "
+                "by intent, capability, or exact tool name. After tool_search returns and "
+                "activates matching schemas, call the activated tool directly in the next "
+                "model turn.\n\n"
+                "When code_search is available and a task requires understanding an "
+                "unfamiliar codebase, architecture boundaries, ownership, or natural-language "
+                "code locations, prefer code_search before broad grep/read_file exploration. "
+                "Use read_file after code_search when you need exact surrounding lines or "
+                "when preparing edits.\n\n"
+                "Tool choice guidelines:\n"
+                "- Use read_file for exact file contents from a known path, especially narrow line ranges.\n"
+                "- Use grep for targeted text, symbol, filename, or pattern search across files.\n"
+                "- Use edit_file for targeted replacements in existing files.\n"
+                "- Use write_file for creating a new file or replacing/appending larger text content.\n"
+                "- Use bash for tests, builds, scripts, git commands, package commands, or checks that require process execution.\n"
+                "- Use todo tools for short-lived session work tracking.\n"
+                "- Use task tools for persistent DAG-style task tracking with blockers.\n"
+                "- Use memory tools only for durable user, feedback, project, or reference knowledge that should persist across sessions.\n"
+                "- Use load_skill when a named skill is relevant and the full skill instructions are needed.\n"
+                "- Use subagent_run only for focused child-session work that benefits from isolation.\n"
+                "- Use MCP/plugin tools when an external server or plugin provides the needed capability."
             )
-        guidance += (
-            "\nWhen a task requires understanding an unfamiliar codebase, architecture "
-            "boundaries, ownership, or natural-language code locations, prefer code_search "
-            "before broad grep/read_file exploration. Use read_file after code_search when "
-            "you need exact surrounding lines or when preparing edits."
-        )
         index = self._tool_index(tool_schemas)
         return "\n\n".join(part for part in (guidance, index) if part.strip())
 
