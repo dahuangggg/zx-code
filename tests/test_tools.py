@@ -81,6 +81,29 @@ def test_read_and_grep_tools_are_concurrency_safe() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_search_returns_schema_and_activates_matches() -> None:
+    registry = build_default_registry()
+
+    assert [schema["function"]["name"] for schema in registry.active_schemas()] == [
+        "tool_search"
+    ]
+
+    result = await registry.execute(
+        "tool_search",
+        {"query": "read text file line range", "limit": 3},
+        call_id="search-1",
+    )
+    payload = json.loads(result.content)
+
+    assert not result.is_error
+    assert "read_file" in payload["activated"]
+    assert any(tool["name"] == "read_file" for tool in payload["tools"])
+    assert "read_file" in [
+        schema["function"]["name"] for schema in registry.active_schemas()
+    ]
+
+
+@pytest.mark.asyncio
 async def test_grep_returns_matches(tmp_path: Path) -> None:
     registry = build_default_registry()
     target = tmp_path / "sample.py"

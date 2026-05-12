@@ -153,13 +153,8 @@ class SystemPromptBuilder:
             if not name:
                 continue
             description = str(function.get("description", "")).strip()
-            params = function.get("parameters", {})
-            properties = params.get("properties", {}) if isinstance(params, dict) else {}
-            arg_names = ", ".join(sorted(properties)) if isinstance(properties, dict) else ""
             suffix = f" {description}" if description else ""
             lines.append(f"- {name}:{suffix}".rstrip())
-            if arg_names:
-                lines.append(f"  arguments: {arg_names}")
         return "\n".join(lines)
 
     def _memory_block(self) -> str:

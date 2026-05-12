@@ -122,7 +122,7 @@ async def run_task(
                 {
                     "turn": state.turn_count,
                     "messages": list(model_messages),
-                    "tool_schemas": tool_registry.schemas(),
+                    "tool_schemas": tool_registry.active_schemas(),
                 },
                 session_id=runtime_config.session_id,
             )
@@ -136,7 +136,7 @@ async def run_task(
             ).run(
                 system_prompt=state.system_prompt,
                 messages=model_messages,
-                tools=tool_registry.schemas(),
+                tools=tool_registry.active_schemas(),
                 stream_handler=(
                     progress_stream_handler
                     if runtime_config.stream

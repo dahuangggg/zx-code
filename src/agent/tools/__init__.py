@@ -13,6 +13,7 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.skill import LoadSkillTool
 from agent.tools.subagent import SubagentRunTool
 from agent.tools.tasks import TaskCancelTool, TaskCompleteTool, TaskCreateTool, TaskListTool, TaskUpdateTool
+from agent.tools.tool_search import ToolSearchTool
 from agent.tools.todo import (
     TodoCompleteTool,
     TodoCreateTool,
@@ -80,6 +81,7 @@ def build_default_registry(
         registry.register(CodeSearchTool(code_context_indexer))
         registry.register(CodeIndexStatusTool(code_context_indexer))
         registry.register(CodeIndexClearTool(code_context_indexer))
+    registry.register(ToolSearchTool(registry))
     return registry
 
 

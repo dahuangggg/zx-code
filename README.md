@@ -715,7 +715,7 @@ debug_log_path = ".agent/debug.jsonl"
 
 - `run.system_prompt`：实际发送给模型的 system prompt
 - `run.user_message`：用户本轮请求
-- `run.model_input`：ContextGuard 处理后发给模型的 messages 和 tool schemas
+- `run.model_input`：ContextGuard 处理后发给模型的 messages 和本轮 active tool schemas
 - `model.request`：LiteLLM request kwargs，`api_key/token/secret` 类字段会脱敏
 - `model.response.raw` / `model.stream.raw_summary`：模型 SDK 原始返回，或流式输出聚合摘要
 - `model.response.normalized`：项目内部归一化后的 `ModelTurn`
@@ -1191,7 +1191,7 @@ uv run pytest -q
 - 支持 project instructions、skills、memory、tasks、todo、runtime 注入
 - prompt 只注入技能索引，不直接塞入完整技能正文
 - Runtime section 包含当前日期、模型、平台和 Python 版本
-- Tools section 从实际 `ToolRegistry.schemas()` 渲染工具名、描述和参数名
+- Tools section 从实际 `ToolRegistry.schemas()` 渲染工具名和描述；完整参数 schema 通过 `tool_search` 按需激活
 
 `src/agent/profiles.py`
 

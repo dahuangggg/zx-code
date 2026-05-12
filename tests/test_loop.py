@@ -24,6 +24,7 @@ class ScriptedModelClient:
     def __init__(self, turns: list[ModelTurn]) -> None:
         self.turns = turns
         self.calls = 0
+        self.tool_batches: list[list[str]] = []
 
     async def run_turn(
         self,
@@ -33,6 +34,9 @@ class ScriptedModelClient:
         tools: list[dict[str, Any]],
         stream_handler=None,
     ) -> ModelTurn:
+        self.tool_batches.append(
+            [str(tool.get("function", {}).get("name", "")) for tool in tools]
+        )
         turn = self.turns[self.calls]
         self.calls += 1
         if stream_handler and turn.text:
@@ -85,6 +89,57 @@ async def test_loop_runs_tool_call_and_returns_final_answer(tmp_path: Path) -> N
         "I'll write the file first.",
         "Done. The file has been written.",
     ]
+
+
+@pytest.mark.asyncio
+async def test_loop_sends_tool_search_then_activates_matching_tool_schema(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "answer.txt"
+    target.write_text("hello\nworld\n", encoding="utf-8")
+    registry = build_default_registry()
+    client = ScriptedModelClient(
+        [
+            ModelTurn(
+                text="I'll search for the file reading tool.",
+                tool_calls=[
+                    ToolCall(
+                        id="call-search",
+                        name="tool_search",
+                        arguments={"query": "read text file line range"},
+                    )
+                ],
+            ),
+            ModelTurn(
+                text="I'll read the file now.",
+                tool_calls=[
+                    ToolCall(
+                        id="call-read",
+                        name="read_file",
+                        arguments={
+                            "path": str(target),
+                            "start_line": 1,
+                            "end_line": 1,
+                        },
+                    )
+                ],
+            ),
+            ModelTurn(text="The file starts with hello.", tool_calls=[]),
+        ]
+    )
+
+    result = await run_task(
+        "read the first line",
+        model_client=client,
+        tool_registry=registry,
+        config=RuntimeConfig(max_iterations=4, stream=False),
+    )
+
+    assert result.final_text == "The file starts with hello."
+    assert client.tool_batches[0] == ["tool_search"]
+    assert "tool_search" in client.tool_batches[1]
+    assert "read_file" in client.tool_batches[1]
+    assert "write_file" not in client.tool_batches[1]
 
 
 @pytest.mark.asyncio
