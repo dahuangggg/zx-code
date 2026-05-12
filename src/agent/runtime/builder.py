@@ -19,11 +19,13 @@
 from __future__ import annotations
 
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agent.config import AgentSettings
 from agent.core.context import ContextGuard
+from agent.debuglog import DebugLog
 from agent.errors import AgentError
 from agent.hooks import HookRunner
 from agent.scheduling.lanes import LaneScheduler
@@ -35,6 +37,7 @@ from agent.plugins import PluginManager
 from agent.profiles import FallbackModelClient
 from agent.prompt import SystemPromptBuilder
 from agent.providers.litellm_client import LiteLLMModelClient
+from agent.runtime.markdown_stream import MarkdownStreamRenderer
 from agent.runtime.utils import _approval_prompt, _resolve_project_path, _stream_printer, console
 from agent.state.sessions import SessionStore, safe_session_id
 from agent.state.skills import SkillStore
@@ -43,16 +46,101 @@ from agent.state.tasks import TaskStore
 from agent.state.todo import TodoManager
 from agent.tools import build_default_registry
 from agent.agents.worktree import WorktreeManager
+from agent.code_context.chroma_store import ChromaCodeStore
+from agent.code_context.indexer import CodeContextIndexer
 
 
-def _build_model_client(settings: AgentSettings) -> Any:
+@dataclass
+class StreamOutput:
+    handler: Callable[[str], Any] | None = None
+    renderer: MarkdownStreamRenderer | None = None
+
+    def flush(self) -> None:
+        if self.renderer is not None:
+            self.renderer.flush()
+
+
+class CLIProgressReporter:
+    def __init__(
+        self,
+        output_console: Any,
+        *,
+        flush_output: Callable[[], Any] | None = None,
+    ) -> None:
+        self.console = output_console
+        self.flush_output = flush_output
+        self._status: Any | None = None
+
+    def handle(self, event: str, payload: dict[str, Any]) -> None:
+        if event == "model.start":
+            self._start_thinking()
+            return
+        if event in {"model.chunk", "model.end"}:
+            self.stop()
+            return
+        if event == "tool.start":
+            self.stop()
+            if self.flush_output is not None:
+                self.flush_output()
+            tool_name = str(payload.get("tool_name") or "tool")
+            arguments = payload.get("arguments")
+            summary = _summarize_tool_arguments(arguments)
+            suffix = f" [dim]{summary}[/dim]" if summary else ""
+            self.console.print(f"[dim]tool[/dim] [cyan]{tool_name}[/cyan]{suffix}")
+            return
+        if event == "tool.end":
+            tool_name = str(payload.get("tool_name") or "tool")
+            is_error = bool(payload.get("is_error"))
+            label = "[red]failed[/red]" if is_error else "[green]done[/green]"
+            self.console.print(f"[dim]tool[/dim] [cyan]{tool_name}[/cyan] {label}")
+
+    def stop(self) -> None:
+        if self._status is None:
+            return
+        self._status.stop()
+        self._status = None
+
+    def _start_thinking(self) -> None:
+        self.stop()
+        self._status = self.console.status("[cyan]thinking[/cyan]", spinner="dots")
+        self._status.start()
+
+
+def _summarize_tool_arguments(arguments: Any) -> str:
+    if not isinstance(arguments, dict) or not arguments:
+        return ""
+    for key in ("command", "path", "file_path", "pattern", "name", "label"):
+        value = arguments.get(key)
+        if value:
+            return _truncate_inline(f"{key}={value}")
+    return _truncate_inline(", ".join(sorted(str(key) for key in arguments)[:3]))
+
+
+def _truncate_inline(text: str, limit: int = 88) -> str:
+    single_line = " ".join(text.split())
+    if len(single_line) <= limit:
+        return single_line
+    return f"{single_line[: limit - 3]}..."
+
+
+def _build_stream_output(settings: AgentSettings) -> StreamOutput:
+    if not settings.stream:
+        return StreamOutput()
+    if settings.render_markdown and settings.markdown_streaming:
+        renderer = MarkdownStreamRenderer(console)
+        return StreamOutput(handler=renderer.write, renderer=renderer)
+    return StreamOutput(handler=_stream_printer)
+
+
+def _build_model_client(settings: AgentSettings, debug_log: DebugLog | None = None) -> Any:
     profiles = settings.resolved_model_profiles()
     if len(profiles) > 1:
-        return FallbackModelClient(profiles)
+        return FallbackModelClient(profiles, debug_log=debug_log)
     profile = profiles[0]
     return LiteLLMModelClient(
         model=profile.model,
         extra_kwargs=profile.litellm_kwargs(),
+        debug_log=debug_log,
     )
 
 
@@ -70,6 +158,14 @@ def _build_runtime(
     )
     project_root = Path.cwd()
     data_dir = _resolve_project_path(project_root, effective_settings.data_dir)
+    debug_log = (
+        DebugLog(
+            _resolve_project_path(project_root, effective_settings.debug_log_path),
+            session_id=effective_settings.session_id,
+        )
+        if effective_settings.debug_log_enabled
+        else None
+    )
     memory_store = (
         MemoryStore(_resolve_project_path(project_root, effective_settings.memory_path))
         if effective_settings.enable_memory
@@ -156,6 +252,19 @@ def _build_runtime(
         if effective_settings.enable_worktree_isolation
         else None
     )
+    code_context_indexer = (
+        CodeContextIndexer(
+            store=ChromaCodeStore(
+                path=_resolve_project_path(project_root, effective_settings.code_context_path),
+                collection_name=effective_settings.code_context_collection,
+            ),
+            snapshot_dir=_resolve_project_path(project_root, effective_settings.code_context_snapshot_dir),
+            max_result_chars=effective_settings.code_context_max_result_chars,
+            max_total_chars=effective_settings.code_context_max_total_chars,
+        )
+        if effective_settings.code_context_enabled
+        else None
+    )
     registry = build_default_registry(
         permission_manager=permission_manager,
         approval_callback=_approval_prompt,
@@ -165,6 +274,8 @@ def _build_runtime(
         task_store=task_store,
         subagent_runner=subagent_runner,
         worktree_manager=worktree_manager,
+        code_context_indexer=code_context_indexer,
+        debug_log=debug_log,
     )
     plugin_dirs = [
         _resolve_project_path(project_root, plugin_dir)
@@ -196,12 +307,23 @@ def _build_runtime(
             compact_model=effective_settings.compact_model,
             model=effective_settings.model,
         ),
-        "model_client": _build_model_client(effective_settings),
+        "model_client": _build_model_client(effective_settings, debug_log),
         "settings": effective_settings,
         "prompt_builder": prompt_builder,
         "session_store": SessionStore(data_dir / "sessions"),
         "tool_registry": registry,
+        "debug_log": debug_log,
     }
+    if debug_log is not None:
+        debug_log.event(
+            "runtime.built",
+            {
+                "model": effective_settings.model,
+                "session_id": effective_settings.session_id,
+                "data_dir": str(data_dir),
+                "debug_log_path": str(debug_log.path),
+            },
+        )
     _refresh_system_prompt(runtime)
     return runtime
 
@@ -263,6 +385,12 @@ async def _run_agent_text(
         subagent_depth=subagent_depth,
     )
     mcp_router = await _attach_mcp_tools(runtime, runtime["settings"])
+    stream_output = _build_stream_output(settings)
+    progress_reporter = (
+        CLIProgressReporter(console, flush_output=stream_output.flush)
+        if settings.stream and settings.channel == "cli"
+        else None
+    )
 
     try:
         result = await run_task(
@@ -270,18 +398,27 @@ async def _run_agent_text(
             model_client=runtime["model_client"],
             tool_registry=runtime["tool_registry"],
             config=runtime["config"],
-            stream_handler=_stream_printer if settings.stream else None,
+            stream_handler=stream_output.handler,
             session_store=runtime["session_store"],
             context_guard=runtime["context_guard"],
             prompt_builder=runtime["prompt_builder"],
             hook_runner=runtime["hook_runner"],
+            debug_log=runtime.get("debug_log"),
+            progress_handler=(
+                progress_reporter.handle
+                if progress_reporter is not None
+                else None
+            ),
         )
     except AgentError as exc:
         raise exc
     finally:
+        if progress_reporter is not None:
+            progress_reporter.stop()
+        stream_output.flush()
         if mcp_router is not None:
             await mcp_router.close()
 
-    if settings.stream and result.final_text:
+    if settings.stream and result.final_text and stream_output.renderer is None:
         console.print()
     return result.final_text

@@ -134,6 +134,12 @@ class SystemPromptBuilder:
                 "Use tools for repository inspection and file edits. "
                 "Prefer narrow reads, validate before writing, and report tool failures clearly."
             )
+        guidance += (
+            "\nWhen a task requires understanding an unfamiliar codebase, architecture "
+            "boundaries, ownership, or natural-language code locations, prefer code_search "
+            "before broad grep/read_file exploration. Use read_file after code_search when "
+            "you need exact surrounding lines or when preparing edits."
+        )
         index = self._tool_index(tool_schemas)
         return "\n\n".join(part for part in (guidance, index) if part.strip())
 
@@ -147,13 +153,8 @@ class SystemPromptBuilder:
             if not name:
                 continue
             description = str(function.get("description", "")).strip()
-            params = function.get("parameters", {})
-            properties = params.get("properties", {}) if isinstance(params, dict) else {}
-            arg_names = ", ".join(sorted(properties)) if isinstance(properties, dict) else ""
             suffix = f" {description}" if description else ""
             lines.append(f"- {name}:{suffix}".rstrip())
-            if arg_names:
-                lines.append(f"  arguments: {arg_names}")
         return "\n".join(lines)
 
     def _memory_block(self) -> str:

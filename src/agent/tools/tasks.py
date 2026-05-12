@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.state.tasks import TaskStore
+from agent.state.tasks import TaskStore, TaskStatus
 from agent.tools.base import Tool
 
 
@@ -19,6 +21,20 @@ class TaskCompleteInput(BaseModel):
 
     task_id: str
     result: str = ""
+
+
+class TaskCancelInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    result: str = ""
+
+
+class TaskUpdateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    status: Literal["pending", "in_progress"]
 
 
 class TaskListInput(BaseModel):
@@ -58,6 +74,35 @@ class TaskCompleteTool(Tool):
             "completed": task.model_dump(mode="json"),
             "unlocked": [item.model_dump(mode="json") for item in unlocked],
         }
+
+
+class TaskCancelTool(Tool):
+    name = "task_cancel"
+    description = "Mark a DAG task as failed/cancelled and unblock dependents whose other blockers are resolved."
+    input_model = TaskCancelInput
+
+    def __init__(self, store: TaskStore) -> None:
+        self.store = store
+
+    async def run(self, arguments: TaskCancelInput) -> dict[str, object]:
+        task, unlocked = self.store.cancel(arguments.task_id, result=arguments.result)
+        return {
+            "cancelled": task.model_dump(mode="json"),
+            "unlocked": [item.model_dump(mode="json") for item in unlocked],
+        }
+
+
+class TaskUpdateTool(Tool):
+    name = "task_update"
+    description = "Update a DAG task status to 'pending' or 'in_progress'."
+    input_model = TaskUpdateInput
+
+    def __init__(self, store: TaskStore) -> None:
+        self.store = store
+
+    async def run(self, arguments: TaskUpdateInput) -> dict[str, object]:
+        task = self.store.update_status(arguments.task_id, arguments.status)
+        return task.model_dump(mode="json")
 
 
 class TaskListTool(Tool):

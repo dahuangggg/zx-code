@@ -2,7 +2,7 @@
 
 基于 `Python + asyncio + litellm + pydantic` 的本地 Coding Agent 实验仓库。
 
-当前已经完成 `docs/ZX-code.md` 中第五阶段：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime + Delivery Daemon + Subagent + Profile Fallback + ResilienceRunner + MCP + Worktree Isolation + Plugin System。并按 `docs/12-Python实战技术选型.md` 补齐了除 `s15-s17 Agent Teams` 外的 Skill Loading、DAG Task System、通用 Background Task Manager 和若干兼容入口。
+当前已经完成 `docs/ZX-code.md` 中第五阶段：单 Agent 核心 + 持久化运行时 + 多通道 Gateway + 可靠投递 + Heartbeat/Cron + Priority Lane Runtime + Delivery Daemon + Subagent + Profile Fallback + ResilienceRunner + MCP + Worktree Isolation + Plugin System。并按 `docs/12-Python实战技术选型.md` 补齐了除 `s15-s17 Agent Teams` 外的 Skill Loading、DAG Task System、通用 Background Task Manager 和若干兼容入口；新增了 ChromaDB 驱动的 CodeContext 代码库语义上下文层。
 
 第一阶段跑通了下面这个闭环：
 
@@ -78,6 +78,15 @@
 - `worktree_create / worktree_cleanup` 工具允许 Agent 显式管理隔离工作区
 - `PluginManager` 支持从 `plugin.json` 发现命令型插件工具
 - 插件工具注册为 `plugin__plugin__tool`，同样经过统一权限系统
+- `CodeContextIndexer` 支持同步索引任意代码库路径，默认当前工作目录
+- `code_index / code_search / code_index_status / code_index_clear` 工具提供代码库语义索引、搜索、状态查询和本地索引清理
+- `code_index` 支持 `background=true` 后台索引，`code_index_status` 返回 `indexing / indexed / indexfailed / not_found` 和进度百分比
+- CodeContext 使用 ChromaDB `PersistentClient` 持久化到 `.agent/code-context/chroma`，单 collection 通过 `codebase_id/codebase_path` metadata 隔离多个仓库
+- CodeContext 默认忽略 `.env`、`.git`、`node_modules`、`.agent` 等敏感或低价值路径，并读取 `.gitignore` / `.contextignore`
+- Python 文件使用 AST-aware chunking，其他常见代码/文档文件使用 line-based chunking，并保留路径和行号
+- CodeContext 使用文件级 `sha256` snapshot 支持 added / modified / removed 增量索引
+- `code_search` 使用 Chroma vector search + 本地 BM25-like 关键词通道 + RRF 融合，并按文件/行区间去重
+- System prompt 会提示模型在陌生代码库、架构边界和自然语言代码定位场景优先使用 `code_search`，但不会自动注入检索结果
 
 ## 环境要求
 
@@ -152,16 +161,24 @@ uv run agent --no-stream "总结当前目录"
 uv run agent --max-turns 6 "帮我列出当前项目结构"
 ```
 
-指定会话：
+恢复指定会话：
 
 ```bash
-uv run agent --session-id demo "继续上次任务"
+uv run agent --resume demo "继续上次任务"
 ```
+
+默认情况下，每次打开 CLI 都会创建一个新的 session。`--session-id demo` 仍作为兼容别名保留，等价于 `--resume demo`。
 
 打印 system prompt：
 
 ```bash
 uv run agent --print-system-prompt
+```
+
+开启完整调试日志：
+
+```bash
+uv run agent --debug-log --debug-log-path .agent/debug.jsonl "帮我看看这个仓库"
 ```
 
 临时关闭 memory/todo：
@@ -175,6 +192,17 @@ uv run agent --no-memory --no-todos "只做一次临时分析"
 ```bash
 uv run agent
 ```
+
+REPL 启动时会显示当前 model、session、mode 和 cwd。输入提示中的方括号显示当前文件夹名，例如 `zx-code [agent-deep-dive] >`。如果通过 `--resume <session-id>` 进入，会自动展示该 session 最近几条 user/assistant 对话。退出时会打印恢复当前 session 的命令，例如 `uv run agent --resume <session-id>`。
+
+模型响应前会显示 `thinking` 动画；当 Agent 调用工具时，会输出工具名和关键参数摘要，工具结束后显示 `done` 或 `failed`，方便观察长任务进度。
+
+可用命令：
+
+- `/help`：查看 REPL 命令
+- `/session`：查看当前 session id
+- `/clear`：清屏并重绘状态面板
+- `exit` / `quit`：退出
 
 也可以直接跑模块入口：
 
@@ -667,6 +695,36 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 `api_key_env` 只保存环境变量名，不保存真实 key。运行时会读取环境变量，把值作为 `litellm` 的 `api_key` 参数传入。这样可以实现同模型多 key 轮换，也可以实现跨模型 fallback。
 
+## Debug Log
+
+开启后，Agent 会把完整运行轨迹写入 JSONL 文件，便于定位 prompt、模型 raw 返回、工具调用和权限判断问题。
+
+```bash
+uv run agent --debug-log --debug-log-path .agent/debug.jsonl "调试这次运行"
+```
+
+也可以写进 `.zx-code/config.toml`：
+
+```toml
+[agent]
+debug_log_enabled = true
+debug_log_path = ".agent/debug.jsonl"
+```
+
+当前记录的事件包括：
+
+- `run.system_prompt`：实际发送给模型的 system prompt
+- `run.user_message`：用户本轮请求
+- `run.model_input`：ContextGuard 处理后发给模型的 messages 和本轮 active tool schemas
+- `model.request`：LiteLLM request kwargs，`api_key/token/secret` 类字段会脱敏
+- `model.response.raw` / `model.stream.raw_summary`：模型 SDK 原始返回，或流式输出聚合摘要
+- `model.response.normalized`：项目内部归一化后的 `ModelTurn`
+- `tool.call.requested` / `tool.call.result`：工具调用入参和结果
+- `tool.permission`：权限决策
+- `tool.hook.pre` / `tool.hook.post`：工具 hook 执行结果
+
+调试日志包含 system prompt、用户输入、模型输出和工具结果，可能带有敏感代码或业务数据。默认关闭，需要显式开启。
+
 ## ResilienceRunner
 
 第五阶段 5E 把单次模型 turn 的恢复逻辑收敛到 `ResilienceRunner`。
@@ -879,6 +937,7 @@ uv run agent --help
 - `--model`
 - `--fallback-models`
 - `--max-turns`
+- `--resume`
 - `--session-id`
 - `--data-dir`
 - `--context-max-tokens`
@@ -929,6 +988,8 @@ uv run agent --help
 - `--no-tasks`
 - `--no-subagents`
 - `--worktree-isolation`
+- `--debug-log`
+- `--debug-log-path`
 - `--print-system-prompt`
 
 ## 运行测试
@@ -1130,7 +1191,7 @@ uv run pytest -q
 - 支持 project instructions、skills、memory、tasks、todo、runtime 注入
 - prompt 只注入技能索引，不直接塞入完整技能正文
 - Runtime section 包含当前日期、模型、平台和 Python 版本
-- Tools section 从实际 `ToolRegistry.schemas()` 渲染工具名、描述和参数名
+- Tools section 从实际 `ToolRegistry.schemas()` 渲染工具名和描述；完整参数 schema 通过 `tool_search` 按需激活
 
 `src/agent/profiles.py`
 

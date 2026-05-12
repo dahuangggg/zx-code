@@ -35,7 +35,12 @@ from agent.models import Message, ModelTurn
 from agent.providers.base import ModelClient
 
 class RecoveryBudget:
-    """Track per-category retry attempts to prevent infinite loops."""
+    """Track per-category retry attempts to prevent infinite loops.
+
+    分类说明：
+      - continuation / compaction：单次 LLM 调用内的重试预算，每轮应通过 reset_turn() 重置
+      - backoff：跨轮全局限流预算，不重置（累计反映实际限流压力）
+    """
 
     def __init__(self, max_retries: int = 3) -> None:
         self.max = max_retries
@@ -51,7 +56,13 @@ class RecoveryBudget:
     def record(self, category: str) -> None:
         self.attempts[category] = self.attempts.get(category, 0) + 1
 
+    def reset_turn(self) -> None:
+        """每个新 agent 循环轮次开始前调用，重置轮次内预算，保留跨轮的 backoff 计数。"""
+        self.attempts["continuation"] = 0
+        self.attempts["compaction"] = 0
+
     def backoff_delay(self) -> float:
+        # random.random() 加抖动避免多请求同时重试造成请求风暴；上限 60s 防止等待过久
         return min(2 ** self.attempts.get("backoff", 0) + random.random(), 60.0)
 
 
@@ -60,6 +71,7 @@ SleepFunc = Callable[[float], Awaitable[None]]
 
 def classify_error(exc: Exception) -> str:
     """Classify an LLM error for recovery routing."""
+    # 同时检查异常 message 和类型名：不同 SDK 的异常结构各异，统一靠字符串匹配做兜底分类
     msg = str(exc).lower()
     exc_type = type(exc).__name__.lower()
 
@@ -96,6 +108,7 @@ def classify_error(exc: Exception) -> str:
     )):
         return "overflow"
 
+    # max_tokens 与 overflow 区分：前者是"输出被截断"（可用 continuation 续写），后者是"输入超长"（要压缩历史）
     if any(term in msg for term in ("max_tokens", "length", "truncat")):
         if "finish_reason" in msg or "stop_reason" in msg:
             return "max_tokens"
@@ -130,6 +143,7 @@ class ResilienceRunner:
         stream_handler: Callable[[str], Any] | None = None,
     ) -> ModelTurn:
         current_messages = list(messages)
+        # 跨多轮 continuation 累积输出片段，最终拼接成完整回复返回给上层
         continued_text_parts: list[str] = []
 
         while True:
@@ -144,6 +158,7 @@ class ResilienceRunner:
                     timeout=self.timeout_s,
                 )
 
+                # 输出被截断且没工具调用：把已生成的 assistant 文本回灌，再追加一条 user 指令请求续写
                 if self._should_continue(turn):
                     self.recovery_budget.record("continuation")
                     continued_text_parts.append(turn.text)
@@ -167,6 +182,7 @@ class ResilienceRunner:
                     f"model turn timed out after {self.timeout_s:.1f}s"
                 ) from exc
 
+            # AgentError 是框架自定义异常（如 ContextOverflowError），已分类过，直接向上抛
             except AgentError:
                 raise
 
@@ -178,6 +194,7 @@ class ResilienceRunner:
                     await self.sleep(self.recovery_budget.backoff_delay())
                     continue
 
+                # 输入超长：让 context_guard 压缩历史后重试；无 guard 时无法自愈，直接抛
                 if error_type == "overflow" and self.recovery_budget.can_retry("compaction"):
                     self.recovery_budget.record("compaction")
                     if self.context_guard is not None:
@@ -192,6 +209,7 @@ class ResilienceRunner:
                 raise ModelInvocationError(f"model turn failed: {exc}") from exc
 
     def _should_continue(self, turn: ModelTurn) -> bool:
+        # 有 tool_calls 时不续写：工具调用是结构化输出，截断的工具参数无法靠"请继续"安全拼接
         return (
             turn.stop_reason in ("length", "max_tokens")
             and not turn.tool_calls

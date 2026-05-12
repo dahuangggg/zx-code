@@ -16,8 +16,13 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+from inspect import isawaitable
+from typing import Any
+
 from agent.core.context import ContextGuard
 from agent.core.tool_executor import ToolCallExecutor
+from agent.debuglog import DebugLog
 from agent.hooks import HookRunner
 from agent.models import (
     RuntimeConfig,
@@ -46,55 +51,120 @@ async def run_task(
     context_guard: ContextGuard | None = None,
     prompt_builder: SystemPromptBuilder | None = None,
     hook_runner: HookRunner | None = None,
+    debug_log: DebugLog | None = None,
+    progress_handler: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> AgentRunResult:
     runtime_config = config or RuntimeConfig()
+    # system_prompt 三级回退：调用方显式传入 → prompt_builder 动态构建 → 框架内置默认值
     system_prompt = runtime_config.system_prompt
     if not system_prompt and prompt_builder is not None:
         system_prompt = prompt_builder.build(runtime_config)
     if not system_prompt:
         system_prompt = DEFAULT_SYSTEM_PROMPT
+    if debug_log is not None:
+        debug_log.event(
+            "run.system_prompt",
+            {"system_prompt": system_prompt},
+            session_id=runtime_config.session_id,
+        )
 
     state = AgentState(
         system_prompt=system_prompt,
         max_iterations=runtime_config.max_iterations,
         session_id=runtime_config.session_id,
     )
+    # 跨进程恢复：从 session_store 重放历史消息，让 agent 接续上一次会话
     if session_store is not None:
         state.messages.extend(session_store.rebuild_messages(runtime_config.session_id))
 
     user_message = Message.user(task)
     state.messages.append(user_message)
+    if debug_log is not None:
+        debug_log.event(
+            "run.user_message",
+            {"message": user_message},
+            session_id=runtime_config.session_id,
+        )
+    # 每条消息都立即落盘，崩溃后能从最后一条消息处恢复，不需要等回合结束才持久化
     if session_store is not None:
         session_store.append_message(runtime_config.session_id, user_message)
 
     recovery_budget = RecoveryBudget()
 
+    async def emit_progress(event: str, payload: dict[str, Any]) -> None:
+        if progress_handler is None:
+            return
+        result = progress_handler(event, payload)
+        if isawaitable(result):
+            await result
+
+    async def progress_stream_handler(chunk: str) -> None:
+        await emit_progress("model.chunk", {"turn": state.turn_count, "chunk": chunk})
+        if stream_handler is not None:
+            result = stream_handler(chunk)
+            if isawaitable(result):
+                await result
+
+    # max_iterations 是硬上限，防止 LLM 与工具陷入无限循环把 token 烧光
     while state.turn_count < state.max_iterations:
         state.turn_count += 1
+        # continuation/compaction 预算是轮次内概念，每轮重置；backoff 跨轮累计不重置
+        recovery_budget.reset_turn()
+        # prepare 只裁剪/压缩"发给模型的"消息副本，不修改 state.messages 的真实历史
         model_messages = (
             await context_guard.prepare(state.messages)
             if context_guard is not None
             else state.messages
         )
-        turn = await ResilienceRunner(
-            model_client=model_client,
-            timeout_s=runtime_config.model_timeout_s,
-            recovery_budget=recovery_budget,
-            context_guard=context_guard,
-        ).run(
-            system_prompt=state.system_prompt,
-            messages=model_messages,
-            tools=tool_registry.schemas(),
-            stream_handler=stream_handler if runtime_config.stream else None,
-        )
+        if debug_log is not None:
+            debug_log.event(
+                "run.model_input",
+                {
+                    "turn": state.turn_count,
+                    "messages": list(model_messages),
+                    "tool_schemas": tool_registry.active_schemas(),
+                },
+                session_id=runtime_config.session_id,
+            )
+        await emit_progress("model.start", {"turn": state.turn_count})
+        try:
+            turn = await ResilienceRunner(
+                model_client=model_client,
+                timeout_s=runtime_config.model_timeout_s,
+                recovery_budget=recovery_budget,
+                context_guard=context_guard,
+            ).run(
+                system_prompt=state.system_prompt,
+                messages=model_messages,
+                tools=tool_registry.active_schemas(),
+                stream_handler=(
+                    progress_stream_handler
+                    if runtime_config.stream
+                    else None
+                ),
+            )
+        finally:
+            await emit_progress("model.end", {"turn": state.turn_count})
         assistant_message = Message.assistant(
             content=turn.text,
             tool_calls=turn.tool_calls,
         )
-        state.messages.append(assistant_message)
+        # 先持久化到磁盘，再更新内存：保证崩溃时两侧状态一致，恢复时不丢消息
         if session_store is not None:
             session_store.append_message(runtime_config.session_id, assistant_message)
+        state.messages.append(assistant_message)
+        if debug_log is not None:
+            debug_log.event(
+                "run.assistant_message",
+                {
+                    "turn": state.turn_count,
+                    "message": assistant_message,
+                    "stop_reason": turn.stop_reason,
+                },
+                session_id=runtime_config.session_id,
+            )
 
+        # 无工具调用即视为最终回答，ReAct 循环在此终止
         if not turn.tool_calls:
             return AgentRunResult(
                 final_text=turn.text,
@@ -107,15 +177,20 @@ async def run_task(
         async def append_tool_result(result: ToolResult) -> None:
             state.tool_results.append(result)
             tool_message = result.to_message()
-            state.messages.append(tool_message)
+            # 先持久化，再更新内存，与 assistant_message 保持一致的写顺序
             if session_store is not None:
                 session_store.append_message(runtime_config.session_id, tool_message)
+            state.messages.append(tool_message)
 
         executor = ToolCallExecutor(
             tool_registry=tool_registry,
             hook_runner=hook_runner or HookRunner.empty(),
             session_id=runtime_config.session_id,
+            debug_log=debug_log,
+            progress_handler=progress_handler,
         )
+        # execute_many 内部对 concurrency-safe 工具并发执行，但返回顺序与 tool_calls 一致，
+        # 保证写回消息历史的顺序与模型调用顺序匹配（否则 tool_call_id 配对会乱）
         for result in await executor.execute_many(turn.tool_calls):
             await append_tool_result(result)
 

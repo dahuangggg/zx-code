@@ -23,6 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.debuglog import DebugLog
 from agent.models import Message, ModelTurn
 from agent.providers.base import ModelClient, StreamHandler
 from agent.providers.litellm_client import LiteLLMModelClient
@@ -89,9 +90,11 @@ class FallbackModelClient:
         *,
         client_factory: ClientFactory | None = None,
         cooldown_by_kind: dict[str, float] | None = None,
+        debug_log: DebugLog | None = None,
     ) -> None:
         self.profile_manager = ProfileManager(profiles)
         self.client_factory = client_factory or _default_client_factory
+        self.debug_log = debug_log
         self.cooldown_by_kind = {
             "rate_limit": 120.0,
             "auth": 300.0,
@@ -115,7 +118,14 @@ class FallbackModelClient:
 
         for profile in profiles:
             client = self.client_factory(profile)
+            if isinstance(client, LiteLLMModelClient) and client.debug_log is None:
+                client.debug_log = self.debug_log
             try:
+                if self.debug_log is not None:
+                    self.debug_log.event(
+                        "model.profile.attempt",
+                        {"profile": profile.name, "model": profile.model},
+                    )
                 return await client.run_turn(
                     system_prompt=system_prompt,
                     messages=messages,
@@ -124,6 +134,17 @@ class FallbackModelClient:
                 )
             except Exception as exc:
                 kind = classify_error(exc)
+                if self.debug_log is not None:
+                    self.debug_log.event(
+                        "model.profile.failure",
+                        {
+                            "profile": profile.name,
+                            "model": profile.model,
+                            "kind": kind,
+                            "exception_type": type(exc).__name__,
+                            "exception": str(exc),
+                        },
+                    )
                 failures.append(f"{profile.name}:{kind}:{exc}")
                 cooldown = self.cooldown_by_kind.get(kind)
                 if cooldown is None:

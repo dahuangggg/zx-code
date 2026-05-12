@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shlex
 import tomllib
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class HookResult:
@@ -97,7 +100,9 @@ class HookRunner:
             if stdout.strip():
                 return json.loads(stdout)
         except TimeoutError:
-            pass
-        except (json.JSONDecodeError, OSError):
-            pass
+            logger.warning("Hook timed out (command=%r), treating as allow", command)
+        except json.JSONDecodeError as exc:
+            logger.warning("Hook returned invalid JSON (command=%r): %s", command, exc)
+        except OSError as exc:
+            logger.warning("Hook failed to start (command=%r): %s", command, exc)
         return None

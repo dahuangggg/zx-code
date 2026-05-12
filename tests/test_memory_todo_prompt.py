@@ -91,7 +91,7 @@ def test_system_prompt_builder_includes_runtime_metadata_and_real_tool_index(
     assert "Available tools:" in prompt
     assert "- read_file:" in prompt
     assert "- write_file:" in prompt
-    assert "arguments:" in prompt
+    assert "arguments:" not in prompt
 
 
 @pytest.mark.asyncio

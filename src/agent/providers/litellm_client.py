@@ -22,6 +22,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from agent.debuglog import DebugLog, to_debug_json
 from agent.models import Message, ModelTurn, ToolCall
 from agent.providers.base import StreamHandler
 
@@ -99,10 +100,12 @@ class LiteLLMModelClient:
         model: str,
         temperature: float = 0.0,
         extra_kwargs: dict[str, Any] | None = None,
+        debug_log: DebugLog | None = None,
     ) -> None:
         self.model = model
         self.temperature = temperature
         self.extra_kwargs = extra_kwargs or {}
+        self.debug_log = debug_log
 
     async def run_turn(
         self,
@@ -113,7 +116,10 @@ class LiteLLMModelClient:
         stream_handler: StreamHandler | None = None,
     ) -> ModelTurn:
         try:
+            import litellm
             from litellm import acompletion
+
+            litellm.drop_params = True
         except ImportError as exc:
             raise RuntimeError(
                 "litellm is not installed. Run `uv add litellm typer rich pydantic` first."
@@ -127,19 +133,32 @@ class LiteLLMModelClient:
             "temperature": self.temperature,
             **self.extra_kwargs,
         }
+        if self.debug_log is not None:
+            self.debug_log.event(
+                "model.request",
+                {
+                    "stream": stream_handler is not None,
+                    "kwargs": _redact_request_kwargs(request_kwargs),
+                },
+            )
 
         if stream_handler is not None:
             stream = await acompletion(stream=True, **request_kwargs)
             return await self._consume_stream(stream, stream_handler)
 
         response = await acompletion(stream=False, **request_kwargs)
+        if self.debug_log is not None:
+            self.debug_log.event("model.response.raw", {"response": to_debug_json(response)})
         choice = response.choices[0]
         message = _read_attr(choice, "message", {})
-        return ModelTurn(
+        turn = ModelTurn(
             text=_extract_text(_read_attr(message, "content")),
             tool_calls=_normalize_tool_calls(_read_attr(message, "tool_calls", [])),
             stop_reason=_read_attr(choice, "finish_reason", "end_turn"),
         )
+        if self.debug_log is not None:
+            self.debug_log.event("model.response.normalized", {"turn": turn})
+        return turn
 
     def _build_messages(
         self,
@@ -147,10 +166,17 @@ class LiteLLMModelClient:
         messages: Sequence[Message],
     ) -> list[dict[str, Any]]:
         payload: list[dict[str, Any]] = []
-        if system_prompt:
-            payload.append({"role": "system", "content": system_prompt})
+
+        # 将消息列表中的 system 消息（来自上下文压缩摘要）合并到系统提示里，
+        # 避免向模型发送多条 system 消息（部分模型不支持）
+        compaction_summaries = [m.content for m in messages if m.role == "system" and m.content]
+        combined_system = "\n\n---\n\n".join(filter(None, [system_prompt, *compaction_summaries]))
+        if combined_system:
+            payload.append({"role": "system", "content": combined_system})
 
         for message in messages:
+            if message.role == "system":
+                continue  # 已合并到 combined_system，跳过
             item: dict[str, Any] = {
                 "role": message.role,
                 "content": message.content,
@@ -180,9 +206,15 @@ class LiteLLMModelClient:
     ) -> ModelTurn:
         text_parts: list[str] = []
         raw_tool_calls: dict[int, dict[str, Any]] = {}
+        chunk_count = 0
+        finish_reasons: list[Any] = []
 
         async for chunk in stream:
+            chunk_count += 1
             choice = chunk.choices[0]
+            finish_reason = _read_attr(choice, "finish_reason")
+            if finish_reason:
+                finish_reasons.append(finish_reason)
             delta = _read_attr(choice, "delta", {})
 
             text_delta = _extract_text(_read_attr(delta, "content"))
@@ -214,11 +246,33 @@ class LiteLLMModelClient:
                 if arguments:
                     entry["function"]["arguments"] += arguments
 
-        return ModelTurn(
+        if self.debug_log is not None:
+            self.debug_log.event(
+                "model.stream.raw_summary",
+                {
+                    "chunk_count": chunk_count,
+                    "text": "".join(text_parts),
+                    "raw_tool_calls": [
+                        raw_tool_calls[index] for index in sorted(raw_tool_calls)
+                    ],
+                    "finish_reasons": finish_reasons,
+                },
+            )
+        turn = ModelTurn(
             text="".join(text_parts),
             tool_calls=_normalize_tool_calls(
                 [raw_tool_calls[index] for index in sorted(raw_tool_calls)]
             ),
-            stop_reason="end_turn",
+            stop_reason=finish_reasons[-1] if finish_reasons else "end_turn",
         )
+        if self.debug_log is not None:
+            self.debug_log.event("model.response.normalized", {"turn": turn})
+        return turn
 
+
+def _redact_request_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(kwargs)
+    for key in list(redacted):
+        if "key" in key.lower() or "token" in key.lower() or "secret" in key.lower():
+            redacted[key] = "[redacted]"
+    return redacted

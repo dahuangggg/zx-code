@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from inspect import isawaitable
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -9,6 +11,7 @@ import pytest
 from pydantic import BaseModel
 
 from agent.core.loop import run_task
+from agent.debuglog import DebugLog
 from agent.models import RuntimeConfig, Message, ModelTurn, ToolCall
 from agent.errors import MaxIterationsExceededError
 from agent.state.sessions import SessionStore
@@ -21,6 +24,7 @@ class ScriptedModelClient:
     def __init__(self, turns: list[ModelTurn]) -> None:
         self.turns = turns
         self.calls = 0
+        self.tool_batches: list[list[str]] = []
 
     async def run_turn(
         self,
@@ -30,10 +34,15 @@ class ScriptedModelClient:
         tools: list[dict[str, Any]],
         stream_handler=None,
     ) -> ModelTurn:
+        self.tool_batches.append(
+            [str(tool.get("function", {}).get("name", "")) for tool in tools]
+        )
         turn = self.turns[self.calls]
         self.calls += 1
         if stream_handler and turn.text:
-            stream_handler(turn.text)
+            result = stream_handler(turn.text)
+            if isawaitable(result):
+                await result
         return turn
 
 
@@ -80,6 +89,99 @@ async def test_loop_runs_tool_call_and_returns_final_answer(tmp_path: Path) -> N
         "I'll write the file first.",
         "Done. The file has been written.",
     ]
+
+
+@pytest.mark.asyncio
+async def test_loop_sends_tool_search_then_activates_matching_tool_schema(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "answer.txt"
+    target.write_text("hello\nworld\n", encoding="utf-8")
+    registry = build_default_registry()
+    client = ScriptedModelClient(
+        [
+            ModelTurn(
+                text="I'll search for the file reading tool.",
+                tool_calls=[
+                    ToolCall(
+                        id="call-search",
+                        name="tool_search",
+                        arguments={"query": "read text file line range"},
+                    )
+                ],
+            ),
+            ModelTurn(
+                text="I'll read the file now.",
+                tool_calls=[
+                    ToolCall(
+                        id="call-read",
+                        name="read_file",
+                        arguments={
+                            "path": str(target),
+                            "start_line": 1,
+                            "end_line": 1,
+                        },
+                    )
+                ],
+            ),
+            ModelTurn(text="The file starts with hello.", tool_calls=[]),
+        ]
+    )
+
+    result = await run_task(
+        "read the first line",
+        model_client=client,
+        tool_registry=registry,
+        config=RuntimeConfig(max_iterations=4, stream=False),
+    )
+
+    assert result.final_text == "The file starts with hello."
+    assert client.tool_batches[0] == ["tool_search"]
+    assert "tool_search" in client.tool_batches[1]
+    assert "read_file" in client.tool_batches[1]
+    assert "write_file" not in client.tool_batches[1]
+
+
+@pytest.mark.asyncio
+async def test_loop_emits_model_and_tool_progress_events(tmp_path: Path) -> None:
+    target = tmp_path / "answer.txt"
+    registry = build_default_registry()
+    client = ScriptedModelClient(
+        [
+            ModelTurn(
+                text="writing",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": str(target), "content": "done\n"},
+                    )
+                ],
+            ),
+            ModelTurn(text="done", tool_calls=[]),
+        ]
+    )
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    await run_task(
+        "write a file",
+        model_client=client,
+        tool_registry=registry,
+        config=RuntimeConfig(max_iterations=4, stream=False),
+        progress_handler=lambda event, payload: events.append((event, payload)),
+    )
+
+    event_names = [event for event, _ in events]
+    assert event_names == [
+        "model.start",
+        "model.end",
+        "tool.start",
+        "tool.end",
+        "model.start",
+        "model.end",
+    ]
+    assert events[2][1]["tool_name"] == "write_file"
+    assert events[3][1]["is_error"] is False
 
 
 @pytest.mark.asyncio
@@ -196,3 +298,61 @@ async def test_loop_runs_concurrency_safe_tool_calls_together() -> None:
     assert result.final_text == "done"
     assert [tool_result.content for tool_result in result.tool_results] == ["one", "two"]
     assert all(not tool_result.is_error for tool_result in result.tool_results)
+
+
+@pytest.mark.asyncio
+async def test_debug_log_records_prompt_model_and_tool_events(tmp_path: Path) -> None:
+    target = tmp_path / "answer.txt"
+    log_path = tmp_path / "debug.jsonl"
+    registry = build_default_registry()
+    client = ScriptedModelClient(
+        [
+            ModelTurn(
+                text="writing",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": str(target), "content": "done\n"},
+                    )
+                ],
+            ),
+            ModelTurn(text="done", tool_calls=[]),
+        ]
+    )
+
+    await run_task(
+        "write a file",
+        model_client=client,
+        tool_registry=registry,
+        config=RuntimeConfig(
+            system_prompt="system",
+            max_iterations=4,
+            session_id="debug-session",
+        ),
+        debug_log=DebugLog(log_path, session_id="debug-session"),
+    )
+
+    events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert [event["event"] for event in events] == [
+        "run.system_prompt",
+        "run.user_message",
+        "run.model_input",
+        "run.assistant_message",
+        "tool.call.requested",
+        "tool.hook.pre",
+        "tool.call.result",
+        "tool.hook.post",
+        "run.model_input",
+        "run.assistant_message",
+    ]
+    assert {event["session_id"] for event in events} == {"debug-session"}
+    assert events[0]["payload"]["system_prompt"] == "system"
+    assert events[1]["payload"]["message"]["content"] == "write a file"
+    assert events[4]["payload"]["call"]["name"] == "write_file"
+    tool_result = json.loads(events[6]["payload"]["result"]["content"])
+    assert tool_result["path"] == str(target)
