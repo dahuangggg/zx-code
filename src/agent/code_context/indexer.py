@@ -48,6 +48,7 @@ class CodeContextIndexer:
         *,
         progress_callback: ProgressCallback | None = None,
     ) -> CodeIndexStats:
+        """同步全量/增量索引代码库，返回本次索引统计。失败时更新状态文件后重新抛出异常。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
         self._write_status(
@@ -79,9 +80,11 @@ class CodeContextIndexer:
             raise
 
     def start_background_index(self, path: str | Path | None = None) -> CodeIndexStatus:
+        """在 asyncio Task 中后台运行索引；同一代码库已有进行中的任务时直接返回当前状态（幂等）。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
         existing = self._background_tasks.get(codebase_id)
+        # 任务还在运行中就不重复创建，避免并发写同一个代码库的 snapshot
         if existing is not None and not existing.done():
             return self.get_status(root)
 
@@ -100,9 +103,10 @@ class CodeContextIndexer:
 
         async def _run() -> None:
             try:
+                # to_thread 把同步的 index_codebase 放到线程池，不阻塞 event loop
                 await asyncio.to_thread(self.index_codebase, root)
             except Exception:
-                return
+                return  # 错误已写入 status 文件，这里静默退出让 task 正常完成
             finally:
                 self._background_tasks.pop(codebase_id, None)
 
@@ -124,10 +128,14 @@ class CodeContextIndexer:
         *,
         top_k: int = 5,
     ) -> list[CodeSearchResult]:
+        """混合检索：向量搜索 + 关键词搜索，用 RRF 融合后去重，返回带行号的代码片段。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
+        # 未索引时直接返回空，避免查询一个空库
         if not self._snapshot_path(codebase_id).exists():
             return []
+        # 超采样：取 top_k 的 4 倍候选，再经去重/截断后得到最终 top_k
+        # 多取是因为 RRF 融合后会有重叠，去重会损失部分候选
         candidate_limit = max(top_k * 4, 20)
         vector_results = self.store.search(codebase_id=codebase_id, query=query, top_k=candidate_limit)
         all_documents = self.store.documents_for_codebase(codebase_id)
@@ -141,6 +149,7 @@ class CodeContextIndexer:
             numbered = _number_lines(result.content, start_line=result.start_line)
             if len(numbered) > self.max_result_chars:
                 numbered = numbered[: self.max_result_chars] + "\n[code search result truncated]"
+            # 超过总字符预算时停止追加，保证注入 prompt 的内容不会过长
             if used + len(numbered) > self.max_total_chars:
                 break
             used += len(numbered)
@@ -148,12 +157,14 @@ class CodeContextIndexer:
         return output
 
     def _dedupe_results(self, results: list[CodeSearchResult]) -> list[CodeSearchResult]:
+        """去除行范围重叠超过 50% 的冗余结果，保留分数更高的那个。"""
         deduped: list[CodeSearchResult] = []
         for result in sorted(results, key=lambda item: item.score, reverse=True):
             overlap_index = _find_overlapping_result(deduped, result)
             if overlap_index is None:
                 deduped.append(result)
             elif result.score > deduped[overlap_index].score:
+                # 新结果与已有结果重叠且分数更高，替换
                 deduped[overlap_index] = result
         return sorted(deduped, key=lambda item: item.score, reverse=True)
 
@@ -221,8 +232,10 @@ class CodeContextIndexer:
         *,
         progress_callback: ProgressCallback | None = None,
     ) -> CodeIndexStats:
+        """增量索引核心逻辑：对比 snapshot 中的文件哈希，只重新索引新增/修改的文件。"""
         codebase_id = codebase_hash(root)
         old_snapshot = self._load_snapshot(codebase_id)
+        # old_files: 上次索引的文件状态 {relative_path: {hash, chunks, ids, ...}}
         old_files: dict[str, Any] = old_snapshot.get("files", {}) if old_snapshot else {}
 
         current_paths = iter_code_files(root)
@@ -247,6 +260,7 @@ class CodeContextIndexer:
         skipped = 0
         next_files: dict[str, Any] = {}
 
+        # 先删除已消失的文件的 chunk，再处理新增/修改，保证 store 不残留孤儿向量
         for relative_path in removed:
             self.store.delete_ids(list(old_files.get(relative_path, {}).get("ids", [])))
 
@@ -255,6 +269,7 @@ class CodeContextIndexer:
             file_hash = current_hashes[relative_path]
             old_info = old_files.get(relative_path)
             if old_info and old_info.get("hash") == file_hash:
+                # 文件内容未变（哈希一致），直接复用上次的 chunk 信息，跳过重新切分和入库
                 skipped += 1
                 next_files[relative_path] = old_info
                 self._record_progress(
@@ -278,6 +293,7 @@ class CodeContextIndexer:
             chunk_ids: list[str] = []
             prepared: list[CodeChunk] = []
             for index, chunk in enumerate(chunks):
+                # chunk_id 由 codebase_id + 路径 + 位置 + 文件哈希组成，内容变化时 id 自动失效
                 chunk_id = _chunk_id(codebase_id, relative_path, index, file_hash)
                 chunk_ids.append(chunk_id)
                 prepared.append(
@@ -410,10 +426,12 @@ class CodeContextIndexer:
 
 
 def codebase_hash(path: str | Path) -> str:
+    # 用 MD5 前 12 位作为代码库 ID：不用于安全目的，仅作路径唯一标识，12 位碰撞概率可接受
     return hashlib.md5(str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
 
 
 def _hash_file(path: Path) -> str:
+    # 1MB 分块读取，防止大文件全量载入内存
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -422,6 +440,7 @@ def _hash_file(path: Path) -> str:
 
 
 def _chunk_id(codebase_id: str, relative_path: str, index: int, file_hash: str) -> str:
+    # 把文件哈希编入 chunk_id：文件内容变化时，同一位置的 chunk_id 也变，旧向量自然失效
     raw = f"{codebase_id}:{relative_path}:{index}:{file_hash}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

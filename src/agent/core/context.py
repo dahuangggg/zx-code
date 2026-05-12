@@ -19,6 +19,8 @@ Token 计数使用 ``litellm.token_counter()``（自动选择正确 tokenizer）
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 from dataclasses import dataclass, field
 
@@ -27,8 +29,13 @@ from agent.models import Message
 logger = logging.getLogger(__name__)
 
 
+@functools.lru_cache(maxsize=2048)
 def _count_tokens(text: str, model: str) -> int:
-    """Count tokens using litellm if available, else estimate from chars."""
+    """Count tokens using litellm if available, else estimate from chars.
+
+    结果按 (text, model) 缓存：同一条消息在多轮 prepare() 中只计算一次，
+    对话越长收益越大（每轮只有新增消息需要计算）。
+    """
     if model:
         try:
             from litellm import token_counter
@@ -128,6 +135,7 @@ class ContextGuard:
     summary_entry_chars: int = 240
     compact_model: str = ""
     model: str = ""
+    summary_timeout_s: float = 30.0
     _compact_model_kwargs: dict = field(default_factory=dict)
 
     async def prepare(self, messages: list[Message]) -> list[Message]:
@@ -224,18 +232,25 @@ class ContextGuard:
         try:
             from litellm import acompletion
 
-            response = await acompletion(
-                model=model,
-                messages=[{"role": "user", "content": SUMMARY_PROMPT + formatted}],
-                temperature=0.0,
-                max_tokens=1024,
-                stream=False,
-                **self._compact_model_kwargs,
+            # 套 wait_for 防止 compact_model 卡住导致主循环阻塞
+            response = await asyncio.wait_for(
+                acompletion(
+                    model=model,
+                    messages=[{"role": "user", "content": SUMMARY_PROMPT + formatted}],
+                    temperature=0.0,
+                    max_tokens=1024,
+                    stream=False,
+                    **self._compact_model_kwargs,
+                ),
+                timeout=self.summary_timeout_s,
             )
             content = response.choices[0].message.content
             return content.strip() if content else ""
         except Exception as exc:
-            logger.warning("LLM summarization failed (model=%s), falling back to mechanical summary: %s", model, exc)
+            logger.warning(
+                "LLM summarization failed (model=%s), falling back to mechanical summary: %s",
+                model, exc,
+            )
             return ""
 
     def _mechanical_summary(self, messages: list[Message]) -> str:

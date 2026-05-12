@@ -9,7 +9,7 @@ RecoveryBudget
 ResilienceRunner
     对单次 LLM 调用的弹性包装，根据 ``classify_error()`` 的分类采取不同策略：
       - rate_limit  → 指数退避重试（backoff budget）
-      - overflow    → 调用 ContextGuard.compact_history() 后重试（compaction budget）
+      - overflow    → 调用 compact_fn() 压缩历史后重试（compaction budget）
       - length      → 追加"请继续"消息后重试（continuation budget）
       - timeout     → 直接抛出 ModelTimeoutError
       - auth/billing→ 直接抛出 ModelInvocationError（不重试）
@@ -29,10 +29,13 @@ from agent.errors import (
     ContextOverflowError,
     ModelInvocationError,
     ModelTimeoutError,
-    RateLimitError,
 )
 from agent.models import Message, ModelTurn
 from agent.providers.base import ModelClient
+
+# 压缩函数类型：接收消息列表，返回压缩后的消息列表
+CompactFn = Callable[[list[Message]], Awaitable[list[Message]]]
+
 
 class RecoveryBudget:
     """Track per-category retry attempts to prevent infinite loops.
@@ -101,23 +104,24 @@ def classify_error(exc: Exception) -> str:
     )):
         return "billing"
 
+    # overflow = 输入超长（需要压缩历史）：关键词明确指向"上下文/输入 token 超限"
+    # 注意：不包含 "max_tokens"——该词同时出现在"输出截断"场景，容易与 continuation 混淆
     if any(term in msg for term in (
         "context_length", "context length", "maximum context",
-        "token limit", "too many tokens", "max_tokens",
+        "token limit", "too many tokens",
         "context window", "exceeds the model",
     )):
         return "overflow"
-
-    # max_tokens 与 overflow 区分：前者是"输出被截断"（可用 continuation 续写），后者是"输入超长"（要压缩历史）
-    if any(term in msg for term in ("max_tokens", "length", "truncat")):
-        if "finish_reason" in msg or "stop_reason" in msg:
-            return "max_tokens"
 
     return "unknown"
 
 
 class ResilienceRunner:
-    """Run one model turn with bounded recovery strategies."""
+    """Run one model turn with bounded recovery strategies.
+
+    compact_fn 参数接受 ContextGuard.compact_history 或任何签名兼容的函数，
+    与 ContextGuard 具体实现解耦，便于测试和替换压缩策略。
+    """
 
     def __init__(
         self,
@@ -125,13 +129,13 @@ class ResilienceRunner:
         model_client: ModelClient,
         timeout_s: float,
         recovery_budget: RecoveryBudget | None = None,
-        context_guard: Any | None = None,
+        compact_fn: CompactFn | None = None,
         sleep: SleepFunc = asyncio.sleep,
     ) -> None:
         self.model_client = model_client
         self.timeout_s = timeout_s
         self.recovery_budget = recovery_budget or RecoveryBudget()
-        self.context_guard = context_guard
+        self.compact_fn = compact_fn
         self.sleep = sleep
 
     async def run(
@@ -159,6 +163,7 @@ class ResilienceRunner:
                 )
 
                 # 输出被截断且没工具调用：把已生成的 assistant 文本回灌，再追加一条 user 指令请求续写
+                # 要求 turn.text 非空：空文本续写只会浪费一次调用，且可能触发同样的空响应死循环
                 if self._should_continue(turn):
                     self.recovery_budget.record("continuation")
                     continued_text_parts.append(turn.text)
@@ -194,24 +199,24 @@ class ResilienceRunner:
                     await self.sleep(self.recovery_budget.backoff_delay())
                     continue
 
-                # 输入超长：让 context_guard 压缩历史后重试；无 guard 时无法自愈，直接抛
+                # 输入超长：调用 compact_fn 压缩历史后重试；无 compact_fn 时无法自愈，直接抛
                 if error_type == "overflow" and self.recovery_budget.can_retry("compaction"):
                     self.recovery_budget.record("compaction")
-                    if self.context_guard is not None:
-                        current_messages = await self.context_guard.compact_history(
-                            current_messages
-                        )
+                    if self.compact_fn is not None:
+                        current_messages = await self.compact_fn(current_messages)
                         continue
                     raise ContextOverflowError(
-                        f"context overflow and no context_guard available: {exc}"
+                        f"context overflow and no compact_fn available: {exc}"
                     ) from exc
 
                 raise ModelInvocationError(f"model turn failed: {exc}") from exc
 
     def _should_continue(self, turn: ModelTurn) -> bool:
         # 有 tool_calls 时不续写：工具调用是结构化输出，截断的工具参数无法靠"请继续"安全拼接
+        # 要求 turn.text 非空：空文本续写无意义，会浪费预算且可能触发同样的空响应循环
         return (
             turn.stop_reason in ("length", "max_tokens")
             and not turn.tool_calls
+            and bool(turn.text)
             and self.recovery_budget.can_retry("continuation")
         )

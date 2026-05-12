@@ -42,7 +42,7 @@ class ToolRegistry:
         self._active_schema_names: set[str] = set()
         self.permission_manager = permission_manager
         self.approval_callback = approval_callback
-        self.debug_log = debug_log
+        self._log = debug_log or DebugLog.null()
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -179,5 +179,4 @@ class ToolRegistry:
         )
 
     def _debug(self, event: str, payload: dict[str, Any]) -> None:
-        if self.debug_log is not None:
-            self.debug_log.event(event, payload)
+        self._log.event(event, payload)

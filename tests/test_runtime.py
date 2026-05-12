@@ -130,13 +130,13 @@ async def test_repl_resume_prints_recent_session_messages(monkeypatch, tmp_path,
 
     settings = AgentSettings(enable_memory=False, enable_todos=False)
     session_key = build_session_key(
-        agent_id=settings.default_agent_id,
+        agent_id=settings.routing.default_agent_id,
         channel="cli",
-        account_id=settings.account_id,
+        account_id=settings.channel.account_id,
         peer_id="demo",
-        dm_scope=settings.dm_scope,
+        dm_scope=settings.routing.dm_scope,
     )
-    store = SessionStore(tmp_path / settings.data_dir / "sessions")
+    store = SessionStore(tmp_path / settings.state.data_dir / "sessions")
     store.append_message(session_key, Message.user("old question"))
     store.append_message(session_key, Message.assistant("old answer"))
     store.append_message(session_key, Message.tool("call-1", "bash", "tool output"))

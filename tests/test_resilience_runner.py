@@ -71,7 +71,7 @@ async def test_resilience_runner_compacts_history_after_overflow() -> None:
     runner = ResilienceRunner(
         model_client=client,
         timeout_s=1.0,
-        context_guard=guard,
+        compact_fn=guard.compact_history,
     )
 
     turn = await runner.run(

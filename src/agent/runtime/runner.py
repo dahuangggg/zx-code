@@ -78,7 +78,7 @@ def _print_repl_banner(
     table = Table.grid(padding=(0, 1))
     table.add_column(style="bold cyan", no_wrap=True)
     table.add_column()
-    table.add_row("model", settings.model)
+    table.add_row("model", settings.model.name)
     table.add_row("session", session_id)
     table.add_row("mode", "resumed" if resumed else "new")
     table.add_row("cwd", str(Path.cwd()))
@@ -109,11 +109,11 @@ def _print_repl_session(session_id: str, resumed: bool) -> None:
 
 def _cli_gateway_session_key(settings: AgentSettings, peer_id: str) -> str:
     return build_session_key(
-        agent_id=settings.force_agent_id or settings.default_agent_id,
+        agent_id=settings.routing.force_agent_id or settings.routing.default_agent_id,
         channel="cli",
-        account_id=settings.account_id,
+        account_id=settings.channel.account_id,
         peer_id=peer_id,
-        dm_scope=settings.dm_scope,
+        dm_scope=settings.routing.dm_scope,
     )
 
 
@@ -124,7 +124,7 @@ def _recent_resume_messages(
     limit: int = 6,
 ) -> list[tuple[str, str]]:
     project_root = Path.cwd()
-    data_dir = _resolve_project_path(project_root, settings.data_dir)
+    data_dir = _resolve_project_path(project_root, settings.state.data_dir)
     session_key = _cli_gateway_session_key(settings, resume_session_id)
     messages = SessionStore(data_dir / "sessions").rebuild_messages(session_key)
     visible_messages: list[tuple[str, str]] = []
@@ -180,18 +180,18 @@ async def _run_once(
     lane_scheduler = LaneScheduler()
     gateway = _build_gateway(
         settings,
-        emit_cli=not settings.stream,
+        emit_cli=not settings.model.stream,
         lane_scheduler=lane_scheduler,
     )
     inbound = InboundMessage.cli(
         task,
-        account_id=settings.account_id,
+        account_id=settings.channel.account_id,
         peer_id=resume_session_id or _new_cli_session_id(),
     )
     try:
         await gateway.handle_inbound(
             inbound,
-            force_agent_id=settings.force_agent_id or None,
+            force_agent_id=settings.routing.force_agent_id or None,
         )
     except AgentError as exc:
         console.print(f"[red]Error:[/red] {exc}")
@@ -218,13 +218,13 @@ async def _run_channel_once(
     lane_scheduler = LaneScheduler()
     gateway = _build_gateway(
         settings,
-        emit_cli=not settings.stream,
+        emit_cli=not settings.model.stream,
         lane_scheduler=lane_scheduler,
     )
     try:
         result = await gateway.receive_once(
-            settings.channel,
-            force_agent_id=settings.force_agent_id or None,
+            settings.channel.name,
+            force_agent_id=settings.routing.force_agent_id or None,
         )
     except AgentError as exc:
         console.print(f"[red]Error:[/red] {exc}")
@@ -236,7 +236,7 @@ async def _run_channel_once(
         await lane_scheduler.close()
 
     if result is None:
-        console.print(f"No inbound message on channel: {settings.channel}")
+        console.print(f"No inbound message on channel: {settings.channel.name}")
     await gateway.drain_delivery()
     return 0
 
@@ -258,7 +258,7 @@ async def _run_channel_loop(
     lane_scheduler = LaneScheduler()
     gateway = _build_gateway(
         settings,
-        emit_cli=not settings.stream,
+        emit_cli=not settings.model.stream,
         lane_scheduler=lane_scheduler,
     )
     heartbeat_runner = _build_heartbeat_runner(
@@ -274,7 +274,7 @@ async def _run_channel_loop(
     delivery_daemon = (
         DeliveryDaemon(
             runner=gateway.delivery_runner,
-            interval_s=settings.delivery_daemon_interval_s,
+            interval_s=settings.delivery.daemon_interval_s,
         )
         if gateway.delivery_runner is not None
         else None
@@ -283,13 +283,13 @@ async def _run_channel_loop(
         delivery_daemon.start()
     bg_manager = BackgroundTaskManager()
     tick_counter = 0
-    console.print(f"Listening on channel: {settings.channel}. Press Ctrl-C to stop.")
+    console.print(f"Listening on channel: {settings.channel.name}. Press Ctrl-C to stop.")
     try:
         while True:
             try:
                 result = await gateway.receive_once(
-                    settings.channel,
-                    force_agent_id=settings.force_agent_id or None,
+                    settings.channel.name,
+                    force_agent_id=settings.routing.force_agent_id or None,
                 )
                 if result is None:
                     await asyncio.sleep(0.2)
@@ -343,7 +343,7 @@ async def _run_repl(
     lane_scheduler = LaneScheduler()
     gateway = _build_gateway(
         settings,
-        emit_cli=not settings.stream,
+        emit_cli=not settings.model.stream,
         lane_scheduler=lane_scheduler,
     )
     try:
@@ -377,13 +377,13 @@ async def _run_repl(
             console.rule("[bold cyan]assistant[/bold cyan]")
             inbound = InboundMessage.cli(
                 task,
-                account_id=settings.account_id,
+                account_id=settings.channel.account_id,
                 peer_id=session_id,
             )
             try:
                 await gateway.handle_inbound(
                     inbound,
-                    force_agent_id=settings.force_agent_id or None,
+                    force_agent_id=settings.routing.force_agent_id or None,
                 )
             except AgentError as exc:
                 console.print(f"[red]Error:[/red] {exc}")
@@ -405,7 +405,7 @@ def _run_cli(
     resume_session_id: str | None = None,
 ) -> int:
     if not task:
-        if settings.channel != "cli":
+        if settings.channel.name != "cli":
             if watch:
                 return asyncio.run(
                     _run_channel_loop(

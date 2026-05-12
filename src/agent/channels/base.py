@@ -2,7 +2,7 @@
 
 ``InboundMessage`` 是通道无关的消息载体，包含：
   text       — 消息文本内容
-  channel    — 来源通道名称（"cli" / "telegram" / "feishu"）
+  channel    — 来源通道名称（"cli" / "telegram"）
   account_id — 机器人账号标识（同一通道可有多个账号）
   peer_id    — 发送者 ID（用户/群组唯一标识）
   guild_id   — 群组 ID（私信为空）
