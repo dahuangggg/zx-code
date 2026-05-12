@@ -32,7 +32,7 @@ class ToolCallExecutor:
         self.tool_registry = tool_registry
         self.hook_runner = hook_runner or HookRunner.empty()
         self.session_id = session_id
-        self.debug_log = debug_log
+        self._log = debug_log or DebugLog.null()
         self.progress_handler = progress_handler
 
     async def execute_many(self, calls: list[ToolCall]) -> list[ToolResult]:
@@ -55,23 +55,22 @@ class ToolCallExecutor:
                 await self._run_post_hook(call, result)
 
         for idx, call in enumerate(calls):
-            if self.debug_log is not None:
-                self.debug_log.event(
-                    "tool.call.requested",
-                    {"call": call},
-                    session_id=self.session_id,
-                )
+            self._log.event(
+                "tool.call.requested",
+                {"call": call},
+                session_id=self.session_id,
+                level="info",
+            )
             hook_result = await self._run_pre_hook(call)
-            if self.debug_log is not None:
-                self.debug_log.event(
-                    "tool.hook.pre",
-                    {
-                        "tool_name": call.name,
-                        "denied": hook_result.denied,
-                        "reason": hook_result.reason,
-                    },
-                    session_id=self.session_id,
-                )
+            self._log.event(
+                "tool.hook.pre",
+                {
+                    "tool_name": call.name,
+                    "denied": hook_result.denied,
+                    "reason": hook_result.reason,
+                },
+                session_id=self.session_id,
+            )
             if hook_result.denied:
                 await flush_safe_batch()
                 await self._emit_progress(
@@ -136,16 +135,15 @@ class ToolCallExecutor:
                 "session_id": self.session_id,
             },
         )
-        if self.debug_log is not None:
-            self.debug_log.event(
-                "tool.hook.post",
-                {
-                    "tool_name": call.name,
-                    "is_error": result.is_error,
-                    "result": result.content,
-                },
-                session_id=self.session_id,
-            )
+        self._log.event(
+            "tool.hook.post",
+            {
+                "tool_name": call.name,
+                "is_error": result.is_error,
+                "result": result.content,
+            },
+            session_id=self.session_id,
+        )
 
     async def _execute_allowed(self, call: ToolCall) -> ToolResult:
         await self._emit_progress(
@@ -170,12 +168,12 @@ class ToolCallExecutor:
                 "is_error": result.is_error,
             },
         )
-        if self.debug_log is not None:
-            self.debug_log.event(
-                "tool.call.result",
-                {"call": call, "result": result},
-                session_id=self.session_id,
-            )
+        self._log.event(
+            "tool.call.result",
+            {"call": call, "result": result},
+            session_id=self.session_id,
+            level="info",
+        )
         return result
 
     def _is_concurrency_safe(self, call: ToolCall) -> bool:

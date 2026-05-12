@@ -342,17 +342,17 @@ async def test_debug_log_records_prompt_model_and_tool_events(tmp_path: Path) ->
         "run.system_prompt",
         "run.user_message",
         "run.model_input",
-        "run.assistant_message",
         "tool.call.requested",
         "tool.hook.pre",
         "tool.call.result",
         "tool.hook.post",
+        "run.assistant_message",
         "run.model_input",
         "run.assistant_message",
     ]
     assert {event["session_id"] for event in events} == {"debug-session"}
     assert events[0]["payload"]["system_prompt"] == "system"
     assert events[1]["payload"]["message"]["content"] == "write a file"
-    assert events[4]["payload"]["call"]["name"] == "write_file"
-    tool_result = json.loads(events[6]["payload"]["result"]["content"])
+    assert events[3]["payload"]["call"]["name"] == "write_file"
+    tool_result = json.loads(events[5]["payload"]["result"]["content"])
     assert tool_result["path"] == str(target)

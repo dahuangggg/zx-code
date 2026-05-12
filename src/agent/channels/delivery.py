@@ -1,6 +1,6 @@
 """channels.delivery — 带指数退避重试的异步消息投递队列。
 
-解决的问题：agent 生成回复后，外部通道（Telegram/Feishu API）可能临时不可用，
+解决的问题：agent 生成回复后，外部通道（例如 Telegram API）可能临时不可用，
 需要可靠地重试投递，而不阻塞 agent 主循环。
 
 ``DeliveryQueue`` — 消息持久化队列（JSON 文件），含重试状态
@@ -32,7 +32,6 @@ DeliveryStatus = Literal["queued", "sent", "failed"]
 CHANNEL_TEXT_LIMITS = {
     "telegram": 4096,
     "telegram_caption": 1024,
-    "feishu": 20000,
     "cli": 20000,
 }
 

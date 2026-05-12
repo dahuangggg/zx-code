@@ -124,15 +124,16 @@ def _truncate_inline(text: str, limit: int = 88) -> str:
 
 
 def _build_stream_output(settings: AgentSettings) -> StreamOutput:
-    if not settings.stream:
+    if not settings.model.stream:
         return StreamOutput()
-    if settings.render_markdown and settings.markdown_streaming:
+    if settings.model.render_markdown and settings.model.markdown_streaming:
         renderer = MarkdownStreamRenderer(console)
         return StreamOutput(handler=renderer.write, renderer=renderer)
     return StreamOutput(handler=_stream_printer)
 
 
 def _build_model_client(settings: AgentSettings, debug_log: DebugLog | None = None) -> Any:
+    debug_log = debug_log or DebugLog.null()
     profiles = settings.resolved_model_profiles()
     if len(profiles) > 1:
         return FallbackModelClient(profiles, debug_log=debug_log)
@@ -152,46 +153,50 @@ def _build_runtime(
     subagent_depth: int = 0,
 ) -> dict[str, Any]:
     effective_settings = (
-        settings.model_copy(update={"session_id": session_id})
+        settings.model_copy(
+            update={
+                "state": settings.state.model_copy(update={"session_id": session_id})
+            }
+        )
         if session_id is not None
         else settings
     )
     project_root = Path.cwd()
-    data_dir = _resolve_project_path(project_root, effective_settings.data_dir)
+    data_dir = _resolve_project_path(project_root, effective_settings.state.data_dir)
     debug_log = (
         DebugLog(
-            _resolve_project_path(project_root, effective_settings.debug_log_path),
-            session_id=effective_settings.session_id,
+            _resolve_project_path(project_root, effective_settings.debug.log_path),
+            session_id=effective_settings.state.session_id,
         )
-        if effective_settings.debug_log_enabled
-        else None
+        if effective_settings.debug.log_enabled
+        else DebugLog.null()
     )
     memory_store = (
-        MemoryStore(_resolve_project_path(project_root, effective_settings.memory_path))
-        if effective_settings.enable_memory
+        MemoryStore(_resolve_project_path(project_root, effective_settings.state.memory_path))
+        if effective_settings.state.enable_memory
         else None
     )
     if memory_store is not None:
         memory_store.ensure()
 
     todo_manager = (
-        TodoManager(data_dir / "todos" / f"{safe_session_id(effective_settings.session_id)}.json")
-        if effective_settings.enable_todos
+        TodoManager(data_dir / "todos" / f"{safe_session_id(effective_settings.state.session_id)}.json")
+        if effective_settings.state.enable_todos
         else None
     )
-    skill_root = _resolve_project_path(project_root, effective_settings.skills_dir)
+    skill_root = _resolve_project_path(project_root, effective_settings.state.skills_dir)
     if not skill_root.exists():
         workspace_skills = project_root / "workspace" / "skills"
         if workspace_skills.exists():
             skill_root = workspace_skills
     skill_store = (
         SkillStore(skill_root)
-        if effective_settings.enable_skills
+        if effective_settings.state.enable_skills
         else None
     )
     task_store = (
-        TaskStore(_resolve_project_path(project_root, effective_settings.tasks_dir))
-        if effective_settings.enable_tasks
+        TaskStore(_resolve_project_path(project_root, effective_settings.state.tasks_dir))
+        if effective_settings.state.enable_tasks
         else None
     )
     prompt_builder = SystemPromptBuilder(
@@ -203,24 +208,24 @@ def _build_runtime(
     )
     # Resolve rules file: explicit setting > project default
     rules_path: Path | None = None
-    if effective_settings.permission_rules_path:
-        rules_path = _resolve_project_path(project_root, effective_settings.permission_rules_path)
+    if effective_settings.permissions.rules_path:
+        rules_path = _resolve_project_path(project_root, effective_settings.permissions.rules_path)
     else:
         default_rules = project_root / ".zx-code" / "permissions.toml"
         if default_rules.exists():
             rules_path = default_rules
     permission_manager = PermissionManager.from_rules_file(
         rules_path or "",
-        tool_policies=effective_settings.permission_tools,
-        default_decision=effective_settings.permission_default,
+        tool_policies=effective_settings.permissions.tools,
+        default_decision=effective_settings.permissions.default,
     ) if rules_path else PermissionManager(
-        tool_policies=effective_settings.permission_tools,
-        default_decision=effective_settings.permission_default,
+        tool_policies=effective_settings.permissions.tools,
+        default_decision=effective_settings.permissions.default,
     )
     subagent_runner: SubagentRunner | None = None
     if (
-        effective_settings.enable_subagents
-        and subagent_depth < effective_settings.subagent_max_depth
+        effective_settings.subagents.enabled
+        and subagent_depth < effective_settings.subagents.max_depth
     ):
 
         async def run_subagent_text(
@@ -230,7 +235,9 @@ def _build_runtime(
         ) -> str:
             return await _run_agent_text(
                 task,
-                settings=effective_settings.model_copy(update={"stream": False}),
+                settings=effective_settings.model_copy(
+                    update={"model": effective_settings.model.model_copy(update={"stream": False})}
+                ),
                 session_id=child_session_id,
                 lane_scheduler=lane_scheduler,
                 subagent_depth=next_depth,
@@ -238,31 +245,31 @@ def _build_runtime(
 
         subagent_runner = SubagentRunner(
             run_agent_text=run_subagent_text,
-            parent_session_id=effective_settings.session_id,
+            parent_session_id=effective_settings.state.session_id,
             lane_scheduler=lane_scheduler,
-            max_depth=effective_settings.subagent_max_depth,
+            max_depth=effective_settings.subagents.max_depth,
             current_depth=subagent_depth,
         )
 
     worktree_manager = (
         WorktreeManager(
             repo_root=project_root,
-            worktree_root=_resolve_project_path(project_root, effective_settings.worktree_dir),
+            worktree_root=_resolve_project_path(project_root, effective_settings.worktree.dir),
         )
-        if effective_settings.enable_worktree_isolation
+        if effective_settings.worktree.isolation_enabled
         else None
     )
     code_context_indexer = (
         CodeContextIndexer(
             store=ChromaCodeStore(
-                path=_resolve_project_path(project_root, effective_settings.code_context_path),
-                collection_name=effective_settings.code_context_collection,
+                path=_resolve_project_path(project_root, effective_settings.code_context.path),
+                collection_name=effective_settings.code_context.collection,
             ),
-            snapshot_dir=_resolve_project_path(project_root, effective_settings.code_context_snapshot_dir),
-            max_result_chars=effective_settings.code_context_max_result_chars,
-            max_total_chars=effective_settings.code_context_max_total_chars,
+            snapshot_dir=_resolve_project_path(project_root, effective_settings.code_context.snapshot_dir),
+            max_result_chars=effective_settings.code_context.max_result_chars,
+            max_total_chars=effective_settings.code_context.max_total_chars,
         )
-        if effective_settings.code_context_enabled
+        if effective_settings.code_context.enabled
         else None
     )
     registry = build_default_registry(
@@ -279,7 +286,7 @@ def _build_runtime(
     )
     plugin_dirs = [
         _resolve_project_path(project_root, plugin_dir)
-        for plugin_dir in effective_settings.plugin_dirs
+        for plugin_dir in effective_settings.extensions.plugin_dirs
     ]
     default_plugin_dir = project_root / ".zx-code" / "plugins"
     if default_plugin_dir.exists():
@@ -288,8 +295,8 @@ def _build_runtime(
         registry.register(plugin_tool)
     # Resolve hooks file: explicit setting > project default
     hooks_path: Path | None = None
-    if effective_settings.hooks_path:
-        hooks_path = _resolve_project_path(project_root, effective_settings.hooks_path)
+    if effective_settings.extensions.hooks_path:
+        hooks_path = _resolve_project_path(project_root, effective_settings.extensions.hooks_path)
     else:
         default_hooks = project_root / ".zx-code" / "hooks.toml"
         if default_hooks.exists():
@@ -301,11 +308,11 @@ def _build_runtime(
         "hook_runner": hook_runner,
         "permission_manager": permission_manager,
         "context_guard": ContextGuard(
-            max_tokens=effective_settings.context_max_tokens,
-            keep_recent=effective_settings.context_keep_recent,
-            tool_result_max_chars=effective_settings.context_tool_result_max_chars,
-            compact_model=effective_settings.compact_model,
-            model=effective_settings.model,
+            max_tokens=effective_settings.context.max_tokens,
+            keep_recent=effective_settings.context.keep_recent,
+            tool_result_max_chars=effective_settings.context.tool_result_max_chars,
+            compact_model=effective_settings.context.compact_model,
+            model=effective_settings.model.name,
         ),
         "model_client": _build_model_client(effective_settings, debug_log),
         "settings": effective_settings,
@@ -314,16 +321,15 @@ def _build_runtime(
         "tool_registry": registry,
         "debug_log": debug_log,
     }
-    if debug_log is not None:
-        debug_log.event(
-            "runtime.built",
-            {
-                "model": effective_settings.model,
-                "session_id": effective_settings.session_id,
-                "data_dir": str(data_dir),
-                "debug_log_path": str(debug_log.path),
-            },
-        )
+    debug_log.event(
+        "runtime.built",
+        {
+            "model": effective_settings.model.name,
+            "session_id": effective_settings.state.session_id,
+            "data_dir": str(data_dir),
+        },
+        level="info",
+    )
     _refresh_system_prompt(runtime)
     return runtime
 
@@ -344,7 +350,7 @@ async def _attach_mcp_tools(
     runtime: dict[str, Any],
     settings: AgentSettings,
 ) -> MCPToolRouter | None:
-    if not settings.mcp_servers:
+    if not settings.extensions.mcp_servers:
         return None
 
     router = MCPToolRouter(
@@ -355,7 +361,7 @@ async def _attach_mcp_tools(
                 args=server.args,
                 env=server.env,
             )
-            for server in settings.mcp_servers
+            for server in settings.extensions.mcp_servers
         },
         permission_manager=runtime.get("permission_manager"),
     )
@@ -388,7 +394,7 @@ async def _run_agent_text(
     stream_output = _build_stream_output(settings)
     progress_reporter = (
         CLIProgressReporter(console, flush_output=stream_output.flush)
-        if settings.stream and settings.channel == "cli"
+        if settings.model.stream and settings.channel.name == "cli"
         else None
     )
 
@@ -419,6 +425,6 @@ async def _run_agent_text(
         if mcp_router is not None:
             await mcp_router.close()
 
-    if settings.stream and result.final_text and stream_output.renderer is None:
+    if settings.model.stream and result.final_text and stream_output.renderer is None:
         console.print()
     return result.final_text

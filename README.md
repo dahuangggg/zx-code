@@ -6,7 +6,7 @@
 
 - 模型如何在多轮 ReAct loop 中调用工具并拿到结果。
 - 本地会话、memory、todo、task、skill 如何进入 prompt 和持久化状态。
-- CLI、Telegram、飞书等入口如何归一化成同一条 Agent 执行链路。
+- CLI、Telegram 等入口如何归一化成同一条 Agent 执行链路。
 - 工具权限、上下文压缩、失败恢复、可靠投递、后台任务如何作为运行时能力存在。
 - MCP、插件、CodeContext、subagent、worktree isolation 如何在不改主循环的情况下接入。
 
@@ -81,7 +81,7 @@ CLI / Channel
 
 ```mermaid
 flowchart TD
-    User["User / Channel Message"] --> Channel["CLIChannel / TelegramChannel / FeishuChannel"]
+    User["User / Channel Message"] --> Channel["CLIChannel / TelegramChannel"]
     Channel --> Gateway["Gateway"]
     Gateway --> Binding["BindingTable + session key"]
     Binding --> Lane["LaneScheduler"]
@@ -235,7 +235,6 @@ sequenceDiagram
 - [`src/agent/channels/gateway.py`](src/agent/channels/gateway.py)
 - [`src/agent/channels/cli.py`](src/agent/channels/cli.py)
 - [`src/agent/channels/telegram.py`](src/agent/channels/telegram.py)
-- [`src/agent/channels/feishu.py`](src/agent/channels/feishu.py)
 - [`src/agent/channels/delivery.py`](src/agent/channels/delivery.py)
 
 外部入口都会被归一化成 `InboundMessage`。`Gateway` 再根据 channel、account、peer、guild 和 `DMScope` 生成 session key，并把任务交给同一条 Agent loop。
@@ -244,13 +243,12 @@ sequenceDiagram
 flowchart LR
     CLI["CLI text"] --> Inbound["InboundMessage"]
     TG["Telegram update"] --> Inbound
-    FS["Feishu event"] --> Inbound
     Inbound --> Gateway["Gateway"]
     Gateway --> SessionKey["build_session_key()"]
     SessionKey --> Agent["run_agent_turn()"]
     Agent --> Queue["DeliveryQueue"]
     Queue --> Runner["DeliveryRunner"]
-    Runner --> Out["CLI / Telegram / Feishu reply"]
+    Runner --> Out["CLI / Telegram reply"]
 ```
 
 出站消息不直接发送，而是先进入 `DeliveryQueue`：
@@ -336,11 +334,36 @@ TOML 可以直接写顶级字段，也可以放到 `[agent]` section。推荐用
 [agent]
 model = "openai/gpt-5.4-mini"
 fallback_models = "openai/gpt-5.5"
+reasoning_effort = "" # 可填 "low"、"medium"、"high"，具体取决于模型和 provider
 max_iterations = 30
 context_max_tokens = 128000
 data_dir = ".agent"
 memory_path = ".memory/MEMORY.md"
 ```
+
+临时开启支持模型的推理强度：
+
+```bash
+uv run agent --reasoning-effort medium "分析这个改动的风险"
+```
+
+如果使用 `model_profiles`，可以为不同 profile 单独配置：
+
+```toml
+[[agent.model_profiles]]
+name = "primary"
+model = "openai/gpt-5.4-mini"
+api_key_env = "OPENAI_API_KEY"
+reasoning_effort = "medium"
+
+[[agent.model_profiles]]
+name = "backup"
+model = "openai/gpt-5.5"
+api_key_env = "OPENAI_API_KEY"
+reasoning_effort = "high"
+```
+
+不支持 `reasoning_effort` 的模型会由 LiteLLM 按其 provider 行为处理；更特殊的 reasoning 参数仍可放进 `extra_kwargs` 透传。
 
 常用功能开关：
 
@@ -474,44 +497,6 @@ Telegram offset 持久化在：
 curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
 ```
 
-## 飞书
-
-飞书通道使用开放平台应用 bot：webhook 接收事件，tenant token 调用发送消息 API。
-
-需要的环境变量：
-
-```bash
-export FEISHU_APP_ID="cli_xxx"
-export FEISHU_APP_SECRET="xxx"
-export FEISHU_VERIFICATION_TOKEN="xxx"
-export FEISHU_BOT_OPEN_ID="ou_xxx"
-export FEISHU_BOT_ACCOUNT_ID="main-feishu-bot"
-```
-
-启动 webhook：
-
-```bash
-uv run agent \
-  --channel feishu \
-  --watch \
-  --account-id "$FEISHU_BOT_ACCOUNT_ID" \
-  --dm-scope per-account-channel-peer \
-  --feishu-app-id "$FEISHU_APP_ID" \
-  --feishu-app-secret "$FEISHU_APP_SECRET" \
-  --feishu-verification-token "$FEISHU_VERIFICATION_TOKEN" \
-  --feishu-bot-open-id "$FEISHU_BOT_OPEN_ID" \
-  --feishu-webhook-host 0.0.0.0 \
-  --feishu-webhook-port 8787
-```
-
-开发时需要用 ngrok、cloudflared 等工具把本地端口暴露给飞书事件订阅。
-
-当前限制：
-
-- 暂不支持加密事件解密。
-- 暂不支持富文本回复。
-- 暂不下载图片或文件内容，只保留 media key。
-
 ## Cron 和 Heartbeat
 
 Heartbeat 用于在 watch 模式下主动检查是否需要给用户发更新：
@@ -574,7 +559,7 @@ src/agent/
   core/                    # ReAct loop、上下文、恢复、工具执行
   tools/                   # 内置工具和 ToolRegistry
   state/                   # session / memory / todo / task / skill
-  channels/                # CLI / Telegram / Feishu / Gateway / Delivery
+  channels/                # CLI / Telegram / Gateway / Delivery
   scheduling/              # lanes / background / heartbeat / cron
   agents/                  # subagent / team / worktree
   mcp/                     # stdio MCP client 和工具路由
@@ -609,7 +594,6 @@ docs/                      # 设计和阶段文档
 这个项目已经覆盖了一个本地 Agent Runtime 的主要骨架，但仍有一些明确边界：
 
 - CLI 当前主要是文本入口，不是完整多模态输入链路。
-- 飞书图片和文件只解析 metadata，不下载内容做模型输入。
 - CodeContext 默认关闭，需要配置开启。
 - Subagent 是本地运行时内的子任务执行，不是分布式 agent cluster。
 - Worktree isolation 需要显式开启。
@@ -647,4 +631,4 @@ uv run pytest -q tests/test_code_context_indexer.py tests/test_code_context_tool
 - 给 CodeContext 增加更明确的 CLI 开关和 README 示例。
 - 收敛 Agent Teams 的实验代码，明确它和 subagent 的关系。
 - 给 MCP / plugin / hooks 各补一个最小可运行样例。
-- 把 Telegram / 飞书通道的接入文档拆到 `docs/channels/`，让 README 保持短而稳定。
+- 把 Telegram 通道的接入文档拆到 `docs/channels/`，让 README 保持短而稳定。

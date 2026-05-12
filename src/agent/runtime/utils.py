@@ -65,21 +65,10 @@ def _approval_prompt(check: PermissionCheck) -> bool:
 
 
 def _validate_channel_settings(settings: AgentSettings) -> bool:
-    if settings.channel == "telegram" and not settings.telegram_token:
+    if settings.channel.name == "telegram" and not settings.channel.telegram.token:
         console.print("[red]Error:[/red] --telegram-token is required for Telegram")
         return False
-    if settings.channel == "feishu":
-        if not settings.feishu_app_id or not settings.feishu_app_secret:
-            console.print(
-                "[red]Error:[/red] --feishu-app-id and --feishu-app-secret are required for Feishu"
-            )
-            return False
-        if settings.feishu_webhook_port <= 0:
-            console.print("[red]Error:[/red] --feishu-webhook-port is required for Feishu")
-            return False
-    if settings.heartbeat_enabled and not settings.heartbeat_to:
+    if settings.scheduling.heartbeat_enabled and not settings.scheduling.heartbeat_to:
         console.print("[red]Error:[/red] --heartbeat-to is required when heartbeat is enabled")
         return False
     return True
-
-

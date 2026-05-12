@@ -105,7 +105,7 @@ class LiteLLMModelClient:
         self.model = model
         self.temperature = temperature
         self.extra_kwargs = extra_kwargs or {}
-        self.debug_log = debug_log
+        self._log = debug_log or DebugLog.null()
 
     async def run_turn(
         self,
@@ -133,22 +133,20 @@ class LiteLLMModelClient:
             "temperature": self.temperature,
             **self.extra_kwargs,
         }
-        if self.debug_log is not None:
-            self.debug_log.event(
-                "model.request",
-                {
-                    "stream": stream_handler is not None,
-                    "kwargs": _redact_request_kwargs(request_kwargs),
-                },
-            )
+        self._log.event(
+            "model.request",
+            {
+                "stream": stream_handler is not None,
+                "kwargs": _redact_request_kwargs(request_kwargs),
+            },
+        )
 
         if stream_handler is not None:
             stream = await acompletion(stream=True, **request_kwargs)
             return await self._consume_stream(stream, stream_handler)
 
         response = await acompletion(stream=False, **request_kwargs)
-        if self.debug_log is not None:
-            self.debug_log.event("model.response.raw", {"response": to_debug_json(response)})
+        self._log.event("model.response.raw", {"response": to_debug_json(response)})
         choice = response.choices[0]
         message = _read_attr(choice, "message", {})
         turn = ModelTurn(
@@ -156,8 +154,7 @@ class LiteLLMModelClient:
             tool_calls=_normalize_tool_calls(_read_attr(message, "tool_calls", [])),
             stop_reason=_read_attr(choice, "finish_reason", "end_turn"),
         )
-        if self.debug_log is not None:
-            self.debug_log.event("model.response.normalized", {"turn": turn})
+        self._log.event("model.response.normalized", {"turn": turn}, level="info")
         return turn
 
     def _build_messages(
@@ -246,18 +243,17 @@ class LiteLLMModelClient:
                 if arguments:
                     entry["function"]["arguments"] += arguments
 
-        if self.debug_log is not None:
-            self.debug_log.event(
-                "model.stream.raw_summary",
-                {
-                    "chunk_count": chunk_count,
-                    "text": "".join(text_parts),
-                    "raw_tool_calls": [
-                        raw_tool_calls[index] for index in sorted(raw_tool_calls)
-                    ],
-                    "finish_reasons": finish_reasons,
-                },
-            )
+        self._log.event(
+            "model.stream.raw_summary",
+            {
+                "chunk_count": chunk_count,
+                "text": "".join(text_parts),
+                "raw_tool_calls": [
+                    raw_tool_calls[index] for index in sorted(raw_tool_calls)
+                ],
+                "finish_reasons": finish_reasons,
+            },
+        )
         turn = ModelTurn(
             text="".join(text_parts),
             tool_calls=_normalize_tool_calls(
@@ -265,8 +261,7 @@ class LiteLLMModelClient:
             ),
             stop_reason=finish_reasons[-1] if finish_reasons else "end_turn",
         )
-        if self.debug_log is not None:
-            self.debug_log.event("model.response.normalized", {"turn": turn})
+        self._log.event("model.response.normalized", {"turn": turn}, level="info")
         return turn
 
 

@@ -8,7 +8,7 @@
   上下文管理  — --context-max-tokens
   通道选择    — --channel, --watch
   功能开关    — --no-memory, --no-todos, --no-tasks, --no-skills, --no-subagents
-  外部通道    — --telegram-token, --feishu-*, --heartbeat-*, --cron-*
+  外部通道    — --telegram-token, --heartbeat-*, --cron-*
   会话        — --resume / --session-id
   调试        — --print-system-prompt / --debug-log
   任务输入    — 最后的可选位置参数
@@ -30,6 +30,7 @@ def _settings_from_cli(
     *,
     model: str | None,
     fallback_models: str | None,
+    reasoning_effort: str | None,
     max_turns: int | None,
     session_id: str | None,
     data_dir: str | None,
@@ -49,15 +50,6 @@ def _settings_from_cli(
     telegram_allowed_chats: str | None,
     telegram_text_coalesce: float | None,
     telegram_media_group_coalesce: float | None,
-    feishu_app_id: str | None,
-    feishu_app_secret: str | None,
-    feishu_verification_token: str | None,
-    feishu_encrypt_key: str | None,
-    feishu_bot_open_id: str | None,
-    feishu_is_lark: bool,
-    feishu_webhook_host: str | None,
-    feishu_webhook_port: int | None,
-    feishu_receive_timeout: float | None,
     delivery_max_attempts: int | None,
     delivery_base_delay: float | None,
     delivery_max_delay: float | None,
@@ -86,6 +78,7 @@ def _settings_from_cli(
     overrides: dict[str, Any] = {
         "model": model,
         "fallback_models": fallback_models,
+        "reasoning_effort": reasoning_effort,
         "max_iterations": max_turns,
         "session_id": session_id,
         "data_dir": data_dir,
@@ -105,14 +98,6 @@ def _settings_from_cli(
         "telegram_allowed_chats": telegram_allowed_chats,
         "telegram_text_coalesce_s": telegram_text_coalesce,
         "telegram_media_group_coalesce_s": telegram_media_group_coalesce,
-        "feishu_app_id": feishu_app_id,
-        "feishu_app_secret": feishu_app_secret,
-        "feishu_verification_token": feishu_verification_token,
-        "feishu_encrypt_key": feishu_encrypt_key,
-        "feishu_bot_open_id": feishu_bot_open_id,
-        "feishu_webhook_host": feishu_webhook_host,
-        "feishu_webhook_port": feishu_webhook_port,
-        "feishu_receive_timeout_s": feishu_receive_timeout,
         "delivery_max_attempts": delivery_max_attempts,
         "delivery_base_delay_s": delivery_base_delay,
         "delivery_max_delay_s": delivery_max_delay,
@@ -129,8 +114,6 @@ def _settings_from_cli(
         "worktree_dir": worktree_dir,
         "debug_log_path": debug_log_path,
     }
-    if feishu_is_lark:
-        overrides["feishu_is_lark"] = True
     if heartbeat_enabled:
         overrides["heartbeat_enabled"] = True
     if no_stream:
@@ -160,6 +143,7 @@ def _build_typer_app() -> Any:
         task: list[str] | None = typer.Argument(None),
         model: str | None = typer.Option(None),
         fallback_models: str | None = typer.Option(None, "--fallback-models"),
+        reasoning_effort: str | None = typer.Option(None, "--reasoning-effort"),
         max_turns: int | None = typer.Option(None, "--max-turns"),
         resume: str | None = typer.Option(None, "--resume"),
         session_id: str | None = typer.Option(None, "--session-id"),
@@ -183,18 +167,6 @@ def _build_typer_app() -> Any:
             None,
             "--telegram-media-group-coalesce",
         ),
-        feishu_app_id: str | None = typer.Option(None, "--feishu-app-id"),
-        feishu_app_secret: str | None = typer.Option(None, "--feishu-app-secret"),
-        feishu_verification_token: str | None = typer.Option(
-            None,
-            "--feishu-verification-token",
-        ),
-        feishu_encrypt_key: str | None = typer.Option(None, "--feishu-encrypt-key"),
-        feishu_bot_open_id: str | None = typer.Option(None, "--feishu-bot-open-id"),
-        feishu_is_lark: bool = typer.Option(False, "--feishu-is-lark"),
-        feishu_webhook_host: str | None = typer.Option(None, "--feishu-webhook-host"),
-        feishu_webhook_port: int | None = typer.Option(None, "--feishu-webhook-port"),
-        feishu_receive_timeout: float | None = typer.Option(None, "--feishu-receive-timeout"),
         delivery_max_attempts: int | None = typer.Option(None, "--delivery-max-attempts"),
         delivery_base_delay: float | None = typer.Option(None, "--delivery-base-delay"),
         delivery_max_delay: float | None = typer.Option(None, "--delivery-max-delay"),
@@ -228,6 +200,7 @@ def _build_typer_app() -> Any:
         settings = _settings_from_cli(
             model=model,
             fallback_models=fallback_models,
+            reasoning_effort=reasoning_effort,
             max_turns=max_turns,
             session_id=session_id,
             data_dir=data_dir,
@@ -247,15 +220,6 @@ def _build_typer_app() -> Any:
             telegram_allowed_chats=telegram_allowed_chats,
             telegram_text_coalesce=telegram_text_coalesce,
             telegram_media_group_coalesce=telegram_media_group_coalesce,
-            feishu_app_id=feishu_app_id,
-            feishu_app_secret=feishu_app_secret,
-            feishu_verification_token=feishu_verification_token,
-            feishu_encrypt_key=feishu_encrypt_key,
-            feishu_bot_open_id=feishu_bot_open_id,
-            feishu_is_lark=feishu_is_lark,
-            feishu_webhook_host=feishu_webhook_host,
-            feishu_webhook_port=feishu_webhook_port,
-            feishu_receive_timeout=feishu_receive_timeout,
             delivery_max_attempts=delivery_max_attempts,
             delivery_base_delay=delivery_base_delay,
             delivery_max_delay=delivery_max_delay,

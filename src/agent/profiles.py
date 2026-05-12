@@ -41,10 +41,13 @@ class ModelProfile(BaseModel):
     name: str
     model: str
     api_key_env: str = ""
+    reasoning_effort: str = ""
     extra_kwargs: dict[str, Any] = Field(default_factory=dict)
 
     def litellm_kwargs(self) -> dict[str, Any]:
         kwargs = dict(self.extra_kwargs)
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
         if self.api_key_env:
             api_key = os.getenv(self.api_key_env)
             if api_key:
@@ -94,7 +97,7 @@ class FallbackModelClient:
     ) -> None:
         self.profile_manager = ProfileManager(profiles)
         self.client_factory = client_factory or _default_client_factory
-        self.debug_log = debug_log
+        self._log = debug_log or DebugLog.null()
         self.cooldown_by_kind = {
             "rate_limit": 120.0,
             "auth": 300.0,
@@ -118,14 +121,14 @@ class FallbackModelClient:
 
         for profile in profiles:
             client = self.client_factory(profile)
-            if isinstance(client, LiteLLMModelClient) and client.debug_log is None:
-                client.debug_log = self.debug_log
+            if isinstance(client, LiteLLMModelClient):
+                # 把 FallbackModelClient 的 _log 透传给子客户端，保持日志连贯
+                client._log = self._log
             try:
-                if self.debug_log is not None:
-                    self.debug_log.event(
-                        "model.profile.attempt",
-                        {"profile": profile.name, "model": profile.model},
-                    )
+                self._log.event(
+                    "model.profile.attempt",
+                    {"profile": profile.name, "model": profile.model},
+                )
                 return await client.run_turn(
                     system_prompt=system_prompt,
                     messages=messages,
@@ -134,16 +137,15 @@ class FallbackModelClient:
                 )
             except Exception as exc:
                 kind = classify_error(exc)
-                if self.debug_log is not None:
-                    self.debug_log.event(
-                        "model.profile.failure",
-                        {
-                            "profile": profile.name,
-                            "model": profile.model,
-                            "kind": kind,
-                            "exception_type": type(exc).__name__,
-                            "exception": str(exc),
-                        },
+                self._log.event(
+                    "model.profile.failure",
+                    {
+                        "profile": profile.name,
+                        "model": profile.model,
+                        "kind": kind,
+                        "exception_type": type(exc).__name__,
+                        "exception": str(exc),
+                    },
                     )
                 failures.append(f"{profile.name}:{kind}:{exc}")
                 cooldown = self.cooldown_by_kind.get(kind)
