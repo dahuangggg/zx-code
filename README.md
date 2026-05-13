@@ -1,16 +1,6 @@
-# agent-deep-dive
+# zx-code
 
-`agent-deep-dive` 是一个用 Python 实现的本地 Coding Agent 运行时实验仓库。它不是只包一层模型 API 的 CLI，而是在逐步拆出一个可持久化、可扩展、可接多通道、可接工具和子代理的 Agent Runtime。
-
-项目当前的核心问题是：
-
-- 模型如何在多轮 ReAct loop 中调用工具并拿到结果。
-- 本地会话、memory、todo、task、skill 如何进入 prompt 和持久化状态。
-- CLI、Telegram 等入口如何归一化成同一条 Agent 执行链路。
-- 工具权限、上下文压缩、失败恢复、可靠投递、后台任务如何作为运行时能力存在。
-- MCP、插件、CodeContext、subagent、worktree isolation 如何在不改主循环的情况下接入。
-
-这个仓库适合用来学习 Coding Agent 的工程拆解，也适合当作面试项目来讲“一个 Agent 框架从单轮工具调用长成运行时系统”的过程。
+`zx-code` 是一个用 Python 实现的本地 Coding Agent 运行时实验仓库。它不是只包一层模型 API 的 CLI，而是在逐步拆出一个可持久化、可扩展、可接多通道、可接工具和子代理的 Agent Runtime。
 
 ## 快速开始
 
@@ -615,20 +605,3 @@ uv run pytest -q tests/test_loop.py tests/test_tools.py
 uv run pytest -q tests/test_gateway.py tests/test_delivery.py
 uv run pytest -q tests/test_code_context_indexer.py tests/test_code_context_tools.py
 ```
-
-文档更新原则：
-
-- README 讲“怎么理解和跑起来”，不继续堆所有阶段流水账。
-- 具体模块细节放到 `interview/`、`docs/` 或代码注释里。
-- 能力描述必须和源码当前实现一致；没有实现的能力要写成边界或后续方向。
-- 架构解释优先给真实调用链，不写泛泛的 Agent 概念。
-
-## 后续方向
-
-比较自然的下一步：
-
-- 补一份 `docs/runtime-architecture.md`，把 Gateway、Lane、Loop、ToolRegistry 画成更完整的工程文档。
-- 给 CodeContext 增加更明确的 CLI 开关和 README 示例。
-- 收敛 Agent Teams 的实验代码，明确它和 subagent 的关系。
-- 给 MCP / plugin / hooks 各补一个最小可运行样例。
-- 把 Telegram 通道的接入文档拆到 `docs/channels/`，让 README 保持短而稳定。
