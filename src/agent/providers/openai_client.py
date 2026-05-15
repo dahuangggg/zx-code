@@ -2,7 +2,7 @@
 
 ``OpenAIModelClient`` 实现 ModelClient Protocol，直接使用 openai Python SDK。
 model 字符串直接传给 OpenAI API，例如：
-  - ``gpt-4o-mini``
+  - ``gpt-5.4-mini``
   - ``gpt-5.5``
 
 支持流式和非流式两种模式，流式模式通过 stream_options=include_usage 获取 token 计数。
@@ -54,6 +54,10 @@ async def _maybe_await(value: Any) -> None:
         await value
 
 
+# extra_kwargs 中属于 AsyncOpenAI 构造函数的参数，不能传给 create()
+_CLIENT_KWARGS = {"base_url", "organization", "timeout", "max_retries", "default_headers"}
+
+
 class OpenAIModelClient:
     def __init__(
         self,
@@ -69,7 +73,10 @@ class OpenAIModelClient:
         self.temperature = temperature
         self.api_key = api_key
         self.base_url = base_url
-        self.extra_kwargs = extra_kwargs or {}
+        all_extra = extra_kwargs or {}
+        # 分离 client 构造参数和 create() 请求参数
+        self._client_extra = {k: v for k, v in all_extra.items() if k in _CLIENT_KWARGS}
+        self.extra_kwargs = {k: v for k, v in all_extra.items() if k not in _CLIENT_KWARGS}
         self._log = debug_log or DebugLog.null()
         self._client: Any = None
 
@@ -77,7 +84,7 @@ class OpenAIModelClient:
         if self._client is None:
             from openai import AsyncOpenAI
 
-            kwargs: dict[str, Any] = {}
+            kwargs: dict[str, Any] = {**self._client_extra}
             if self.api_key:
                 kwargs["api_key"] = self.api_key
             if self.base_url:
@@ -240,21 +247,27 @@ class OpenAIModelClient:
                 "chunk_count": chunk_count,
                 "text_length": sum(len(p) for p in text_parts),
                 "tool_call_count": len(raw_tool_calls),
+                "raw_tool_calls": [raw_tool_calls[i] for i in sorted(raw_tool_calls)],
                 "finish_reasons": finish_reasons,
                 "usage": usage,
             },
         )
-        # Normalize accumulated tool calls
+        # Normalize accumulated tool calls; skip entries with no name or empty arguments
+        # (some API proxies emit ghost tool call slots with name but no arguments)
         tool_calls: list[ToolCall] = []
         for idx in sorted(raw_tool_calls):
             entry = raw_tool_calls[idx]
             name = entry["function"]["name"]
+            raw_args = entry["function"]["arguments"]
             if not name:
+                continue
+            parsed = _parse_arguments(raw_args)
+            if not parsed:
                 continue
             tool_calls.append(ToolCall(
                 id=entry["id"] or f"tool-{idx}",
                 name=name,
-                arguments=_parse_arguments(entry["function"]["arguments"]),
+                arguments=parsed,
             ))
 
         turn = ModelTurn(

@@ -10,8 +10,14 @@ from agent.tools.base import Tool
 class ToolSearchInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    query: str = ""
-    names: list[str] = Field(default_factory=list)
+    query: str = Field(
+        ...,
+        description="Natural language description of what you need, e.g. 'read a file', 'run shell command', 'search code'.",
+    )
+    names: list[str] = Field(
+        default_factory=list,
+        description="Exact tool names to activate, if known.",
+    )
     limit: int = Field(default=5, ge=1, le=20)
 
 
