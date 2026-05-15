@@ -139,7 +139,7 @@ class RuntimeConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    model: str = "openai/gpt-5.3-codex"
+    model: str = "gpt-4o-mini"
     system_prompt: str = ""
     max_iterations: int = 8
     model_timeout_s: float = 60.0

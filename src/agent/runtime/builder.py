@@ -36,7 +36,7 @@ from agent.permissions import PermissionManager
 from agent.plugins import PluginManager
 from agent.profiles import FallbackModelClient
 from agent.prompt import SystemPromptBuilder
-from agent.providers.litellm_client import LiteLLMModelClient
+from agent.providers.openai_client import OpenAIModelClient
 from agent.runtime.markdown_stream import MarkdownStreamRenderer
 from agent.runtime.utils import _approval_prompt, _resolve_project_path, _stream_printer, console
 from agent.state.sessions import SessionStore, safe_session_id
@@ -139,9 +139,10 @@ def _build_model_client(settings: AgentSettings, debug_log: DebugLog | None = No
     if len(profiles) > 1:
         return FallbackModelClient(profiles, debug_log=debug_log)
     profile = profiles[0]
-    return LiteLLMModelClient(
+    return OpenAIModelClient(
         model=profile.model,
-        extra_kwargs=profile.litellm_kwargs(),
+        api_key=profile.resolve_api_key(),
+        extra_kwargs=profile.client_kwargs(),
         debug_log=debug_log,
     )
 

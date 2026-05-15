@@ -14,7 +14,7 @@ ContextGuard 在每次 LLM 调用前被调用（``prepare()``），执行两个�
        b. 机械摘要兜底（LLM 调用失败时降级）
    - 摘要作为一条 system 消息插入，替换旧历史
 
-Token 计数使用 ``litellm.token_counter()``（自动选择正确 tokenizer），
+Token 计数使用 ``tiktoken``（通过 openai SDK 间接依赖），
 不可用时降级为 ``len(text) // 3 + 1`` 的估算。
 """
 from __future__ import annotations
@@ -31,18 +31,21 @@ logger = logging.getLogger(__name__)
 
 @functools.lru_cache(maxsize=2048)
 def _count_tokens(text: str, model: str) -> int:
-    """Count tokens using litellm if available, else estimate from chars.
+    """Count tokens using tiktoken if available, else estimate from chars.
 
     结果按 (text, model) 缓存：同一条消息在多轮 prepare() 中只计算一次，
     对话越长收益越大（每轮只有新增消息需要计算）。
     """
-    if model:
-        try:
-            from litellm import token_counter
+    try:
+        import tiktoken
 
-            return token_counter(model=model, text=text)
-        except Exception:
-            pass
+        try:
+            enc = tiktoken.encoding_for_model(model)
+        except KeyError:
+            enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        pass
     # 兜底估算：经验值 ~3 字符/token（英文偏低、中文偏高），+1 防止空串返回 0
     return len(text) // 3 + 1
 
@@ -230,11 +233,11 @@ class ContextGuard:
     async def _llm_summarize(self, formatted: str, *, model: str) -> str:
         """用廉价模型（如 gpt-4o-mini）生成摘要；任何异常都记录后返回空串，让上层走降级。"""
         try:
-            from litellm import acompletion
+            from openai import AsyncOpenAI
 
-            # 套 wait_for 防止 compact_model 卡住导致主循环阻塞
+            client = AsyncOpenAI()
             response = await asyncio.wait_for(
-                acompletion(
+                client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": SUMMARY_PROMPT + formatted}],
                     temperature=0.0,

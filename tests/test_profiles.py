@@ -96,8 +96,8 @@ def test_model_profile_reads_api_key_from_env(monkeypatch) -> None:
         extra_kwargs={"base_url": "https://example.invalid"},
     )
 
-    assert profile.litellm_kwargs() == {
-        "api_key": "secret-key",
+    assert profile.resolve_api_key() == "secret-key"
+    assert profile.client_kwargs() == {
         "base_url": "https://example.invalid",
         "reasoning_effort": "medium",
     }

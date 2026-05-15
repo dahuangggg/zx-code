@@ -13,8 +13,8 @@ from agent.profiles import ModelProfile
 class ModelSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = "openai/gpt-5.4-mini"
-    fallback_models: str = "openai/gpt-5.5"
+    name: str = "gpt-4o-mini"
+    fallback_models: str = "gpt-4o"
     reasoning_effort: str = ""
     profiles: list[ModelProfile] = Field(default_factory=list)
     max_iterations: int = 30
