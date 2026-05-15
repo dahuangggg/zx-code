@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -42,9 +43,19 @@ class EditFileTool(Tool):
         else:
             updated = original.replace(arguments.old_text, arguments.new_text, 1)
         path.write_text(updated, encoding="utf-8")
+
+        diff = "".join(
+            difflib.unified_diff(
+                original.splitlines(keepends=True),
+                updated.splitlines(keepends=True),
+                fromfile=f"a/{path.name}",
+                tofile=f"b/{path.name}",
+            )
+        )
         return {
             "path": str(path),
             "matches": matches,
             "replaced_all": arguments.replace_all,
+            "diff": diff,
         }
 

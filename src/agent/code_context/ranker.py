@@ -42,7 +42,11 @@ def keyword_search(
         if score > 0:
             scored.append((score, document.model_copy(update={"score": round(score, 4)})))
 
-    return [document for _, document in sorted(scored, key=lambda item: item[0], reverse=True)[:limit]]
+    ordered = sorted(scored, key=lambda item: item[0], reverse=True)[:limit]
+    return [
+        document.model_copy(update={"matched_by": ["keyword"], "keyword_rank": rank})
+        for rank, (_, document) in enumerate(ordered, start=1)
+    ]
 
 
 def rrf_fuse(
@@ -56,7 +60,8 @@ def rrf_fuse(
     for ranked in ranked_lists:
         for rank, result in enumerate(ranked, start=1):
             key = _result_key(result)
-            by_key.setdefault(key, result)
+            existing = by_key.get(key)
+            by_key[key] = result if existing is None else _merge_results(existing, result)
             scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
     ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     return [
@@ -67,6 +72,28 @@ def rrf_fuse(
 
 def _result_key(result: CodeSearchResult) -> tuple[str, int, int]:
     return (result.relative_path, result.start_line, result.end_line)
+
+
+def _merge_results(left: CodeSearchResult, right: CodeSearchResult) -> CodeSearchResult:
+    matched_by = [*left.matched_by]
+    for channel in right.matched_by:
+        if channel not in matched_by:
+            matched_by.append(channel)
+    return left.model_copy(
+        update={
+            "matched_by": matched_by,
+            "vector_rank": min(
+                rank for rank in (left.vector_rank, right.vector_rank) if rank
+            )
+            if left.vector_rank or right.vector_rank
+            else 0,
+            "keyword_rank": min(
+                rank for rank in (left.keyword_rank, right.keyword_rank) if rank
+            )
+            if left.keyword_rank or right.keyword_rank
+            else 0,
+        }
+    )
 
 
 def _tokenize(text: str) -> list[str]:

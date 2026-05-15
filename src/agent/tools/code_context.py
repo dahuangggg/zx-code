@@ -14,6 +14,8 @@ class CodeIndexInput(BaseModel):
 
     path: str = Field(default="", description="Codebase path to index. Defaults to cwd.")
     background: bool = Field(default=False, description="Start indexing in the background and return progress status immediately.")
+    custom_extensions: list[str] = Field(default_factory=list, description="Additional file extensions to include, for example .vue.")
+    ignore_patterns: list[str] = Field(default_factory=list, description="Additional ignore patterns to exclude from indexing.")
 
 
 class CodeSearchInput(BaseModel):
@@ -25,6 +27,16 @@ class CodeSearchInput(BaseModel):
 
 
 class CodeIndexStatusInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(default="", description="Codebase path to inspect. Defaults to cwd.")
+
+
+class CodeIndexListInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class CodeIndexInfoInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(default="", description="Codebase path to inspect. Defaults to cwd.")
@@ -46,8 +58,16 @@ class CodeIndexTool(Tool):
 
     async def run(self, arguments: CodeIndexInput) -> dict[str, Any]:
         if arguments.background:
-            return self.indexer.start_background_index(_path_arg(arguments.path)).model_dump()
-        return self.indexer.index_codebase(_path_arg(arguments.path)).model_dump()
+            return self.indexer.start_background_index(
+                _path_arg(arguments.path),
+                custom_extensions=arguments.custom_extensions,
+                ignore_patterns=arguments.ignore_patterns,
+            ).model_dump()
+        return self.indexer.index_codebase(
+            _path_arg(arguments.path),
+            custom_extensions=arguments.custom_extensions,
+            ignore_patterns=arguments.ignore_patterns,
+        ).model_dump()
 
 
 class CodeSearchTool(Tool):
@@ -85,6 +105,36 @@ class CodeIndexStatusTool(Tool):
 
     async def run(self, arguments: CodeIndexStatusInput) -> dict[str, Any]:
         return self.indexer.get_status(_path_arg(arguments.path)).model_dump()
+
+    def is_concurrency_safe(self, arguments: dict[str, object] | BaseModel) -> bool:
+        return True
+
+
+class CodeIndexListTool(Tool):
+    name = "code_index_list"
+    description = "List codebases known to the local CodeContext index."
+    input_model = CodeIndexListInput
+
+    def __init__(self, indexer: CodeContextIndexer) -> None:
+        self.indexer = indexer
+
+    async def run(self, arguments: CodeIndexListInput) -> dict[str, Any]:
+        return {"codebases": self.indexer.list_indexes()}
+
+    def is_concurrency_safe(self, arguments: dict[str, object] | BaseModel) -> bool:
+        return True
+
+
+class CodeIndexInfoTool(Tool):
+    name = "code_index_info"
+    description = "Return detailed local CodeContext index metadata for a codebase."
+    input_model = CodeIndexInfoInput
+
+    def __init__(self, indexer: CodeContextIndexer) -> None:
+        self.indexer = indexer
+
+    async def run(self, arguments: CodeIndexInfoInput) -> dict[str, Any]:
+        return self.indexer.get_index_info(_path_arg(arguments.path))
 
     def is_concurrency_safe(self, arguments: dict[str, object] | BaseModel) -> bool:
         return True

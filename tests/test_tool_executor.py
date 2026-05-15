@@ -72,7 +72,7 @@ async def test_tool_call_executor_runs_hooks_and_denies_before_registry() -> Non
         session_id="session-1",
     )
 
-    results = await executor.execute_many(
+    results, metrics = await executor.execute_many(
         [ToolCall(id="call-1", name="unsafe_tool", arguments={"label": "x"})]
     )
 
@@ -96,7 +96,7 @@ async def test_tool_call_executor_batches_concurrency_safe_calls_in_order() -> N
     )
 
     started_at = monotonic()
-    results = await executor.execute_many(
+    results, metrics = await executor.execute_many(
         [
             ToolCall(id="call-1", name="safe_tool", arguments={"label": "one"}),
             ToolCall(id="call-2", name="safe_tool", arguments={"label": "two"}),
@@ -105,6 +105,8 @@ async def test_tool_call_executor_batches_concurrency_safe_calls_in_order() -> N
 
     assert monotonic() - started_at < 0.2
     assert [result.content for result in results] == ["one", "two"]
+    assert len(metrics) == 2
+    assert all(m.duration_ms >= 0 for m in metrics)
     assert [event for event, _ in hooks.events] == [
         "pre_tool_use",
         "pre_tool_use",

@@ -13,6 +13,7 @@ level 字段写入每条记录，外部工具（jq、grep）可按 level 过滤�
 from __future__ import annotations
 
 import json
+import warnings
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,12 +36,16 @@ def to_debug_json(value: Any) -> Any:
         return value.decode("utf-8", errors="replace")
     if hasattr(value, "model_dump"):
         try:
-            return to_debug_json(value.model_dump())
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                return to_debug_json(value.model_dump())
         except Exception:
             pass
     if hasattr(value, "dict"):
         try:
-            return to_debug_json(value.dict())
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                return to_debug_json(value.dict())
         except Exception:
             pass
     if hasattr(value, "__dict__"):

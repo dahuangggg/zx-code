@@ -5,20 +5,40 @@ from pathlib import Path
 
 
 DEFAULT_SUPPORTED_EXTENSIONS = {
-    ".py",
+    ".c",
+    ".cpp",
+    ".cs",
+    ".css",
+    ".dart",
+    ".go",
+    ".h",
+    ".hpp",
+    ".html",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".m",
+    ".markdown",
     ".md",
+    ".mm",
+    ".py",
+    ".php",
+    ".rb",
+    ".rs",
+    ".scala",
+    ".scss",
+    ".sh",
+    ".sol",
+    ".sql",
+    ".swift",
     ".txt",
     ".toml",
+    ".ts",
+    ".tsx",
     ".yaml",
     ".yml",
     ".json",
-    ".js",
-    ".jsx",
-    ".ts",
-    ".tsx",
-    ".java",
-    ".go",
-    ".rs",
 }
 
 DEFAULT_IGNORE_PATTERNS = {
@@ -27,14 +47,38 @@ DEFAULT_IGNORE_PATTERNS = {
     "node_modules/**",
     "dist/**",
     "build/**",
+    "out/**",
+    "target/**",
+    "coverage/**",
+    ".nyc_output/**",
+    ".cache/**",
     "__pycache__/**",
     ".pytest_cache/**",
+    ".vscode/**",
+    ".idea/**",
     ".agent/**",
     ".memory/**",
     ".tasks/**",
     "*.lock",
+    "*.local",
+    "*.log",
+    "*.min.js",
+    "*.min.css",
+    "*.min.map",
+    "*.bundle.js",
+    "*.bundle.css",
+    "*.chunk.js",
+    "*.vendor.js",
+    "*.polyfills.js",
+    "*.runtime.js",
+    "*.map",
+    "*.swp",
+    "*.swo",
     ".env",
     ".env.*",
+    "logs/**",
+    "tmp/**",
+    "temp/**",
 }
 
 
@@ -44,11 +88,17 @@ def resolve_codebase_path(path: str | Path | None) -> Path:
     return Path(path).expanduser().resolve()
 
 
-def load_ignore_patterns(codebase_path: str | Path) -> list[str]:
+def load_ignore_patterns(
+    codebase_path: str | Path,
+    *,
+    custom_ignore_patterns: list[str] | set[str] | None = None,
+) -> list[str]:
     root = Path(codebase_path)
     patterns = set(DEFAULT_IGNORE_PATTERNS)
-    for ignore_file in (".gitignore", ".contextignore"):
-        path = root / ignore_file
+    if custom_ignore_patterns:
+        patterns.update(custom_ignore_patterns)
+    ignore_files = {root / ".gitignore", *root.glob(".*ignore"), Path.home() / ".contextignore", Path.home() / ".context" / ".contextignore"}
+    for path in ignore_files:
         if not path.exists() or path.is_dir():
             continue
         for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -64,10 +114,18 @@ def iter_code_files(
     *,
     supported_extensions: set[str] | None = None,
     ignore_patterns: list[str] | None = None,
+    custom_extensions: set[str] | list[str] | None = None,
+    custom_ignore_patterns: list[str] | set[str] | None = None,
 ) -> list[Path]:
     root = Path(codebase_path).resolve()
-    extensions = supported_extensions or DEFAULT_SUPPORTED_EXTENSIONS
-    patterns = ignore_patterns or load_ignore_patterns(root)
+    extensions = set(supported_extensions or DEFAULT_SUPPORTED_EXTENSIONS)
+    if custom_extensions:
+        extensions.update(_normalize_extensions(custom_extensions))
+    patterns = (
+        sorted(set(ignore_patterns) | set(custom_ignore_patterns or []))
+        if ignore_patterns is not None
+        else load_ignore_patterns(root, custom_ignore_patterns=custom_ignore_patterns)
+    )
     files: list[Path] = []
 
     for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
@@ -81,6 +139,16 @@ def iter_code_files(
         if path.suffix in extensions:
             files.append(path)
     return files
+
+
+def _normalize_extensions(extensions: set[str] | list[str]) -> set[str]:
+    normalized: set[str] = set()
+    for extension in extensions:
+        value = extension.strip()
+        if not value:
+            continue
+        normalized.add(value if value.startswith(".") else f".{value}")
+    return normalized
 
 
 def _is_ignored(relative_path: str, patterns: list[str]) -> bool:

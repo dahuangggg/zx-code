@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from inspect import isawaitable
 from typing import Any, Protocol
 
 from agent.debuglog import DebugLog
 from agent.hooks import HookRunner, HookResult
-from agent.models import ToolCall, ToolResult
+from agent.models import ToolCall, ToolMetric, ToolResult
 from agent.tools.registry import ToolRegistry
 
 
@@ -35,10 +36,14 @@ class ToolCallExecutor:
         self._log = debug_log or DebugLog.null()
         self.progress_handler = progress_handler
 
-    async def execute_many(self, calls: list[ToolCall]) -> list[ToolResult]:
+    async def execute_many(
+        self, calls: list[ToolCall]
+    ) -> tuple[list[ToolResult], list[ToolMetric]]:
+        """执行工具调用列表，返回 (results, metrics)。"""
         # 预分配结果槽位，确保最终顺序与 calls 输入顺序严格一致，
         # 即使并发执行或 hook 拒绝也不会导致 tool_call_id 错配
         results: list[ToolResult | None] = [None] * len(calls)
+        metrics: list[ToolMetric] = []
         # safe_batch 存 (原始索引, ToolCall)，flush 后按索引写回对应槽位
         safe_batch: list[tuple[int, ToolCall]] = []
 
@@ -47,11 +52,21 @@ class ToolCallExecutor:
                 return
             batch = list(safe_batch)
             safe_batch.clear()
+            starts = [time.monotonic()] * len(batch)
             batch_results = await asyncio.gather(
                 *(self._execute_allowed(call) for _, call in batch)
             )
-            for (orig_idx, call), result in zip(batch, batch_results, strict=True):
+            elapsed = time.monotonic()
+            for i, ((orig_idx, call), result) in enumerate(
+                zip(batch, batch_results, strict=True)
+            ):
                 results[orig_idx] = result
+                metrics.append(ToolMetric(
+                    name=call.name,
+                    call_id=call.id,
+                    duration_ms=round((elapsed - starts[i]) * 1000, 1),
+                    is_error=result.is_error,
+                ))
                 await self._run_post_hook(call, result)
 
         for idx, call in enumerate(calls):
@@ -103,14 +118,21 @@ class ToolCallExecutor:
                 continue
 
             await flush_safe_batch()
+            t0 = time.monotonic()
             result = await self._execute_allowed(call)
+            metrics.append(ToolMetric(
+                name=call.name,
+                call_id=call.id,
+                duration_ms=round((time.monotonic() - t0) * 1000, 1),
+                is_error=result.is_error,
+            ))
             results[idx] = result
             await self._run_post_hook(call, result)
 
         await flush_safe_batch()
         # 所有槽位此时应已填满；None 仅在逻辑错误时出现，断言保护
         assert all(r is not None for r in results), "BUG: unfilled tool result slot"
-        return results  # type: ignore[return-value]
+        return results, metrics  # type: ignore[return-value]
 
     async def _run_pre_hook(self, call: ToolCall) -> HookResult:
         return await self.hook_runner.run(

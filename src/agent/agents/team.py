@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -179,6 +180,12 @@ class MessageBus:
             os.fsync(fh.fileno())
 
 
+@dataclass(frozen=True)
+class TeamMemberInfo:
+    agent_id: str
+    role: str = ""
+
+
 class TeamMember:
     """
     A single team participant.
@@ -194,10 +201,12 @@ class TeamMember:
         *,
         bus: MessageBus,
         run_agent: AgentRunFn,
+        parent_session_id: str = "",
     ) -> None:
         self.agent_id = agent_id
         self._bus = bus
         self._run_agent = run_agent
+        self._parent_session_id = parent_session_id
         self._inbox = bus.subscribe(agent_id)
         self._stop = asyncio.Event()
 
@@ -211,7 +220,11 @@ class TeamMember:
             await self._handle(message)
 
     async def _handle(self, message: TeamMessage) -> None:
-        session_id = f"team:{self.agent_id}:{message.id}"
+        session_parts = ["team"]
+        if self._parent_session_id:
+            session_parts.append(self._parent_session_id)
+        session_parts.extend([self.agent_id, message.id])
+        session_id = ":".join(session_parts)
         try:
             reply = await self._run_agent(message.content, session_id)
         except Exception as exc:
@@ -239,16 +252,42 @@ class Team:
         await team.shutdown()
     """
 
-    def __init__(self, log_path: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        log_path: Path | str | None = None,
+        *,
+        parent_session_id: str = "",
+    ) -> None:
         self.bus = MessageBus(log_path=log_path)
         self._members: dict[str, TeamMember] = {}
+        self._member_info: dict[str, TeamMemberInfo] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._parent_session_id = parent_session_id
 
-    def add_member(self, agent_id: str, run_agent: AgentRunFn) -> TeamMember:
+    def add_member(
+        self,
+        agent_id: str,
+        run_agent: AgentRunFn,
+        *,
+        role: str = "",
+    ) -> TeamMember:
         """Register a new member. Must be called before ``start()``."""
-        member = TeamMember(agent_id=agent_id, bus=self.bus, run_agent=run_agent)
+        member = TeamMember(
+            agent_id=agent_id,
+            bus=self.bus,
+            run_agent=run_agent,
+            parent_session_id=self._parent_session_id,
+        )
         self._members[agent_id] = member
+        self._member_info[agent_id] = TeamMemberInfo(agent_id=agent_id, role=role)
         return member
+
+    def members_summary(self) -> list[dict[str, str]]:
+        """Return member metadata suitable for prompts and tools."""
+        return [
+            {"agent_id": info.agent_id, "role": info.role}
+            for info in self._member_info.values()
+        ]
 
     def start(self) -> None:
         """Launch all member ``listen()`` loops as asyncio background tasks."""
@@ -259,6 +298,10 @@ class Team:
                     member.listen(),
                     name=f"team_member:{agent_id}",
                 )
+
+    def ensure_started(self) -> None:
+        """Start member loops if they are not already running."""
+        self.start()
 
     async def dispatch(
         self,

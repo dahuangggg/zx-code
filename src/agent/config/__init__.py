@@ -15,6 +15,8 @@ from agent.config.sections import (
     SchedulingSettings,
     StateSettings,
     SubagentSettings,
+    TeamMemberSettings,
+    TeamSettings,
     TelegramSettings,
     WorktreeSettings,
 )
@@ -34,6 +36,8 @@ __all__ = [
     "SchedulingSettings",
     "StateSettings",
     "SubagentSettings",
+    "TeamMemberSettings",
+    "TeamSettings",
     "TelegramSettings",
     "WorktreeSettings",
 ]

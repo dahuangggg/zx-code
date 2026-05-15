@@ -1,6 +1,8 @@
 from agent.tools.bash import BashTool
 from agent.tools.code_context import (
     CodeIndexClearTool,
+    CodeIndexInfoTool,
+    CodeIndexListTool,
     CodeIndexStatusTool,
     CodeIndexTool,
     CodeSearchTool,
@@ -12,6 +14,7 @@ from agent.tools.read import ReadFileTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.skill import LoadSkillTool
 from agent.tools.subagent import SubagentRunTool
+from agent.tools.team import TeamBroadcastTool, TeamDispatchTool, TeamListTool
 from agent.tools.tasks import TaskCancelTool, TaskCompleteTool, TaskCreateTool, TaskListTool, TaskUpdateTool
 from agent.tools.tool_search import ToolSearchTool
 from agent.tools.todo import (
@@ -26,6 +29,7 @@ from agent.state.memory import MemoryStore
 from agent.permissions import ApprovalCallback, PermissionManager
 from agent.state.skills import SkillStore
 from agent.agents.subagent import SubagentRunner
+from agent.agents.team import Team
 from agent.state.tasks import TaskStore
 from agent.state.todo import TodoManager
 from agent.agents.worktree import WorktreeManager
@@ -42,6 +46,8 @@ def build_default_registry(
     skill_store: SkillStore | None = None,
     task_store: TaskStore | None = None,
     subagent_runner: SubagentRunner | None = None,
+    team: Team | None = None,
+    team_timeout_s: float = 30.0,
     worktree_manager: WorktreeManager | None = None,
     code_context_indexer: CodeContextIndexer | None = None,
     debug_log: DebugLog | None = None,
@@ -73,6 +79,11 @@ def build_default_registry(
         registry.register(TaskListTool(task_store))
     if subagent_runner is not None:
         registry.register(SubagentRunTool(subagent_runner))
+    if team is not None:
+        registry.register(TeamListTool(team))
+        registry.register(TeamDispatchTool(team, default_timeout_s=team_timeout_s))
+        registry.register(TeamBroadcastTool(team))
+        registry.activate_schemas(["team_list", "team_dispatch", "team_broadcast"])
     if worktree_manager is not None:
         registry.register(WorktreeCreateTool(worktree_manager))
         registry.register(WorktreeCleanupTool(worktree_manager))
@@ -80,6 +91,8 @@ def build_default_registry(
         registry.register(CodeIndexTool(code_context_indexer))
         registry.register(CodeSearchTool(code_context_indexer))
         registry.register(CodeIndexStatusTool(code_context_indexer))
+        registry.register(CodeIndexListTool(code_context_indexer))
+        registry.register(CodeIndexInfoTool(code_context_indexer))
         registry.register(CodeIndexClearTool(code_context_indexer))
     registry.register(ToolSearchTool(registry))
     return registry

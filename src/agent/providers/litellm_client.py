@@ -19,11 +19,12 @@ from __future__ import annotations
 
 
 import json
+import warnings
 from collections.abc import Sequence
 from typing import Any
 
 from agent.debuglog import DebugLog, to_debug_json
-from agent.models import Message, ModelTurn, ToolCall
+from agent.models import Message, ModelTurn, TokenUsage, ToolCall
 from agent.providers.base import StreamHandler
 
 
@@ -86,6 +87,25 @@ def _normalize_tool_calls(raw_calls: Any) -> list[ToolCall]:
     return normalized
 
 
+def _extract_usage(response: Any) -> TokenUsage | None:
+    """从 LiteLLM response 或 chunk 中提取 token usage。"""
+    usage = _read_attr(response, "usage")
+    if usage is None:
+        return None
+    prompt = int(_read_attr(usage, "prompt_tokens", 0) or 0)
+    completion = int(_read_attr(usage, "completion_tokens", 0) or 0)
+    total = int(_read_attr(usage, "total_tokens", 0) or 0)
+    if total == 0 and (prompt or completion):
+        total = prompt + completion
+    if total == 0:
+        return None
+    return TokenUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+    )
+
+
 async def _maybe_await(value: Any) -> None:
     if value is None:
         return
@@ -142,10 +162,15 @@ class LiteLLMModelClient:
         )
 
         if stream_handler is not None:
-            stream = await acompletion(stream=True, **request_kwargs)
-            return await self._consume_stream(stream, stream_handler)
+            request_kwargs["stream_options"] = {"include_usage": True}
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                stream = await acompletion(stream=True, **request_kwargs)
+                return await self._consume_stream(stream, stream_handler)
 
-        response = await acompletion(stream=False, **request_kwargs)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            response = await acompletion(stream=False, **request_kwargs)
         self._log.event("model.response.raw", {"response": to_debug_json(response)})
         choice = response.choices[0]
         message = _read_attr(choice, "message", {})
@@ -153,6 +178,7 @@ class LiteLLMModelClient:
             text=_extract_text(_read_attr(message, "content")),
             tool_calls=_normalize_tool_calls(_read_attr(message, "tool_calls", [])),
             stop_reason=_read_attr(choice, "finish_reason", "end_turn"),
+            usage=_extract_usage(response),
         )
         self._log.event("model.response.normalized", {"turn": turn}, level="info")
         return turn
@@ -205,9 +231,17 @@ class LiteLLMModelClient:
         raw_tool_calls: dict[int, dict[str, Any]] = {}
         chunk_count = 0
         finish_reasons: list[Any] = []
+        last_usage: Any = None
 
         async for chunk in stream:
             chunk_count += 1
+            chunk_usage = _read_attr(chunk, "usage")
+            if chunk_usage is not None:
+                last_usage = chunk_usage
+            # OpenAI 的 stream_options=include_usage 会在最后发一个 choices=[] 的 chunk，
+            # 仅携带 usage，跳过即可
+            if not chunk.choices:
+                continue
             choice = chunk.choices[0]
             finish_reason = _read_attr(choice, "finish_reason")
             if finish_reason:
@@ -243,6 +277,7 @@ class LiteLLMModelClient:
                 if arguments:
                     entry["function"]["arguments"] += arguments
 
+        stream_usage = _extract_usage(last_usage) if last_usage is not None else None
         self._log.event(
             "model.stream.raw_summary",
             {
@@ -252,6 +287,7 @@ class LiteLLMModelClient:
                     raw_tool_calls[index] for index in sorted(raw_tool_calls)
                 ],
                 "finish_reasons": finish_reasons,
+                "usage": stream_usage,
             },
         )
         turn = ModelTurn(
@@ -260,6 +296,7 @@ class LiteLLMModelClient:
                 [raw_tool_calls[index] for index in sorted(raw_tool_calls)]
             ),
             stop_reason=finish_reasons[-1] if finish_reasons else "end_turn",
+            usage=stream_usage,
         )
         self._log.event("model.response.normalized", {"turn": turn}, level="info")
         return turn

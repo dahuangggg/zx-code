@@ -46,6 +46,10 @@ async def test_write_then_read_then_edit(tmp_path: Path) -> None:
     )
     assert not edit_result.is_error
     assert file_path.read_text() == "hello\nagent\n"
+    edit_payload = json.loads(edit_result.content)
+    assert "diff" in edit_payload
+    assert "-world" in edit_payload["diff"]
+    assert "+agent" in edit_payload["diff"]
 
 
 @pytest.mark.asyncio

@@ -349,6 +349,7 @@ async def test_debug_log_records_prompt_model_and_tool_events(tmp_path: Path) ->
         "run.assistant_message",
         "run.model_input",
         "run.assistant_message",
+        "run.metrics",
     ]
     assert {event["session_id"] for event in events} == {"debug-session"}
     assert events[0]["payload"]["system_prompt"] == "system"
@@ -356,3 +357,52 @@ async def test_debug_log_records_prompt_model_and_tool_events(tmp_path: Path) ->
     assert events[3]["payload"]["call"]["name"] == "write_file"
     tool_result = json.loads(events[5]["payload"]["result"]["content"])
     assert tool_result["path"] == str(target)
+
+
+@pytest.mark.asyncio
+async def test_run_task_returns_structured_metrics(tmp_path: Path) -> None:
+    """run_task 返回的 AgentRunResult.metrics 包含每轮 LLM 和工具的结构化指标。"""
+    target = tmp_path / "out.txt"
+    registry = build_default_registry()
+    client = ScriptedModelClient(
+        [
+            ModelTurn(
+                text="writing",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": str(target), "content": "ok\n"},
+                    )
+                ],
+            ),
+            ModelTurn(text="done", tool_calls=[]),
+        ]
+    )
+
+    result = await run_task(
+        "write a file",
+        model_client=client,
+        tool_registry=registry,
+        config=RuntimeConfig(system_prompt="test", max_iterations=4),
+    )
+
+    m = result.metrics
+    assert m.total_turns == 2
+    assert m.total_tool_calls == 1
+    assert m.total_llm_duration_ms > 0
+    assert m.total_tool_duration_ms >= 0
+    assert len(m.turns) == 2
+
+    # 第 1 轮有工具调用
+    t1 = m.turns[0]
+    assert t1.turn == 1
+    assert t1.llm_duration_ms > 0
+    assert len(t1.tool_metrics) == 1
+    assert t1.tool_metrics[0].name == "write_file"
+    assert t1.tool_metrics[0].duration_ms >= 0
+
+    # 第 2 轮无工具调用
+    t2 = m.turns[1]
+    assert t2.turn == 2
+    assert t2.tool_metrics == []

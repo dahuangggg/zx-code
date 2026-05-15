@@ -63,12 +63,14 @@ class SystemPromptBuilder:
         skill_store: SkillStore | None = None,
         task_store: TaskStore | None = None,
         todo_manager: TodoManager | None = None,
+        team_members: list[dict[str, str]] | None = None,
     ) -> None:
         self.project_root = Path(project_root)
         self.memory_store = memory_store
         self.skill_store = skill_store
         self.task_store = task_store
         self.todo_manager = todo_manager
+        self.team_members = team_members or []
 
     def build(
         self,
@@ -107,6 +109,7 @@ class SystemPromptBuilder:
             PromptSection(title="Project Instructions", content=self._project_instructions_block()),  # stable
             PromptSection(title="Skills", content=self._skills_block()),           # stable
             PromptSection(title="Memory", content=self._memory_block()),           # semi-stable
+            PromptSection(title="Team", content=self._team_block()),               # stable per runtime
             PromptSection(title="Runtime", content=self._runtime_block(runtime_config)),  # per-session
             PromptSection(title="Tasks", content=self._task_block()),              # changes by task state
             PromptSection(title="Todos", content=self._todo_block()),              # changes every turn
@@ -202,6 +205,23 @@ class SystemPromptBuilder:
         if self.task_store is None:
             return ""
         return self.task_store.render_for_prompt()
+
+    def _team_block(self) -> str:
+        if not self.team_members:
+            return ""
+        lines = [
+            "You are the coordinator. Use team_dispatch for focused subtasks, "
+            "then evaluate and integrate the returned findings yourself.",
+            "Available team agents:",
+        ]
+        for member in self.team_members:
+            agent_id = member.get("agent_id", "").strip()
+            if not agent_id:
+                continue
+            role = member.get("role", "").strip()
+            suffix = f" - {role}" if role else ""
+            lines.append(f"- {agent_id}{suffix}")
+        return "\n".join(lines)
 
     def _todo_block(self) -> str:
         if self.todo_manager is None:

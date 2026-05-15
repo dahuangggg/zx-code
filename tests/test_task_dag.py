@@ -43,3 +43,33 @@ def test_task_store_rejects_missing_blockers(tmp_path: Path) -> None:
         assert "missing blocker" in str(exc)
     else:
         raise AssertionError("expected missing blocker to be rejected")
+
+
+def test_task_store_rejects_direct_cycle(tmp_path: Path) -> None:
+    """A -> B -> A 应被拒绝。"""
+    store = TaskStore(tmp_path / ".tasks")
+    a = store.create("task A")
+    b = store.create("task B", blocked_by=[a.id])
+
+    try:
+        store.create("task C", blocked_by=[b.id], task_id=a.id)
+    except (ValueError, ValueError) as exc:
+        assert "cycle" in str(exc).lower()
+    else:
+        raise AssertionError("expected cycle to be rejected")
+
+
+def test_task_store_rejects_transitive_cycle(tmp_path: Path) -> None:
+    """A -> B -> C -> A 传递环应被拒绝。"""
+    store = TaskStore(tmp_path / ".tasks")
+    a = store.create("task A")
+    b = store.create("task B", blocked_by=[a.id])
+    c = store.create("task C", blocked_by=[b.id])
+
+    try:
+        # 尝试让 A 依赖 C，形成 A -> B -> C -> A
+        store.create("task A alias", blocked_by=[c.id], task_id=a.id)
+    except (ValueError, ValueError) as exc:
+        assert "cycle" in str(exc).lower()
+    else:
+        raise AssertionError("expected transitive cycle to be rejected")
