@@ -86,7 +86,8 @@ async def test_worktree_tools_create_and_cleanup_worktree(tmp_path: Path) -> Non
         call_id="wt-1",
     )
     payload = json.loads(created.content)
-    worktree_path = Path(payload["path"])
+    data = payload["data"]
+    worktree_path = Path(data["path"])
 
     assert not created.is_error
     assert worktree_path.exists()
@@ -94,9 +95,9 @@ async def test_worktree_tools_create_and_cleanup_worktree(tmp_path: Path) -> Non
     cleaned = await registry.execute(
         "worktree_cleanup",
         {
-            "task_id": payload["task_id"],
-            "branch": payload["branch"],
-            "path": payload["path"],
+            "task_id": data["task_id"],
+            "branch": data["branch"],
+            "path": data["path"],
             "delete_branch": True,
         },
         call_id="wt-2",

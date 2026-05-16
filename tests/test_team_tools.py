@@ -53,9 +53,9 @@ async def test_team_dispatch_tool_returns_member_reply() -> None:
         await team.shutdown()
 
     payload = json.loads(result.content)
-    assert payload["to_agent"] == "researcher"
-    assert payload["reply"].startswith("researcher saw inspect the loop")
-    assert payload["error"] == ""
+    assert payload["data"]["to_agent"] == "researcher"
+    assert payload["data"]["reply"].startswith("researcher saw inspect the loop")
+    assert not result.is_error
 
 
 @pytest.mark.asyncio
@@ -117,7 +117,7 @@ async def test_team_list_tool_returns_registered_members() -> None:
     result = await tool.execute({}, call_id="call-list")
 
     payload = json.loads(result.content)
-    assert payload["members"] == [
+    assert payload["data"]["members"] == [
         {"agent_id": "researcher", "role": "Reads code and summarizes findings."}
     ]
 

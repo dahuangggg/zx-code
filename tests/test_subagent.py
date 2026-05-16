@@ -99,5 +99,5 @@ async def test_subagent_tool_executes_runner() -> None:
 
     payload = json.loads(result.content)
     assert not result.is_error
-    assert payload["final_text"] == "done: summarize gateway"
-    assert payload["session_id"].startswith("parent:subagent:reader:")
+    assert payload["data"]["final_text"] == "done: summarize gateway"
+    assert payload["data"]["session_id"].startswith("parent:subagent:reader:")

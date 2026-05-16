@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.agents.team import Team
-from agent.tools.base import Tool
+from agent.tools.base import ErrorCode, Tool
 
 
 class TeamListParams(BaseModel):
@@ -34,8 +34,9 @@ class TeamListTool(Tool):
     def __init__(self, team: Team) -> None:
         self.team = team
 
-    async def run(self, arguments: TeamListParams) -> dict[str, Any]:
-        return {"members": self.team.members_summary()}
+    async def run(self, arguments: TeamListParams) -> str:
+        members = self.team.members_summary()
+        return self.success(data={"members": members}, text=f"Team has {len(members)} member{'s' if len(members) != 1 else ''}: {', '.join(m.get('name', '?') for m in members)}.")
 
     def is_concurrency_safe(self, arguments: dict[str, object] | BaseModel) -> bool:
         return True
@@ -52,7 +53,7 @@ class TeamDispatchTool(Tool):
         self.team = team
         self.default_timeout_s = default_timeout_s
 
-    async def run(self, arguments: TeamDispatchParams) -> dict[str, Any]:
+    async def run(self, arguments: TeamDispatchParams) -> str:
         timeout_s = arguments.timeout_s or self.default_timeout_s
         self.team.ensure_started()
         try:
@@ -62,18 +63,8 @@ class TeamDispatchTool(Tool):
                 timeout_s=timeout_s,
             )
         except Exception as exc:
-            return {
-                "to_agent": arguments.to_agent,
-                "task": arguments.task,
-                "reply": "",
-                "error": str(exc),
-            }
-        return {
-            "to_agent": arguments.to_agent,
-            "task": arguments.task,
-            "reply": reply,
-            "error": "",
-        }
+            return self.error(code=ErrorCode.EXECUTION_ERROR, message=f"Dispatch to '{arguments.to_agent}' failed: {exc}")
+        return self.success(data={"to_agent": arguments.to_agent, "task": arguments.task, "reply": reply}, text=f"Agent '{arguments.to_agent}' replied: {reply[:200]}")
 
 
 class TeamBroadcastTool(Tool):
@@ -84,10 +75,8 @@ class TeamBroadcastTool(Tool):
     def __init__(self, team: Team) -> None:
         self.team = team
 
-    async def run(self, arguments: TeamBroadcastParams) -> dict[str, Any]:
+    async def run(self, arguments: TeamBroadcastParams) -> str:
         self.team.ensure_started()
         await self.team.broadcast(arguments.content)
-        return {
-            "broadcast": arguments.content,
-            "members": self.team.members_summary(),
-        }
+        members = self.team.members_summary()
+        return self.success(data={"broadcast": arguments.content, "members": members}, text=f"Broadcast sent to {len(members)} team member{'s' if len(members) != 1 else ''}.")
