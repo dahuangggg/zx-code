@@ -92,6 +92,7 @@ class ToolResult(BaseModel):
     name: str
     content: str
     is_error: bool = False
+    status: str = "success"
 
     def to_message(self) -> Message:
         return Message.tool(
