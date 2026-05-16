@@ -70,5 +70,5 @@ async def test_load_skill_tool_returns_skill_content(tmp_path: Path) -> None:
     payload = json.loads(result.content)
 
     assert not result.is_error
-    assert payload["name"] == "plan"
-    assert "Write a short plan." in payload["content"]
+    assert payload["data"]["name"] == "plan"
+    assert "Write a short plan." in payload["data"]["content"]
