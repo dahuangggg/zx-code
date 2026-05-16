@@ -29,15 +29,18 @@ class ToolSearchTool(Tool):
     def __init__(self, registry: Any) -> None:
         self.registry = registry
 
-    async def run(self, arguments: ToolSearchInput) -> dict[str, Any]:
+    async def run(self, arguments: ToolSearchInput) -> str:
         schemas = self.registry.schemas()
         matches = self._find_matches(schemas, arguments)
         activated = [self._tool_name(schema) for schema in matches]
         self.registry.activate_schemas(activated)
-        return {
-            "activated": activated,
-            "tools": [self._compact_tool(schema) for schema in matches],
-        }
+        return self.success(
+            data={
+                "activated": activated,
+                "tools": [self._compact_tool(schema) for schema in matches],
+            },
+            text=f"Activated {len(activated)} tool(s): {', '.join(activated)}." if activated else "No matching tools found.",
+        )
 
     def _find_matches(
         self,

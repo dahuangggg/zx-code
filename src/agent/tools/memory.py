@@ -38,15 +38,14 @@ class MemoryAppendTool(Tool):
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
 
-    async def run(self, arguments: MemoryAppendInput) -> dict[str, object]:
+    async def run(self, arguments: MemoryAppendInput) -> str:
         self.store.append(
             arguments.text,
             source=arguments.source,
             memory_type=arguments.memory_type,
         )
-        return {
-            "path": str(self.store.path),
-            "appended": arguments.text,
-            "type": arguments.memory_type,
-        }
+        return self.success(
+            data={"path": str(self.store.path), "appended": arguments.text, "type": arguments.memory_type},
+            text=f"Saved {arguments.memory_type} memory.",
+        )
 

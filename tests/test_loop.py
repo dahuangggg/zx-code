@@ -356,7 +356,7 @@ async def test_debug_log_records_prompt_model_and_tool_events(tmp_path: Path) ->
     assert events[1]["payload"]["message"]["content"] == "write a file"
     assert events[3]["payload"]["call"]["name"] == "write_file"
     tool_result = json.loads(events[5]["payload"]["result"]["content"])
-    assert tool_result["path"] == str(target)
+    assert tool_result["data"]["path"] == str(target)
 
 
 @pytest.mark.asyncio

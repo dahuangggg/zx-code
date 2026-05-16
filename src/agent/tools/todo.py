@@ -40,9 +40,12 @@ class TodoCreateTool(Tool):
     def __init__(self, manager: TodoManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: TodoCreateInput) -> dict[str, object]:
+    async def run(self, arguments: TodoCreateInput) -> str:
         item = self.manager.create(arguments.title, notes=arguments.notes)
-        return item.model_dump(mode="json")
+        return self.success(
+            data=item.model_dump(mode="json"),
+            text=f"Created todo '{arguments.title}' (id: {item.id}).",
+        )
 
 
 class TodoUpdateTool(Tool):
@@ -53,14 +56,17 @@ class TodoUpdateTool(Tool):
     def __init__(self, manager: TodoManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: TodoUpdateInput) -> dict[str, object]:
+    async def run(self, arguments: TodoUpdateInput) -> str:
         item = self.manager.update(
             arguments.todo_id,
             title=arguments.title,
             status=arguments.status,
             notes=arguments.notes,
         )
-        return item.model_dump(mode="json")
+        return self.success(
+            data=item.model_dump(mode="json"),
+            text=f"Updated todo {arguments.todo_id}: {item.title} [{item.status}].",
+        )
 
 
 class TodoCompleteTool(Tool):
@@ -71,9 +77,12 @@ class TodoCompleteTool(Tool):
     def __init__(self, manager: TodoManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: TodoCompleteInput) -> dict[str, object]:
+    async def run(self, arguments: TodoCompleteInput) -> str:
         item = self.manager.complete(arguments.todo_id)
-        return item.model_dump(mode="json")
+        return self.success(
+            data=item.model_dump(mode="json"),
+            text=f"Completed todo: '{item.title}'.",
+        )
 
 
 class TodoListTool(Tool):
@@ -84,6 +93,10 @@ class TodoListTool(Tool):
     def __init__(self, manager: TodoManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: TodoListInput) -> dict[str, object]:
-        return {"todos": [item.model_dump(mode="json") for item in self.manager.list()]}
+    async def run(self, arguments: TodoListInput) -> str:
+        items = self.manager.list()
+        return self.success(
+            data={"todos": [i.model_dump(mode="json") for i in items]},
+            text=f"Listed {len(items)} todo item{'s' if len(items) != 1 else ''}.",
+        )
 

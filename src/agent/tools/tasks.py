@@ -51,13 +51,16 @@ class TaskCreateTool(Tool):
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    async def run(self, arguments: TaskCreateInput) -> dict[str, object]:
+    async def run(self, arguments: TaskCreateInput) -> str:
         task = self.store.create(
             arguments.title,
             description=arguments.description,
             blocked_by=arguments.blocked_by,
         )
-        return task.model_dump(mode="json")
+        return self.success(
+            data=task.model_dump(mode="json"),
+            text=f"Created task '{arguments.title}' (id: {task.id}).",
+        )
 
 
 class TaskCompleteTool(Tool):
@@ -68,12 +71,14 @@ class TaskCompleteTool(Tool):
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    async def run(self, arguments: TaskCompleteInput) -> dict[str, object]:
+    async def run(self, arguments: TaskCompleteInput) -> str:
         task, unlocked = self.store.complete(arguments.task_id, result=arguments.result)
-        return {
-            "completed": task.model_dump(mode="json"),
-            "unlocked": [item.model_dump(mode="json") for item in unlocked],
-        }
+        unlocked_titles = [t.title for t in unlocked]
+        unlock_note = f" Unlocked: {', '.join(unlocked_titles)}." if unlocked_titles else ""
+        return self.success(
+            data={"completed": task.model_dump(mode="json"), "unlocked": [t.model_dump(mode="json") for t in unlocked]},
+            text=f"Completed task '{task.title}'.{unlock_note}",
+        )
 
 
 class TaskCancelTool(Tool):
@@ -84,12 +89,12 @@ class TaskCancelTool(Tool):
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    async def run(self, arguments: TaskCancelInput) -> dict[str, object]:
+    async def run(self, arguments: TaskCancelInput) -> str:
         task, unlocked = self.store.cancel(arguments.task_id, result=arguments.result)
-        return {
-            "cancelled": task.model_dump(mode="json"),
-            "unlocked": [item.model_dump(mode="json") for item in unlocked],
-        }
+        return self.success(
+            data={"cancelled": task.model_dump(mode="json"), "unlocked": [t.model_dump(mode="json") for t in unlocked]},
+            text=f"Cancelled task '{task.title}'.",
+        )
 
 
 class TaskUpdateTool(Tool):
@@ -100,9 +105,12 @@ class TaskUpdateTool(Tool):
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    async def run(self, arguments: TaskUpdateInput) -> dict[str, object]:
+    async def run(self, arguments: TaskUpdateInput) -> str:
         task = self.store.update_status(arguments.task_id, arguments.status)
-        return task.model_dump(mode="json")
+        return self.success(
+            data=task.model_dump(mode="json"),
+            text=f"Updated task '{task.title}' → {arguments.status}.",
+        )
 
 
 class TaskListTool(Tool):
@@ -113,10 +121,11 @@ class TaskListTool(Tool):
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    async def run(self, arguments: TaskListInput) -> dict[str, object]:
+    async def run(self, arguments: TaskListInput) -> str:
         tasks = self.store.list()
         if not arguments.include_completed:
             tasks = [task for task in tasks if task.status != "completed"]
-        return {
-            "tasks": [task.model_dump(mode="json") for task in tasks],
-        }
+        return self.success(
+            data={"tasks": [task.model_dump(mode="json") for task in tasks]},
+            text=f"Listed {len(tasks)} task{'s' if len(tasks) != 1 else ''}.",
+        )
