@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Callable
 from inspect import isawaitable
+from pathlib import Path
 from typing import Any, Protocol
 
 from agent.debuglog import DebugLog
 from agent.hooks import HookRunner, HookResult
 from agent.models import ToolCall, ToolMetric, ToolResult
 from agent.tools.registry import ToolRegistry
+from agent.tools.truncator import ObservationTruncator
 
 
 class ToolHookRunner(Protocol):
@@ -29,12 +32,14 @@ class ToolCallExecutor:
         session_id: str,
         debug_log: DebugLog | None = None,
         progress_handler: Callable[[str, dict[str, Any]], Any] | None = None,
+        project_root: Path | str | None = None,
     ) -> None:
         self.tool_registry = tool_registry
         self.hook_runner = hook_runner or HookRunner.empty()
         self.session_id = session_id
         self._log = debug_log or DebugLog.null()
         self.progress_handler = progress_handler
+        self._truncator = ObservationTruncator(project_root)
 
     async def execute_many(
         self, calls: list[ToolCall]
@@ -181,6 +186,22 @@ class ToolCallExecutor:
             call.arguments,
             call_id=call.id,
         )
+        # Truncate large outputs
+        truncated_content = self._truncator.truncate(call.name, result.content)
+        if truncated_content != result.content:
+            try:
+                new_status = json.loads(truncated_content).get("status", result.status)
+            except Exception:
+                new_status = result.status
+            result = result.model_copy(update={"content": truncated_content, "status": new_status})
+
+        # Extract text for terminal progress
+        result_text = ""
+        try:
+            result_text = json.loads(result.content).get("text", "") or ""
+        except Exception:
+            pass
+
         await self._emit_progress(
             "tool.end",
             {
@@ -188,6 +209,7 @@ class ToolCallExecutor:
                 "arguments": call.arguments,
                 "call_id": call.id,
                 "is_error": result.is_error,
+                "result_text": result_text,
             },
         )
         self._log.event(

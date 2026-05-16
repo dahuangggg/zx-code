@@ -92,7 +92,12 @@ class CLIProgressReporter:
         if event == "tool.end":
             tool_name = str(payload.get("tool_name") or "tool")
             is_error = bool(payload.get("is_error"))
-            label = "[red]failed[/red]" if is_error else "[green]done[/green]"
+            result_text = str(payload.get("result_text") or "").strip()
+            first_line = result_text.split("\n")[0] if result_text else ""
+            if first_line:
+                label = f"[red]{first_line}[/red]" if is_error else f"[dim]{first_line}[/dim]"
+            else:
+                label = "[red]failed[/red]" if is_error else "[green]done[/green]"
             self.console.print(f"[dim]tool[/dim] [cyan]{tool_name}[/cyan] {label}")
 
     def stop(self) -> None:
