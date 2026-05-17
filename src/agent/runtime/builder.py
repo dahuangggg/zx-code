@@ -378,6 +378,7 @@ def _build_runtime(
         "tool_registry": registry,
         "team": team,
         "debug_log": debug_log,
+        "project_root": project_root,
     }
     debug_log.event(
         "runtime.built",
@@ -469,6 +470,7 @@ async def _run_agent_text(
             prompt_builder=runtime["prompt_builder"],
             hook_runner=runtime["hook_runner"],
             debug_log=runtime.get("debug_log"),
+            project_root=runtime.get("project_root"),
             progress_handler=(
                 progress_reporter.handle
                 if progress_reporter is not None

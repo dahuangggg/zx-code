@@ -61,6 +61,7 @@ async def run_task(
     hook_runner: HookRunner | None = None,
     debug_log: DebugLog | None = None,
     progress_handler: Callable[[str, dict[str, Any]], Any] | None = None,
+    project_root: Any | None = None,
 ) -> AgentRunResult:
     # 规范化：外部传 None 时用 NullDebugLog，内部代码无需再判断 is not None
     _log = debug_log or DebugLog.null()
@@ -217,6 +218,7 @@ async def run_task(
             session_id=runtime_config.session_id,
             debug_log=debug_log,
             progress_handler=progress_handler,
+            project_root=project_root,
         )
         # execute_many 内部对 concurrency-safe 工具并发执行，但返回顺序与 tool_calls 一致，
         # 保证写回消息历史的顺序与模型调用顺序匹配（否则 tool_call_id 配对会乱）

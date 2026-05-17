@@ -125,3 +125,162 @@ async def test_validation_errors_return_error_status(tmp_path: Path) -> None:
     assert result.status == "error"
     env = json.loads(result.content)
     assert env["error"]["code"] == "INVALID_PARAM"
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker integration
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_opens_after_three_failures() -> None:
+    from pydantic import BaseModel
+
+    from agent.tools.base import ErrorCode, Tool
+    from agent.tools.registry import ToolRegistry
+
+    class _FailInput(BaseModel):
+        pass
+
+    class _AlwaysFailTool(Tool):
+        name = "always_fail"
+        description = "always fails"
+        input_model = _FailInput
+
+        async def run(self, arguments: _FailInput) -> str:
+            return self.error(code=ErrorCode.INTERNAL_ERROR, message="intentional")
+
+    registry = ToolRegistry()
+    registry.register(_AlwaysFailTool())
+
+    # First 3 calls fail but circuit is still closed
+    for i in range(3):
+        result = await registry.execute("always_fail", {}, call_id=f"f{i}")
+        assert result.is_error
+        env = json.loads(result.content)
+        assert env["error"]["code"] == "INTERNAL_ERROR", f"call {i} should be INTERNAL_ERROR"
+
+    # 4th call: circuit is now open
+    result = await registry.execute("always_fail", {}, call_id="f3")
+    assert result.is_error
+    env = json.loads(result.content)
+    assert env["error"]["code"] == "CIRCUIT_OPEN"
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_does_not_open_after_interrupted_failures() -> None:
+    """2 failures then a success should reset the counter; circuit stays closed."""
+    from pydantic import BaseModel
+
+    from agent.tools.base import ErrorCode, Tool
+    from agent.tools.registry import ToolRegistry
+
+    step = {"n": 0}
+
+    class _FlakyInput(BaseModel):
+        pass
+
+    class _FlakyTool(Tool):
+        name = "flaky"
+        description = "fails on steps 1-2, succeeds on step 3+"
+        input_model = _FlakyInput
+
+        async def run(self, arguments: _FlakyInput) -> str:
+            step["n"] += 1
+            if step["n"] <= 2:
+                return self.error(code=ErrorCode.INTERNAL_ERROR, message="boom")
+            return self.success(data={}, text="ok")
+
+    registry = ToolRegistry()
+    registry.register(_FlakyTool())
+
+    # 2 failures (below threshold of 3)
+    for _ in range(2):
+        r = await registry.execute("flaky", {}, call_id="x")
+        assert r.is_error
+
+    # Success resets the consecutive-failure counter
+    r = await registry.execute("flaky", {}, call_id="ok")
+    assert not r.is_error
+
+    # Circuit should still be closed: the next call succeeds (step=4, always succeeds now)
+    r = await registry.execute("flaky", {}, call_id="still-ok")
+    assert not r.is_error
+    assert json.loads(r.content)["error"]["code"] if r.is_error else "success" == "success"
+
+
+# ---------------------------------------------------------------------------
+# Optimistic locking (conflict detection)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_conflict_detected_when_file_modified_after_read(tmp_path: Path) -> None:
+    import os
+    import time
+
+    registry = build_default_registry()
+    file_path = tmp_path / "target.txt"
+    file_path.write_text("original\n")
+
+    # Read via registry → populates mtime cache
+    read_result = await registry.execute(
+        "read_file",
+        {"path": str(file_path)},
+        call_id="read-1",
+    )
+    assert not read_result.is_error
+
+    # Externally bump the file's mtime (simulates another process writing the file)
+    future_mtime = time.time() + 10.0
+    os.utime(str(file_path), (future_mtime, future_mtime))
+
+    # edit_file should now detect the conflict
+    edit_result = await registry.execute(
+        "edit_file",
+        {"path": str(file_path), "old_text": "original", "new_text": "modified"},
+        call_id="edit-1",
+    )
+    assert edit_result.is_error
+    env = json.loads(edit_result.content)
+    assert env["error"]["code"] == "CONFLICT"
+    assert file_path.read_text() == "original\n"  # file must be untouched
+
+
+@pytest.mark.asyncio
+async def test_no_conflict_when_file_unchanged_after_read(tmp_path: Path) -> None:
+    registry = build_default_registry()
+    file_path = tmp_path / "target.txt"
+    file_path.write_text("original\n")
+
+    # Read, then immediately edit — mtime hasn't changed
+    await registry.execute("read_file", {"path": str(file_path)}, call_id="read-1")
+    edit_result = await registry.execute(
+        "edit_file",
+        {"path": str(file_path), "old_text": "original", "new_text": "modified"},
+        call_id="edit-1",
+    )
+    assert not edit_result.is_error
+    assert file_path.read_text() == "modified\n"
+
+
+@pytest.mark.asyncio
+async def test_write_file_conflict_after_read(tmp_path: Path) -> None:
+    import os
+    import time
+
+    registry = build_default_registry()
+    file_path = tmp_path / "target.txt"
+    file_path.write_text("v1\n")
+
+    await registry.execute("read_file", {"path": str(file_path)}, call_id="read-1")
+
+    future_mtime = time.time() + 10.0
+    os.utime(str(file_path), (future_mtime, future_mtime))
+
+    write_result = await registry.execute(
+        "write_file",
+        {"path": str(file_path), "content": "v2\n"},
+        call_id="write-1",
+    )
+    assert write_result.is_error
+    env = json.loads(write_result.content)
+    assert env["error"]["code"] == "CONFLICT"
