@@ -73,3 +73,4 @@ interview/
 .memory/
 .zx-code/*
 !.zx-code/config.toml.example
+tool-output/
