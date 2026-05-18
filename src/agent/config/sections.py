@@ -13,8 +13,8 @@ from agent.profiles import ModelProfile
 class ModelSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = "openai/gpt-5.4-mini"
-    fallback_models: str = "openai/gpt-5.5"
+    name: str = "gpt-5.4"
+    fallback_models: str = "gpt-5.4"
     reasoning_effort: str = ""
     profiles: list[ModelProfile] = Field(default_factory=list)
     max_iterations: int = 30
@@ -113,6 +113,24 @@ class SubagentSettings(BaseModel):
     max_depth: int = Field(default=1, ge=0)
 
 
+class TeamMemberSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    role: str = ""
+    system_prompt: str = ""
+
+
+class TeamSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    log_path: str = ".agent/team/messages.jsonl"
+    timeout_s: float = Field(default=30.0, gt=0)
+    max_depth: int = Field(default=1, ge=0)
+    members: list[TeamMemberSettings] = Field(default_factory=list)
+
+
 class WorktreeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -200,6 +218,11 @@ _FLAT_ALIASES: dict[str, tuple[str, ...]] = {
     "cron_jobs_path": ("scheduling", "cron_jobs_path"),
     "enable_subagents": ("subagents", "enabled"),
     "subagent_max_depth": ("subagents", "max_depth"),
+    "enable_teams": ("teams", "enabled"),
+    "team_log_path": ("teams", "log_path"),
+    "team_timeout_s": ("teams", "timeout_s"),
+    "team_max_depth": ("teams", "max_depth"),
+    "team_members": ("teams", "members"),
     "enable_worktree_isolation": ("worktree", "isolation_enabled"),
     "worktree_dir": ("worktree", "dir"),
     "code_context_enabled": ("code_context", "enabled"),
@@ -229,6 +252,7 @@ class AgentSettings(BaseModel):
     delivery: DeliverySettings = Field(default_factory=DeliverySettings)
     scheduling: SchedulingSettings = Field(default_factory=SchedulingSettings)
     subagents: SubagentSettings = Field(default_factory=SubagentSettings)
+    teams: TeamSettings = Field(default_factory=TeamSettings)
     worktree: WorktreeSettings = Field(default_factory=WorktreeSettings)
     code_context: CodeContextSettings = Field(default_factory=CodeContextSettings)
     debug: DebugSettings = Field(default_factory=DebugSettings)

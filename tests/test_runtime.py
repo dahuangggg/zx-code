@@ -67,6 +67,33 @@ def test_build_runtime_registers_subagent_tool_by_default(monkeypatch, tmp_path)
     assert runtime["tool_registry"].get("subagent_run") is not None
 
 
+def test_build_runtime_registers_team_tools_when_enabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    runtime = _build_runtime(
+        AgentSettings(
+            enable_memory=False,
+            enable_todos=False,
+            teams={
+                "enabled": True,
+                "members": [
+                    {
+                        "id": "researcher",
+                        "role": "Reads code and summarizes findings.",
+                    }
+                ],
+            },
+        ),
+    )
+
+    assert runtime["tool_registry"].get("team_list") is not None
+    assert runtime["tool_registry"].get("team_dispatch") is not None
+    assert runtime["tool_registry"].get("team_broadcast") is not None
+    assert runtime["team"].members_summary() == [
+        {"agent_id": "researcher", "role": "Reads code and summarizes findings."}
+    ]
+
+
 @pytest.mark.asyncio
 async def test_repl_prints_status_banner_and_session_prompt(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.chdir(tmp_path)

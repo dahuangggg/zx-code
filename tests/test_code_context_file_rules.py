@@ -34,6 +34,26 @@ def test_iter_code_files_loads_gitignore_and_contextignore(tmp_path: Path) -> No
     assert files == ["kept.py"]
 
 
+def test_iter_code_files_accepts_custom_extensions_and_ignore_patterns(tmp_path: Path) -> None:
+    (tmp_path / ".cursorignore").write_text("private/**\n", encoding="utf-8")
+    (tmp_path / "component.vue").write_text("<template />\n", encoding="utf-8")
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "tmp" / "scratch.py").write_text("x\n", encoding="utf-8")
+    (tmp_path / "private").mkdir()
+    (tmp_path / "private" / "secret.py").write_text("x\n", encoding="utf-8")
+
+    files = [
+        path.relative_to(tmp_path).as_posix()
+        for path in iter_code_files(
+            tmp_path,
+            custom_extensions={".vue"},
+            custom_ignore_patterns=["tmp/**"],
+        )
+    ]
+
+    assert files == ["component.vue"]
+
+
 def test_resolve_codebase_path_defaults_to_cwd(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 

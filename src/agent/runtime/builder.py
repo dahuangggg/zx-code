@@ -36,12 +36,13 @@ from agent.permissions import PermissionManager
 from agent.plugins import PluginManager
 from agent.profiles import FallbackModelClient
 from agent.prompt import SystemPromptBuilder
-from agent.providers.litellm_client import LiteLLMModelClient
+from agent.providers.openai_client import OpenAIModelClient
 from agent.runtime.markdown_stream import MarkdownStreamRenderer
 from agent.runtime.utils import _approval_prompt, _resolve_project_path, _stream_printer, console
 from agent.state.sessions import SessionStore, safe_session_id
 from agent.state.skills import SkillStore
 from agent.agents.subagent import SubagentRunner
+from agent.agents.team import Team
 from agent.state.tasks import TaskStore
 from agent.state.todo import TodoManager
 from agent.tools import build_default_registry
@@ -91,7 +92,12 @@ class CLIProgressReporter:
         if event == "tool.end":
             tool_name = str(payload.get("tool_name") or "tool")
             is_error = bool(payload.get("is_error"))
-            label = "[red]failed[/red]" if is_error else "[green]done[/green]"
+            result_text = str(payload.get("result_text") or "").strip()
+            first_line = result_text.split("\n")[0] if result_text else ""
+            if first_line:
+                label = f"[red]{first_line}[/red]" if is_error else f"[dim]{first_line}[/dim]"
+            else:
+                label = "[red]failed[/red]" if is_error else "[green]done[/green]"
             self.console.print(f"[dim]tool[/dim] [cyan]{tool_name}[/cyan] {label}")
 
     def stop(self) -> None:
@@ -138,9 +144,10 @@ def _build_model_client(settings: AgentSettings, debug_log: DebugLog | None = No
     if len(profiles) > 1:
         return FallbackModelClient(profiles, debug_log=debug_log)
     profile = profiles[0]
-    return LiteLLMModelClient(
+    return OpenAIModelClient(
         model=profile.model,
-        extra_kwargs=profile.litellm_kwargs(),
+        api_key=profile.resolve_api_key(),
+        extra_kwargs=profile.client_kwargs(),
         debug_log=debug_log,
     )
 
@@ -199,12 +206,60 @@ def _build_runtime(
         if effective_settings.state.enable_tasks
         else None
     )
+    team: Team | None = None
+    if (
+        effective_settings.teams.enabled
+        and effective_settings.teams.members
+        and subagent_depth < effective_settings.teams.max_depth
+    ):
+        team = Team(
+            log_path=_resolve_project_path(project_root, effective_settings.teams.log_path),
+            parent_session_id=effective_settings.state.session_id,
+        )
+        for member in effective_settings.teams.members:
+
+            async def run_team_member_text(
+                task: str,
+                child_session_id: str,
+                *,
+                member_id: str = member.id,
+                member_role: str = member.role,
+                member_system_prompt: str = member.system_prompt,
+            ) -> str:
+                prompt_parts = [
+                    f"You are team agent {member_id}.",
+                    member_role,
+                    member_system_prompt,
+                    "Return concise findings for the coordinator. Do not address the user directly.",
+                    "",
+                    task,
+                ]
+                child_task = "\n".join(part for part in prompt_parts if part.strip())
+                return await _run_agent_text(
+                    child_task,
+                    settings=effective_settings.model_copy(
+                        update={
+                            "model": effective_settings.model.model_copy(update={"stream": False}),
+                            "teams": effective_settings.teams.model_copy(update={"enabled": False}),
+                        }
+                    ),
+                    session_id=child_session_id,
+                    lane_scheduler=lane_scheduler,
+                    subagent_depth=subagent_depth + 1,
+                )
+
+            team.add_member(
+                member.id,
+                run_team_member_text,
+                role=member.role,
+            )
     prompt_builder = SystemPromptBuilder(
         project_root=project_root,
         memory_store=memory_store,
         skill_store=skill_store,
         task_store=task_store,
         todo_manager=todo_manager,
+        team_members=team.members_summary() if team is not None else None,
     )
     # Resolve rules file: explicit setting > project default
     rules_path: Path | None = None
@@ -280,6 +335,8 @@ def _build_runtime(
         skill_store=skill_store,
         task_store=task_store,
         subagent_runner=subagent_runner,
+        team=team,
+        team_timeout_s=effective_settings.teams.timeout_s,
         worktree_manager=worktree_manager,
         code_context_indexer=code_context_indexer,
         debug_log=debug_log,
@@ -319,7 +376,9 @@ def _build_runtime(
         "prompt_builder": prompt_builder,
         "session_store": SessionStore(data_dir / "sessions"),
         "tool_registry": registry,
+        "team": team,
         "debug_log": debug_log,
+        "project_root": project_root,
     }
     debug_log.event(
         "runtime.built",
@@ -327,6 +386,7 @@ def _build_runtime(
             "model": effective_settings.model.name,
             "session_id": effective_settings.state.session_id,
             "data_dir": str(data_dir),
+            "team_members": team.members_summary() if team is not None else [],
         },
         level="info",
     )
@@ -410,6 +470,7 @@ async def _run_agent_text(
             prompt_builder=runtime["prompt_builder"],
             hook_runner=runtime["hook_runner"],
             debug_log=runtime.get("debug_log"),
+            project_root=runtime.get("project_root"),
             progress_handler=(
                 progress_reporter.handle
                 if progress_reporter is not None
@@ -422,6 +483,9 @@ async def _run_agent_text(
         if progress_reporter is not None:
             progress_reporter.stop()
         stream_output.flush()
+        team = runtime.get("team")
+        if team is not None:
+            await team.shutdown()
         if mcp_router is not None:
             await mcp_router.close()
 

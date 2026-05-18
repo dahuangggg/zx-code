@@ -69,6 +69,51 @@ uv run pytest -q
 
 ## 2026-05-10 - Phase 06: CodeContext RAG 上下文层
 
+## 2026-05-14 - CodeContext 向 claude-context 靠拢：索引生命周期、文件规则、Sparse Index
+
+### 改动内容
+
+- 更新 `src/agent/code_context/indexer.py`
+  - `search_code()` 支持 indexing 阶段搜索已经写入 Chroma 的 partial chunks
+  - `clear_index()` 会先 cooperative cancel 正在运行的后台索引，再按 `codebase_id` 清理全部 chunk / snapshot / status / sparse index
+  - 新增文件系统级索引锁：`.agent/code-context/snapshots/locks/<codebase_id>.lock`
+  - 新增 `list_indexes()` / `get_index_info()`，用于查看已索引 codebase
+- 更新 `src/agent/code_context/file_rules.py`
+  - 扩展默认语言和忽略规则
+  - 支持 `custom_extensions` / `custom_ignore_patterns`
+  - 读取 `.cursorignore` 等 `.xxxignore` 和用户级 context ignore
+- 新增 `src/agent/code_context/sparse_index.py`
+  - 索引期持久化 BM25-like sparse index
+  - 查询期 keyword channel 不再从 Chroma 拉全量 documents
+- 更新 `src/agent/code_context/models.py` 和 `ranker.py`
+  - `CodeSearchResult` 增加 `matched_by`、`vector_rank`、`keyword_rank`
+  - RRF 融合时保留 dense / sparse 两路来源信息
+- 更新 `src/agent/tools/code_context.py`
+  - `code_index` 支持 `custom_extensions`、`ignore_patterns`
+  - 新增 `code_index_list`、`code_index_info`
+
+### 为什么这么改
+
+这次按优先级补的是最接近 `claude-context` 工程形态的部分：索引不是一次性同步动作，而是有 partial search、cancel、lock 和可查询状态的生命周期；文件纳入规则不是写死扩展名，而是默认规则、用户规则和请求规则的组合；hybrid search 的 sparse channel 不应该每次全量扫描 Chroma 文档，而应该在索引期持久化。
+
+这三个方向比先接更强 embedding 或 tree-sitter 更优先，因为它们直接决定系统是否像一个可长期运行的 codebase context 子系统，而不只是本地 RAG demo。
+
+### 验证
+
+```bash
+uv run pytest tests/test_code_context_file_rules.py tests/test_code_context_splitter.py tests/test_code_context_indexer.py tests/test_code_context_tools.py -q
+```
+
+验证结果：`22 passed`，Chroma fake embedding 仍有 legacy embedding warning，不影响行为。
+
+### 读者入口
+
+- 索引生命周期：`src/agent/code_context/indexer.py`
+- 文件规则：`src/agent/code_context/file_rules.py`
+- Sparse keyword index：`src/agent/code_context/sparse_index.py`
+- RRF 来源合并：`src/agent/code_context/ranker.py`
+- 工具入口：`src/agent/tools/code_context.py`
+
 ## 2026-05-11 - CodeContext 后台索引与 Hybrid Search
 
 ### 改动内容

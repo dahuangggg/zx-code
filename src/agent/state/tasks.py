@@ -88,13 +88,16 @@ class TaskStore:
         blockers = blocked_by or []
         # 先校验 blocker 是否存在，防止 DAG 引用悬空节点
         existing = self._ensure_blockers_exist(blockers)
+        # 检测依赖环：新任务的 id 不能出现在 blockers 的传递依赖中
+        resolved_id = task_id or f"task-{uuid4().hex[:8]}"
+        self._check_cycle(resolved_id, blockers, existing)
         # 创建时 blocker 可能已全部完成（补录历史依赖），此时直接 pending 避免无效阻塞
         blockers_completed = all(
             existing[blocker].status == "completed"
             for blocker in blockers
         )
         record = TaskRecord(
-            id=task_id or f"task-{uuid4().hex[:8]}",
+            id=resolved_id,
             title=title,
             description=description,
             blocked_by=blockers,
@@ -178,6 +181,28 @@ class TaskStore:
             result = f" result={task.result!r}" if task.result and task.status in ("completed", "failed") else ""
             lines.append(f"- [{task.status}] {task.id}: {task.title}{blockers}{result}")
         return "\n".join(lines)
+
+    def _check_cycle(
+        self,
+        task_id: str,
+        blockers: list[str],
+        known: dict[str, TaskRecord],
+    ) -> None:
+        """BFS 检测依赖环：task_id 不能出现在 blockers 的传递上游中。"""
+        visited: set[str] = set()
+        queue = list(blockers)
+        while queue:
+            dep_id = queue.pop(0)
+            if dep_id == task_id:
+                raise ValueError(
+                    f"dependency cycle detected: {task_id} -> ... -> {task_id}"
+                )
+            if dep_id in visited:
+                continue
+            visited.add(dep_id)
+            dep_task = known.get(dep_id)
+            if dep_task:
+                queue.extend(dep_task.blocked_by)
 
     def _ensure_blockers_exist(self, blockers: list[str]) -> dict[str, TaskRecord]:
         known = {task.id: task for task in self.list()}

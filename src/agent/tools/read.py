@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.tools.base import Tool
+from agent.tools.base import ErrorCode, Tool
 
 
 class ReadFileInput(BaseModel):
@@ -35,30 +35,32 @@ class ReadFileTool(Tool):
     description = "Read a text file, optionally by line range."
     input_model = ReadFileInput
 
-    async def run(self, arguments: ReadFileInput) -> dict[str, object]:
+    async def run(self, arguments: ReadFileInput) -> str:
         raw_path = Path(arguments.path).expanduser()
         if raw_path.is_symlink():
-            raise PermissionError(f"refusing to follow symbolic link: {arguments.path}")
+            return self.error(code=ErrorCode.ACCESS_DENIED, message=f"refusing to follow symbolic link: {arguments.path}")
         path = raw_path.resolve()
         if not path.exists():
-            raise FileNotFoundError(path)
+            return self.error(code=ErrorCode.NOT_FOUND, message=f"file not found: {arguments.path}")
         if path.is_dir():
-            raise IsADirectoryError(path)
+            return self.error(code=ErrorCode.IS_DIRECTORY, message=f"path is a directory: {arguments.path}")
 
         text = path.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
         end_line = arguments.end_line or len(lines)
         selected = lines[arguments.start_line - 1 : end_line]
-        numbered = [
-            f"{line_no}: {line}"
-            for line_no, line in enumerate(selected, start=arguments.start_line)
-        ]
-        return {
-            "path": str(path),
-            "start_line": arguments.start_line,
-            "end_line": end_line,
-            "content": "\n".join(numbered),
-        }
+        numbered = [f"{n}: {line}" for n, line in enumerate(selected, start=arguments.start_line)]
+        stat = path.stat()
+
+        return self.success(
+            data={"path": str(path), "content": "\n".join(numbered), "start_line": arguments.start_line, "end_line": end_line},
+            text=f"Read {arguments.path} lines {arguments.start_line}-{end_line} ({len(selected)} lines). File has {len(lines)} lines total.",
+            extra_context={
+                "file_mtime_ms": int(stat.st_mtime * 1000),
+                "file_size_bytes": stat.st_size,
+                "path_resolved": str(path),
+            },
+        )
 
     def is_concurrency_safe(self, arguments: dict[str, object] | BaseModel) -> bool:
         return True

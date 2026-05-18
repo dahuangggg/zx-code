@@ -28,6 +28,9 @@ class CodeSearchResult(BaseModel):
     language: str
     score: float
     content: str
+    matched_by: list[str] = Field(default_factory=list)
+    vector_rank: int = 0
+    keyword_rank: int = 0
 
 
 class CodeIndexStats(BaseModel):

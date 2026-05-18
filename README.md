@@ -38,7 +38,7 @@ uv run agent
 常用参数：
 
 ```bash
-uv run agent --model openai/gpt-4o-mini "读取 README"
+uv run agent --model openai/gpt-5.4 "读取 README"
 uv run agent --no-stream "列出当前项目结构"
 uv run agent --max-turns 8 "分析 src/agent/core/loop.py"
 uv run agent --resume demo-session "继续上次任务"
@@ -258,6 +258,8 @@ flowchart LR
 - [`src/agent/scheduling/heartbeat.py`](src/agent/scheduling/heartbeat.py)
 - [`src/agent/scheduling/cron.py`](src/agent/scheduling/cron.py)
 - [`src/agent/agents/subagent.py`](src/agent/agents/subagent.py)
+- [`src/agent/agents/team.py`](src/agent/agents/team.py)
+- [`src/agent/tools/team.py`](src/agent/tools/team.py)
 
 `LaneScheduler` 是协作式优先级调度层，当前优先级是：
 
@@ -268,6 +270,8 @@ main > subagent > cron > heartbeat
 它解决的问题是：同一个运行时里，用户消息、子代理、定时任务、心跳任务不能完全无序地抢模型和工具资源。
 
 `SubagentRunner` 支持主 Agent 通过 `subagent_run` 把聚焦任务交给子代理执行。子代理使用独立 session，并受递归深度限制。开启 worktree isolation 后，子代理可以配合 `WorktreeManager` 在独立 git worktree 中工作。
+
+`Team` 支持主 Agent 通过 `team_list`、`team_dispatch`、`team_broadcast` 和持久队友协作。Team 在 runtime composition root 中装配，队友使用独立 session，消息写入 `.agent/team/messages.jsonl`，主 Agent 仍负责拆分任务、判断结果和最终汇总。
 
 ### MCP, Plugin, Hooks
 
@@ -292,11 +296,12 @@ main > subagent > cron > heartbeat
 
 - [`src/agent/code_context/indexer.py`](src/agent/code_context/indexer.py)
 - [`src/agent/code_context/chroma_store.py`](src/agent/code_context/chroma_store.py)
+- [`src/agent/code_context/sparse_index.py`](src/agent/code_context/sparse_index.py)
 - [`src/agent/code_context/splitter.py`](src/agent/code_context/splitter.py)
 - [`src/agent/code_context/ranker.py`](src/agent/code_context/ranker.py)
 - [`src/agent/tools/code_context.py`](src/agent/tools/code_context.py)
 
-CodeContext 是代码库语义上下文层，默认关闭。开启后会注册 `code_index`、`code_search`、`code_index_status`、`code_index_clear`。
+CodeContext 是代码库语义上下文层，默认关闭。开启后会注册 `code_index`、`code_search`、`code_index_status`、`code_index_list`、`code_index_info`、`code_index_clear`。
 
 实现要点：
 
@@ -304,9 +309,12 @@ CodeContext 是代码库语义上下文层，默认关闭。开启后会注册 `
 - collection 内通过 `codebase_id` / `codebase_path` metadata 隔离多个仓库
 - Python 文件使用 AST-aware chunking，其他常见代码/文档文件使用 line-based chunking
 - 读取 `.gitignore` / `.contextignore`
+- 支持 `custom_extensions` / `ignore_patterns`，并读取 `.cursorignore` 等 `.xxxignore`
 - 忽略 `.env`、`.git`、`node_modules`、`.agent` 等敏感或低价值路径
 - 使用文件级 `sha256` snapshot 支持 added / modified / removed 增量索引
-- `code_search` 使用 Chroma vector search、本地 BM25-like 关键词通道和 RRF 融合
+- 后台索引支持 partial search、进程内 cancel、文件系统级 index lock
+- `code_search` 使用 Chroma vector search、持久化 sparse BM25-like 关键词通道和 RRF 融合
+- 搜索结果包含 `matched_by`、`vector_rank`、`keyword_rank`，便于解释召回来源
 
 ## 配置
 
@@ -369,6 +377,19 @@ enable_subagents = true
 subagent_max_depth = 1
 enable_worktree_isolation = false
 worktree_dir = ".agent/worktrees"
+
+[agent.teams]
+enabled = true
+timeout_s = 30
+log_path = ".agent/team/messages.jsonl"
+
+[[agent.teams.members]]
+id = "researcher"
+role = "Reads code and summarizes findings."
+
+[[agent.teams.members]]
+id = "reviewer"
+role = "Reviews plans and catches risks before final answers."
 ```
 
 CodeContext：
@@ -588,7 +609,7 @@ docs/                      # 设计和阶段文档
 - Subagent 是本地运行时内的子任务执行，不是分布式 agent cluster。
 - Worktree isolation 需要显式开启。
 - MCP 和 plugin 是工具扩展机制，不等于完整 marketplace 或远程 sandbox。
-- Agent Teams 相关代码仍偏实验性质，主线能力还是 single-agent runtime + subagent。
+- Agent Teams 是本地进程内协作：主 Agent 通过 team 工具调度持久队友，但不是分布式 agent cluster。
 
 ## 开发约定
 

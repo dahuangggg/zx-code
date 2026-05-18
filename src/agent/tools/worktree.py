@@ -32,9 +32,10 @@ class WorktreeCreateTool(Tool):
     def __init__(self, manager: WorktreeManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: WorktreeCreateInput) -> dict[str, object]:
+    async def run(self, arguments: WorktreeCreateInput) -> str:
         lease = self.manager.create(arguments.task_id, base_ref=arguments.base_ref)
-        return lease.model_dump(mode="json")
+        data = lease.model_dump(mode="json")
+        return self.success(data=data, text=f"Created worktree for task '{arguments.task_id}' at {data.get('path', '?')} (branch: {data.get('branch', '?')}).")
 
 
 class WorktreeCleanupTool(Tool):
@@ -45,17 +46,14 @@ class WorktreeCleanupTool(Tool):
     def __init__(self, manager: WorktreeManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: WorktreeCleanupInput) -> dict[str, object]:
+    async def run(self, arguments: WorktreeCleanupInput) -> str:
         lease = WorktreeLease(
             task_id=arguments.task_id,
             branch=arguments.branch,
             path=Path(arguments.path),
         )
         self.manager.cleanup(lease, delete_branch=arguments.delete_branch)
-        return {
-            "task_id": lease.task_id,
-            "branch": lease.branch,
-            "path": str(lease.path),
-            "removed": True,
-            "delete_branch": arguments.delete_branch,
-        }
+        return self.success(
+            data={"task_id": lease.task_id, "branch": lease.branch, "path": str(lease.path), "removed": True},
+            text=f"Cleaned up worktree for task '{arguments.task_id}' (branch '{arguments.branch}' {'deleted' if arguments.delete_branch else 'kept'}).",
+        )

@@ -35,10 +35,10 @@ def test_context_guard_compacts_old_history() -> None:
 
 
 def test_context_guard_safe_split_skips_orphan_tool_messages() -> None:
-    guard = ContextGuard(max_tokens=20, keep_recent=2)
+    guard = ContextGuard(max_tokens=10, keep_recent=2)
     messages = [
-        Message.user("old " + "x" * 100),
-        Message.tool("call-1", "read_file", "orphaned result"),
+        Message.user("old " + "x" * 200),
+        Message.tool("call-1", "read_file", "orphaned result " + "y" * 100),
         Message.user("recent"),
     ]
 
@@ -52,11 +52,11 @@ def test_context_guard_safe_split_skips_orphan_tool_messages() -> None:
 
 
 def test_context_guard_does_not_keep_orphan_tool_inside_recent_window() -> None:
-    guard = ContextGuard(max_tokens=25, keep_recent=3)
+    guard = ContextGuard(max_tokens=15, keep_recent=3)
     messages = [
-        Message.user("old " + "x" * 100),
+        Message.user("old " + "x" * 200),
         Message.user("recent question"),
-        Message.tool("call-1", "read_file", "orphaned result"),
+        Message.tool("call-1", "read_file", "orphaned result " + "y" * 100),
         Message.assistant("recent answer"),
     ]
 

@@ -107,7 +107,7 @@ async def test_todo_tools_update_persistent_manager(tmp_path: Path) -> None:
         {"title": "implement context guard"},
         call_id="todo-1",
     )
-    todo_id = json.loads(created.content)["id"]
+    todo_id = json.loads(created.content)["data"]["id"]
 
     await registry.execute("todo_complete", {"todo_id": todo_id}, call_id="todo-2")
 

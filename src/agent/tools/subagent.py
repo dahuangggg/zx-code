@@ -23,6 +23,8 @@ class SubagentRunTool(Tool):
     def __init__(self, runner: SubagentRunner) -> None:
         self.runner = runner
 
-    async def run(self, arguments: SubagentRunParams) -> dict[str, object]:
+    async def run(self, arguments: SubagentRunParams) -> str:
         result = await self.runner.run(arguments.task, label=arguments.label)
-        return result.model_dump(mode="json")
+        data = result.model_dump(mode="json")
+        summary = str(data.get("summary") or data.get("output") or "Subagent completed.")[:200]
+        return self.success(data=data, text=f"Subagent '{arguments.label}' completed: {summary}")

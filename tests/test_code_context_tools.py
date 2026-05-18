@@ -41,9 +41,9 @@ async def test_code_context_tools_run_through_registry(tmp_path: Path) -> None:
     status = await registry.execute("code_index_status", {"path": str(repo)}, call_id="status")
 
     assert not indexed.is_error
-    assert json.loads(indexed.content)["indexed_files"] == 1
-    assert json.loads(searched.content)["results"][0]["relative_path"] == "context.py"
-    assert json.loads(status.content)["status"] == "indexed"
+    assert json.loads(indexed.content)["data"]["indexed_files"] == 1
+    assert json.loads(searched.content)["data"]["results"][0]["relative_path"] == "context.py"
+    assert json.loads(status.content)["data"]["status"] == "indexed"
 
 
 async def test_code_index_tool_can_start_background_index(tmp_path: Path) -> None:
@@ -59,8 +59,8 @@ async def test_code_index_tool_can_start_background_index(tmp_path: Path) -> Non
     )
 
     content = json.loads(started.content)
-    assert content["status"] in {"indexing", "indexed"}
-    assert "percentage" in content
+    assert content["data"]["status"] in {"indexing", "indexed"}
+    assert "percentage" in content["data"]
     for _ in range(100):
         status = json.loads(
             (
@@ -71,9 +71,55 @@ async def test_code_index_tool_can_start_background_index(tmp_path: Path) -> Non
                 )
             ).content
         )
-        if status["status"] == "indexed":
+        if status["data"]["status"] == "indexed":
             break
         await asyncio.sleep(0.02)
+
+
+async def test_code_index_tool_forwards_custom_file_rules(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "component.vue").write_text("<script>const contextLayer = true</script>\n", encoding="utf-8")
+    (repo / "ignored").mkdir()
+    (repo / "ignored" / "context.py").write_text("def ignored_context():\n    return 'context'\n", encoding="utf-8")
+    registry = build_default_registry(code_context_indexer=_indexer(tmp_path))
+
+    indexed = await registry.execute(
+        "code_index",
+        {
+            "path": str(repo),
+            "custom_extensions": [".vue"],
+            "ignore_patterns": ["ignored/**"],
+        },
+        call_id="idx-custom",
+    )
+    searched = await registry.execute(
+        "code_search",
+        {"path": str(repo), "query": "contextLayer"},
+        call_id="search-custom",
+    )
+
+    assert not indexed.is_error
+    assert json.loads(indexed.content)["data"]["indexed_files"] == 1
+    assert json.loads(searched.content)["data"]["results"][0]["relative_path"] == "component.vue"
+
+
+async def test_code_index_list_and_info_tools_report_indexed_codebases(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "context.py").write_text("def code_context():\n    return 'context'\n", encoding="utf-8")
+    registry = build_default_registry(code_context_indexer=_indexer(tmp_path))
+
+    await registry.execute("code_index", {"path": str(repo)}, call_id="idx")
+    listed = await registry.execute("code_index_list", {}, call_id="list")
+    info = await registry.execute("code_index_info", {"path": str(repo)}, call_id="info")
+
+    listed_content = json.loads(listed.content)
+    info_content = json.loads(info.content)
+    assert listed_content["data"]["codebases"][0]["codebase_path"] == str(repo)
+    assert info_content["data"]["status"] == "indexed"
+    assert info_content["data"]["indexed_files"] == 1
+    assert info_content["data"]["sparse_index"] is True
 
 
 async def test_code_index_clear_can_be_denied_by_permissions(tmp_path: Path) -> None:

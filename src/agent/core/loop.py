@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from inspect import isawaitable
 from typing import Any
@@ -31,7 +32,10 @@ from agent.models import (
     AgentRunResult,
     AgentState,
     Message,
+    RunMetrics,
+    TokenUsage,
     ToolResult,
+    TurnMetric,
 )
 from agent.prompt import DEFAULT_SYSTEM_PROMPT
 from agent.prompt import SystemPromptBuilder
@@ -57,6 +61,7 @@ async def run_task(
     hook_runner: HookRunner | None = None,
     debug_log: DebugLog | None = None,
     progress_handler: Callable[[str, dict[str, Any]], Any] | None = None,
+    project_root: Any | None = None,
 ) -> AgentRunResult:
     # 规范化：外部传 None 时用 NullDebugLog，内部代码无需再判断 is not None
     _log = debug_log or DebugLog.null()
@@ -95,6 +100,7 @@ async def run_task(
         session_store.append_message(runtime_config.session_id, user_message)
 
     recovery_budget = RecoveryBudget()
+    run_metrics = RunMetrics()
 
     async def emit_progress(event: str, payload: dict[str, Any]) -> None:
         if progress_handler is None:
@@ -140,6 +146,7 @@ async def run_task(
             session_id=runtime_config.session_id,
         )
         await emit_progress("model.start", {"turn": state.turn_count})
+        llm_t0 = time.monotonic()
         try:
             turn = await ResilienceRunner(
                 model_client=model_client,
@@ -160,6 +167,7 @@ async def run_task(
             )
         finally:
             await emit_progress("model.end", {"turn": state.turn_count})
+        llm_duration_ms = round((time.monotonic() - llm_t0) * 1000, 1)
 
         assistant_message = Message.assistant(
             content=turn.text,
@@ -181,12 +189,24 @@ async def run_task(
                 session_id=runtime_config.session_id,
                 level="info",
             )
+            run_metrics.record_turn(TurnMetric(
+                turn=state.turn_count,
+                llm_duration_ms=llm_duration_ms,
+                usage=turn.usage or TokenUsage(),
+            ))
+            _log.event(
+                "run.metrics",
+                {"metrics": run_metrics},
+                session_id=runtime_config.session_id,
+                level="info",
+            )
             return AgentRunResult(
                 final_text=turn.text,
                 iterations=state.turn_count,
                 messages=state.messages,
                 tool_results=state.tool_results,
                 session_id=runtime_config.session_id,
+                metrics=run_metrics,
             )
 
         # 有工具调用：先执行完所有工具，再统一落盘 assistant + tool 消息。
@@ -198,10 +218,18 @@ async def run_task(
             session_id=runtime_config.session_id,
             debug_log=debug_log,
             progress_handler=progress_handler,
+            project_root=project_root,
         )
         # execute_many 内部对 concurrency-safe 工具并发执行，但返回顺序与 tool_calls 一致，
         # 保证写回消息历史的顺序与模型调用顺序匹配（否则 tool_call_id 配对会乱）
-        tool_results = await executor.execute_many(turn.tool_calls)
+        tool_results, tool_metrics = await executor.execute_many(turn.tool_calls)
+
+        run_metrics.record_turn(TurnMetric(
+            turn=state.turn_count,
+            llm_duration_ms=llm_duration_ms,
+            usage=turn.usage or TokenUsage(),
+            tool_metrics=tool_metrics,
+        ))
 
         # 工具全部执行完毕，开始落盘：assistant 先于 tool，保证协议顺序
         if session_store is not None:

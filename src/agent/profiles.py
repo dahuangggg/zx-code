@@ -9,7 +9,7 @@
 ``ProfileManager`` 维护冷却时间表（monotonic clock），
 ``available_profiles()`` 过滤出当前可用的 profiles。
 
-典型配置：primary=claude-opus-4-6，fallback=gpt-4o-mini，
+典型配置：primary=claude-opus-4-6，fallback=gpt-5.4，
 限流时自动切换，对上层调用方透明。
 """
 
@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.debuglog import DebugLog
 from agent.models import Message, ModelTurn
 from agent.providers.base import ModelClient, StreamHandler
-from agent.providers.litellm_client import LiteLLMModelClient
+from agent.providers.openai_client import OpenAIModelClient
 from agent.errors import AgentError
 from agent.core.recovery import classify_error
 
@@ -44,15 +44,17 @@ class ModelProfile(BaseModel):
     reasoning_effort: str = ""
     extra_kwargs: dict[str, Any] = Field(default_factory=dict)
 
-    def litellm_kwargs(self) -> dict[str, Any]:
+    def client_kwargs(self) -> dict[str, Any]:
+        """返回传给 OpenAIModelClient 的额外参数。"""
         kwargs = dict(self.extra_kwargs)
         if self.reasoning_effort:
             kwargs["reasoning_effort"] = self.reasoning_effort
-        if self.api_key_env:
-            api_key = os.getenv(self.api_key_env)
-            if api_key:
-                kwargs["api_key"] = api_key
         return kwargs
+
+    def resolve_api_key(self) -> str | None:
+        if self.api_key_env:
+            return os.getenv(self.api_key_env)
+        return None
 
 
 class ProfileManager:
@@ -121,8 +123,7 @@ class FallbackModelClient:
 
         for profile in profiles:
             client = self.client_factory(profile)
-            if isinstance(client, LiteLLMModelClient):
-                # 把 FallbackModelClient 的 _log 透传给子客户端，保持日志连贯
+            if isinstance(client, OpenAIModelClient):
                 client._log = self._log
             try:
                 self._log.event(
@@ -160,7 +161,8 @@ class FallbackModelClient:
 
 
 def _default_client_factory(profile: ModelProfile) -> ModelClient:
-    return LiteLLMModelClient(
+    return OpenAIModelClient(
         model=profile.model,
-        extra_kwargs=profile.litellm_kwargs(),
+        api_key=profile.resolve_api_key(),
+        extra_kwargs=profile.client_kwargs(),
     )

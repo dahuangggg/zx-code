@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.tools.base import Tool
+from agent.tools.base import ErrorCode, Tool
 
 
 class GrepInput(BaseModel):
@@ -25,10 +25,10 @@ class GrepTool(Tool):
     description = "Search files with ripgrep and return matching lines."
     input_model = GrepInput
 
-    async def run(self, arguments: GrepInput) -> dict[str, object]:
+    async def run(self, arguments: GrepInput) -> str:
         search_root = Path(arguments.path).expanduser().resolve()
         if not search_root.exists():
-            raise FileNotFoundError(search_root)
+            return self.error(code=ErrorCode.NOT_FOUND, message=f"path not found: {arguments.path}")
 
         if shutil.which("rg"):
             command = ["rg", "-n", "--color", "never", "-m", str(arguments.max_results)]
@@ -44,20 +44,28 @@ class GrepTool(Tool):
             command.extend([arguments.pattern, str(search_root)])
 
         process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
-        output = stdout.decode("utf-8", errors="replace")
-        lines = output.splitlines()
         if process.returncode not in (0, 1):
-            raise RuntimeError(stderr.decode("utf-8", errors="replace").strip())
+            return self.error(
+                code=ErrorCode.EXECUTION_ERROR,
+                message=stderr.decode("utf-8", errors="replace").strip(),
+            )
 
-        return {
-            "command": " ".join(shlex.quote(part) for part in command),
-            "matches": lines[: arguments.max_results],
-        }
+        matches = stdout.decode("utf-8", errors="replace").splitlines()[:arguments.max_results]
+        truncated = len(matches) == arguments.max_results
+        status_text = (
+            f"Found {len(matches)} matches for '{arguments.pattern}' (limit reached, use a narrower pattern)."
+            if truncated
+            else f"Found {len(matches)} match{'es' if len(matches) != 1 else ''} for '{arguments.pattern}'."
+            if matches
+            else f"No matches for '{arguments.pattern}'."
+        )
+        return (self.partial if truncated else self.success)(
+            data={"command": " ".join(shlex.quote(p) for p in command), "matches": matches, "truncated": truncated},
+            text=status_text,
+        )
 
     def is_concurrency_safe(self, arguments: dict[str, object] | BaseModel) -> bool:
         return True

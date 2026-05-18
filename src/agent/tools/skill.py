@@ -21,18 +21,22 @@ class LoadSkillTool(Tool):
     def __init__(self, store: SkillStore) -> None:
         self.store = store
 
-    async def run(self, arguments: LoadSkillInput) -> dict[str, object]:
+    async def run(self, arguments: LoadSkillInput) -> str:
         document = self.store.load(arguments.name)
         content = document.content
-        truncated = False
-        if len(content) > arguments.max_chars:
+        truncated = len(content) > arguments.max_chars
+        if truncated:
             content = content[: arguments.max_chars]
-            truncated = True
-        return {
-            "name": document.metadata.name,
-            "title": document.metadata.title,
-            "description": document.metadata.description,
-            "path": str(document.metadata.path),
-            "content": content,
-            "truncated": truncated,
-        }
+        note = f" (truncated to {arguments.max_chars} chars)" if truncated else ""
+        return (self.partial if truncated else self.success)(
+            data={
+                "name": document.metadata.name,
+                "title": document.metadata.title,
+                "description": document.metadata.description,
+                "path": str(document.metadata.path),
+                "content": content,
+                "truncated": truncated,
+            },
+            text=f"Loaded skill '{document.metadata.name}'{note}.",
+            extra_context={"truncation_skip": True},
+        )
