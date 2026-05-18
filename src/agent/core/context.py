@@ -10,7 +10,7 @@ ContextGuard 在每次 LLM 调用前被调用（``prepare()``），执行两个�
    总 token 超过 ``max_tokens`` 时触发：
    - 保留最近 ``keep_recent`` 条消息的原文（近场保留）
    - 对更早的消息生成摘要（远程压缩），策略优先级：
-       a. LLM 摘要（``compact_model`` 指定的廉价模型，如 gpt-4o-mini）
+       a. LLM 摘要（``compact_model`` 指定的廉价模型，如 gpt-5.4）
        b. 机械摘要兜底（LLM 调用失败时降级）
    - 摘要作为一条 system 消息插入，替换旧历史
 
@@ -231,7 +231,7 @@ class ContextGuard:
         return self._mechanical_summary(messages)
 
     async def _llm_summarize(self, formatted: str, *, model: str) -> str:
-        """用廉价模型（如 gpt-4o-mini）生成摘要；任何异常都记录后返回空串，让上层走降级。"""
+        """用廉价模型（如 gpt-5.4）生成摘要；任何异常都记录后返回空串，让上层走降级。"""
         try:
             from openai import AsyncOpenAI
 

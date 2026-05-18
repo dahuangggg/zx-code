@@ -2,7 +2,7 @@
 
 ``LiteLLMModelClient`` 实现 ModelClient Protocol，通过 litellm 支持 100+ 模型。
 litellm 的 model 字符串格式：``<provider>/<model_name>``，例如：
-  - ``openai/gpt-4o-mini``
+  - ``openai/gpt-5.4``
   - ``anthropic/claude-sonnet-4-6``
   - ``ollama/llama3``
 

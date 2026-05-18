@@ -38,7 +38,7 @@ uv run agent
 常用参数：
 
 ```bash
-uv run agent --model openai/gpt-4o-mini "读取 README"
+uv run agent --model openai/gpt-5.4 "读取 README"
 uv run agent --no-stream "列出当前项目结构"
 uv run agent --max-turns 8 "分析 src/agent/core/loop.py"
 uv run agent --resume demo-session "继续上次任务"

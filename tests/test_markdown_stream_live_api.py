@@ -26,7 +26,7 @@ async def test_live_api_streams_markdown_through_renderer() -> None:
     if os.getenv("RUN_LIVE_MARKDOWN_STREAM") != "1":
         pytest.skip("set RUN_LIVE_MARKDOWN_STREAM=1 to call the live model API")
 
-    model = os.getenv("MARKDOWN_STREAM_MODEL", "openai/gpt-4o-mini")
+    model = os.getenv("MARKDOWN_STREAM_MODEL", "openai/gpt-5.4")
     api_key = os.getenv("MARKDOWN_STREAM_API_KEY", "")
     base_url = os.getenv("MARKDOWN_STREAM_BASE_URL", "")
 

@@ -9,7 +9,7 @@
 ``ProfileManager`` 维护冷却时间表（monotonic clock），
 ``available_profiles()`` 过滤出当前可用的 profiles。
 
-典型配置：primary=claude-opus-4-6，fallback=gpt-4o-mini，
+典型配置：primary=claude-opus-4-6，fallback=gpt-5.4，
 限流时自动切换，对上层调用方透明。
 """
 

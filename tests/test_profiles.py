@@ -90,7 +90,7 @@ def test_model_profile_reads_api_key_from_env(monkeypatch) -> None:
     monkeypatch.setenv("ZX_TEST_MODEL_KEY", "secret-key")
     profile = ModelProfile(
         name="primary",
-        model="openai/gpt-4o-mini",
+        model="openai/gpt-5.4",
         api_key_env="ZX_TEST_MODEL_KEY",
         reasoning_effort="medium",
         extra_kwargs={"base_url": "https://example.invalid"},

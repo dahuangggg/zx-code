@@ -140,7 +140,7 @@ class RuntimeConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-5.4"
     system_prompt: str = ""
     max_iterations: int = 8
     model_timeout_s: float = 60.0
