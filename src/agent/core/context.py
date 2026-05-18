@@ -22,9 +22,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import Protocol
 
 from agent.models import Message
+from agent.providers.base import ModelClient
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +132,27 @@ SUMMARY_PROMPT = (
 )
 
 
+class SummaryClient(Protocol):
+    async def summarize(self, formatted: str) -> str:
+        ...
+
+
+@dataclass(frozen=True)
+class ModelSummaryClient:
+    """Summarize compacted history through the configured model adapter."""
+
+    model_client: ModelClient
+
+    async def summarize(self, formatted: str) -> str:
+        turn = await self.model_client.run_turn(
+            system_prompt=SUMMARY_PROMPT,
+            messages=[Message.user(formatted)],
+            tools=[],
+            stream_handler=None,
+        )
+        return turn.text.strip()
+
+
 @dataclass(frozen=True)
 class ContextGuard:
     max_tokens: int = 12000
@@ -139,7 +162,7 @@ class ContextGuard:
     compact_model: str = ""
     model: str = ""
     summary_timeout_s: float = 30.0
-    _compact_model_kwargs: dict = field(default_factory=dict)
+    summary_client: SummaryClient | None = None
 
     async def prepare(self, messages: list[Message]) -> list[Message]:
         """主入口：在每次 LLM 调用前对消息列表做预算控制，返回可直接送模型的副本。"""
@@ -216,10 +239,8 @@ class ContextGuard:
         if not formatted:
             return "Earlier conversation was compacted (no content to summarize)."
 
-        # Use compact_model if set, otherwise fall back to the main model.
-        effective_model = self.compact_model or self.model
-        if effective_model:
-            llm_summary = await self._llm_summarize(formatted, model=effective_model)
+        if self.summary_client is not None:
+            llm_summary = await self._summary_client_summarize(formatted)
             if llm_summary:
                 # 前缀提醒模型：摘要是有损的，真实事实以文件/工具输出为准，避免模型把摘要当成绝对真相
                 return (
@@ -230,29 +251,20 @@ class ContextGuard:
         # LLM 调用失败或未配置模型时降级为机械摘要，保证 compact 永远能给出结果
         return self._mechanical_summary(messages)
 
-    async def _llm_summarize(self, formatted: str, *, model: str) -> str:
-        """用廉价模型（如 gpt-5.4）生成摘要；任何异常都记录后返回空串，让上层走降级。"""
+    async def _summary_client_summarize(self, formatted: str) -> str:
+        """通过注入的摘要 Adapter 生成摘要；失败时让上层走机械摘要兜底。"""
+        if self.summary_client is None:
+            return ""
         try:
-            from openai import AsyncOpenAI
-
-            client = AsyncOpenAI()
             response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": SUMMARY_PROMPT + formatted}],
-                    temperature=0.0,
-                    max_tokens=1024,
-                    stream=False,
-                    **self._compact_model_kwargs,
-                ),
+                self.summary_client.summarize(formatted),
                 timeout=self.summary_timeout_s,
             )
-            content = response.choices[0].message.content
-            return content.strip() if content else ""
+            return response.strip() if response else ""
         except Exception as exc:
             logger.warning(
-                "LLM summarization failed (model=%s), falling back to mechanical summary: %s",
-                model, exc,
+                "LLM summarization failed, falling back to mechanical summary: %s",
+                exc,
             )
             return ""
 

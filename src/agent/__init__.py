@@ -9,7 +9,7 @@
 - ``agent.channels``    — 外部消息通道（CLI / Telegram）及路由网关
 - ``agent.tools``       — 工具注册表及所有内置工具
 - ``agent.mcp``         — MCP 协议客户端（官方 SDK 封装）
-- ``agent.providers``   — LLM 提供商客户端（litellm 封装）
+- ``agent.providers``   — LLM 提供商客户端（OpenAI SDK 封装）
 - ``agent.runtime``     — 组合根：将所有部件装配成可运行的 agent
 """
 

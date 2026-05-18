@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.config import AgentSettings
-from agent.core.context import ContextGuard
+from agent.core.context import ContextGuard, ModelSummaryClient
 from agent.debuglog import DebugLog
 from agent.errors import AgentError
 from agent.hooks import HookRunner
@@ -150,6 +150,27 @@ def _build_model_client(settings: AgentSettings, debug_log: DebugLog | None = No
         extra_kwargs=profile.client_kwargs(),
         debug_log=debug_log,
     )
+
+
+def _build_summary_model_client(
+    settings: AgentSettings,
+    *,
+    primary_model_client: Any,
+    debug_log: DebugLog | None = None,
+) -> Any:
+    if not settings.context.compact_model:
+        return primary_model_client
+    summary_settings = settings.model_copy(
+        update={
+            "model": settings.model.model_copy(
+                update={
+                    "name": settings.context.compact_model,
+                    "fallback_models": "",
+                }
+            )
+        }
+    )
+    return _build_model_client(summary_settings, debug_log)
 
 
 def _build_runtime(
@@ -360,6 +381,12 @@ def _build_runtime(
             hooks_path = default_hooks
     hook_runner = HookRunner.from_file(hooks_path) if hooks_path else HookRunner.empty()
 
+    model_client = _build_model_client(effective_settings, debug_log)
+    summary_model_client = _build_summary_model_client(
+        effective_settings,
+        primary_model_client=model_client,
+        debug_log=debug_log,
+    )
     runtime = {
         "config": effective_settings.to_runtime_config(),
         "hook_runner": hook_runner,
@@ -370,8 +397,9 @@ def _build_runtime(
             tool_result_max_chars=effective_settings.context.tool_result_max_chars,
             compact_model=effective_settings.context.compact_model,
             model=effective_settings.model.name,
+            summary_client=ModelSummaryClient(summary_model_client),
         ),
-        "model_client": _build_model_client(effective_settings, debug_log),
+        "model_client": model_client,
         "settings": effective_settings,
         "prompt_builder": prompt_builder,
         "session_store": SessionStore(data_dir / "sessions"),

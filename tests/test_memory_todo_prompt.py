@@ -79,13 +79,13 @@ def test_system_prompt_builder_includes_runtime_metadata_and_real_tool_index(
     registry = build_default_registry()
 
     prompt = SystemPromptBuilder(project_root=tmp_path).build(
-        RuntimeConfig(model="openai/test-model", session_id="demo"),
+        RuntimeConfig(model="gpt-test-model", session_id="demo"),
         tool_schemas=registry.schemas(),
     )
 
     assert "Current date:" in prompt
     assert re.search(r"Current date: \d{4}-\d{2}-\d{2}", prompt)
-    assert "Model: openai/test-model" in prompt
+    assert "Model: gpt-test-model" in prompt
     assert "Platform:" in prompt
     assert "Python:" in prompt
     assert "Available tools:" in prompt

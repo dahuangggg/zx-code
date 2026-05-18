@@ -14,8 +14,8 @@ ResilienceRunner
       - timeout     → 直接抛出 ModelTimeoutError
       - auth/billing→ 直接抛出 ModelInvocationError（不重试）
 
-``classify_error()`` 通过字符串匹配分类各 LLM SDK 的异常，
-与具体供应商解耦（litellm 的异常格式各异，此函数统一处理）。
+``classify_error()`` 通过字符串匹配分类 LLM SDK/API 异常，
+让恢复策略与具体异常类解耦。
 """
 from __future__ import annotations
 

@@ -85,13 +85,12 @@ def test_context_guard_keeps_tool_message_with_recent_assistant_call() -> None:
     assert [message.role for message in prepared] == ["system", "assistant", "tool"]
 
 
-def test_context_guard_llm_summarize_fallback() -> None:
-    """When compact_model is set but LLM fails, falls back to mechanical summary."""
+def test_context_guard_uses_mechanical_summary_without_summary_client() -> None:
+    """Without an injected summary client, compaction stays local and deterministic."""
     guard = ContextGuard(
         max_tokens=30,
         keep_recent=2,
         summary_entry_chars=20,
-        compact_model="nonexistent/model-that-will-fail",
     )
     messages = [Message.user(f"old message {index} " + "x" * 30) for index in range(5)]
     messages.append(Message.user("recent one"))
@@ -101,4 +100,32 @@ def test_context_guard_llm_summarize_fallback() -> None:
 
     assert prepared[0].role == "system"
     assert "compacted" in prepared[0].content.lower()
+    assert prepared[-1].content == "recent two"
+
+
+def test_context_guard_uses_injected_summary_client() -> None:
+    class FakeSummaryClient:
+        def __init__(self) -> None:
+            self.inputs: list[str] = []
+
+        async def summarize(self, formatted: str) -> str:
+            self.inputs.append(formatted)
+            return "summary from injected client"
+
+    summary_client = FakeSummaryClient()
+    guard = ContextGuard(
+        max_tokens=30,
+        keep_recent=2,
+        summary_client=summary_client,
+    )
+    messages = [Message.user(f"old message {index} " + "x" * 30) for index in range(4)]
+    messages.append(Message.user("recent one"))
+    messages.append(Message.assistant("recent two"))
+
+    prepared = _run(guard.prepare(messages))
+
+    assert prepared[0].role == "system"
+    assert "summary from injected client" in prepared[0].content
+    assert "old message 0" in summary_client.inputs[0]
+    assert prepared[-2].content == "recent one"
     assert prepared[-1].content == "recent two"

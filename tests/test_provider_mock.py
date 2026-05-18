@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import sys
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
 
-from agent.models import Message
 from agent.debuglog import DebugLog
-from agent.providers.litellm_client import LiteLLMModelClient
+from agent.models import Message
+from agent.providers.openai_client import OpenAIModelClient
 
 
 class FakeStream:
@@ -25,11 +25,41 @@ class FakeStream:
             raise StopAsyncIteration from exc
 
 
+class FakeChatCompletions:
+    def __init__(self, handler):
+        self.handler = handler
+
+    async def create(self, **kwargs):
+        return await self.handler(**kwargs)
+
+
+class FakeAsyncOpenAI:
+    handler = None
+    init_kwargs: dict = {}
+
+    def __init__(self, **kwargs):
+        FakeAsyncOpenAI.init_kwargs = kwargs
+        self.chat = SimpleNamespace(
+            completions=FakeChatCompletions(FakeAsyncOpenAI.handler)
+        )
+
+
+def _install_fake_openai(monkeypatch, handler) -> None:
+    FakeAsyncOpenAI.handler = handler
+    FakeAsyncOpenAI.init_kwargs = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI),
+    )
+
+
 @pytest.mark.asyncio
-async def test_litellm_client_parses_non_stream_response(monkeypatch) -> None:
-    async def fake_acompletion(**kwargs):
+async def test_openai_client_parses_non_stream_response(monkeypatch) -> None:
+    async def fake_create(**kwargs):
         assert kwargs["model"] == "fake-model"
         return SimpleNamespace(
+            usage=None,
             choices=[
                 SimpleNamespace(
                     finish_reason="stop",
@@ -46,16 +76,12 @@ async def test_litellm_client_parses_non_stream_response(monkeypatch) -> None:
                         ],
                     ),
                 )
-            ]
+            ],
         )
 
-    monkeypatch.setitem(
-        sys.modules,
-        "litellm",
-        SimpleNamespace(acompletion=fake_acompletion),
-    )
+    _install_fake_openai(monkeypatch, fake_create)
 
-    client = LiteLLMModelClient(model="fake-model")
+    client = OpenAIModelClient(model="fake-model")
     turn = await client.run_turn(
         system_prompt="system",
         messages=[Message.user("hello")],
@@ -68,36 +94,36 @@ async def test_litellm_client_parses_non_stream_response(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_litellm_client_streams_text(monkeypatch) -> None:
-    async def fake_acompletion(**kwargs):
+async def test_openai_client_streams_text(monkeypatch) -> None:
+    async def fake_create(**kwargs):
         assert kwargs["stream"] is True
         return FakeStream(
             [
                 SimpleNamespace(
+                    usage=None,
                     choices=[
                         SimpleNamespace(
-                            delta=SimpleNamespace(content="hello ", tool_calls=None)
+                            delta=SimpleNamespace(content="hello ", tool_calls=None),
+                            finish_reason=None,
                         )
-                    ]
+                    ],
                 ),
                 SimpleNamespace(
+                    usage=None,
                     choices=[
                         SimpleNamespace(
-                            delta=SimpleNamespace(content="world", tool_calls=None)
+                            delta=SimpleNamespace(content="world", tool_calls=None),
+                            finish_reason="stop",
                         )
-                    ]
+                    ],
                 ),
             ]
         )
 
-    monkeypatch.setitem(
-        sys.modules,
-        "litellm",
-        SimpleNamespace(acompletion=fake_acompletion),
-    )
+    _install_fake_openai(monkeypatch, fake_create)
 
     chunks: list[str] = []
-    client = LiteLLMModelClient(model="fake-model")
+    client = OpenAIModelClient(model="fake-model")
     turn = await client.run_turn(
         system_prompt="system",
         messages=[Message.user("hello")],
@@ -110,41 +136,47 @@ async def test_litellm_client_streams_text(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_litellm_client_debug_log_aggregates_stream_chunks(
+async def test_openai_client_debug_log_aggregates_stream_chunks(
     monkeypatch,
     tmp_path,
 ) -> None:
-    async def fake_acompletion(**kwargs):
+    async def fake_create(**kwargs):
         assert kwargs["stream"] is True
         return FakeStream(
             [
                 SimpleNamespace(
+                    usage=None,
                     choices=[
                         SimpleNamespace(
                             delta=SimpleNamespace(content="h", tool_calls=None),
                             finish_reason=None,
                         )
-                    ]
+                    ],
                 ),
                 SimpleNamespace(
+                    usage=SimpleNamespace(
+                        prompt_tokens=1,
+                        completion_tokens=2,
+                        total_tokens=3,
+                    ),
+                    choices=[],
+                ),
+                SimpleNamespace(
+                    usage=None,
                     choices=[
                         SimpleNamespace(
                             delta=SimpleNamespace(content="i", tool_calls=None),
                             finish_reason="stop",
                         )
-                    ]
+                    ],
                 ),
             ]
         )
 
-    monkeypatch.setitem(
-        sys.modules,
-        "litellm",
-        SimpleNamespace(acompletion=fake_acompletion),
-    )
+    _install_fake_openai(monkeypatch, fake_create)
 
     log_path = tmp_path / "debug.jsonl"
-    client = LiteLLMModelClient(
+    client = OpenAIModelClient(
         model="fake-model",
         debug_log=DebugLog(log_path, session_id="stream-session"),
     )
@@ -165,35 +197,33 @@ async def test_litellm_client_debug_log_aggregates_stream_chunks(
         "model.stream.raw_summary",
         "model.response.normalized",
     ]
-    assert events[1]["payload"]["chunk_count"] == 2
-    assert events[1]["payload"]["text"] == "hi"
+    assert events[1]["payload"]["chunk_count"] == 3
+    assert events[1]["payload"]["text_length"] == 2
+    assert events[1]["payload"]["usage"]["total_tokens"] == 3
 
 
 @pytest.mark.asyncio
-async def test_litellm_client_debug_log_records_raw_response(
+async def test_openai_client_debug_log_records_raw_response(
     monkeypatch,
     tmp_path,
 ) -> None:
-    async def fake_acompletion(**kwargs):
+    async def fake_create(**kwargs):
         return SimpleNamespace(
+            usage=None,
             choices=[
                 SimpleNamespace(
                     finish_reason="stop",
                     message=SimpleNamespace(content="final answer", tool_calls=[]),
                 )
-            ]
+            ],
         )
 
-    monkeypatch.setitem(
-        sys.modules,
-        "litellm",
-        SimpleNamespace(acompletion=fake_acompletion),
-    )
+    _install_fake_openai(monkeypatch, fake_create)
 
     log_path = tmp_path / "debug.jsonl"
-    client = LiteLLMModelClient(
+    client = OpenAIModelClient(
         model="fake-model",
-        extra_kwargs={"api_key": "secret"},
+        api_key="secret",
         debug_log=DebugLog(log_path, session_id="provider-session"),
     )
     await client.run_turn(
@@ -212,5 +242,5 @@ async def test_litellm_client_debug_log_records_raw_response(
         "model.response.raw",
         "model.response.normalized",
     ]
-    assert events[0]["payload"]["kwargs"]["api_key"] == "[redacted]"
+    assert FakeAsyncOpenAI.init_kwargs["api_key"] == "secret"
     assert events[1]["payload"]["response"]["choices"][0]["message"]["content"] == "final answer"

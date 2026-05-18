@@ -5,7 +5,7 @@ import os
 import pytest
 
 from agent.models import Message
-from agent.providers.litellm_client import LiteLLMModelClient
+from agent.providers.openai_client import OpenAIModelClient
 from agent.runtime.markdown_stream import MarkdownStreamRenderer
 from agent.runtime.utils import console
 
@@ -18,7 +18,7 @@ async def test_live_api_streams_markdown_through_renderer() -> None:
 
     Example:
         RUN_LIVE_MARKDOWN_STREAM=1 \
-        MARKDOWN_STREAM_MODEL=openai/gpt-5.2 \
+        MARKDOWN_STREAM_MODEL=gpt-5.2 \
         MARKDOWN_STREAM_API_KEY=api \
         MARKDOWN_STREAM_BASE_URL=https://www.right.codes/codex/v1 \
         uv run pytest tests/test_markdown_stream_live_api.py -s -q
@@ -26,20 +26,15 @@ async def test_live_api_streams_markdown_through_renderer() -> None:
     if os.getenv("RUN_LIVE_MARKDOWN_STREAM") != "1":
         pytest.skip("set RUN_LIVE_MARKDOWN_STREAM=1 to call the live model API")
 
-    model = os.getenv("MARKDOWN_STREAM_MODEL", "openai/gpt-5.4")
+    model = os.getenv("MARKDOWN_STREAM_MODEL", "gpt-5.4")
     api_key = os.getenv("MARKDOWN_STREAM_API_KEY", "")
     base_url = os.getenv("MARKDOWN_STREAM_BASE_URL", "")
 
-    extra_kwargs: dict[str, str] = {}
-    if api_key:
-        extra_kwargs["api_key"] = api_key
-    if base_url:
-        extra_kwargs["base_url"] = base_url
-
     renderer = MarkdownStreamRenderer(console)
-    client = LiteLLMModelClient(
+    client = OpenAIModelClient(
         model=model,
-        extra_kwargs=extra_kwargs,
+        api_key=api_key or None,
+        base_url=base_url or None,
     )
 
     await client.run_turn(

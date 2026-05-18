@@ -13,7 +13,7 @@ def test_config_loader_merges_user_project_and_cli(tmp_path: Path) -> None:
 
     user_config.write_text(
         """
-model = "openai/user"
+model = "gpt-user"
 max_iterations = 3
 session_id = "from-user"
 """.strip(),
@@ -22,7 +22,7 @@ session_id = "from-user"
     project_config.write_text(
         """
 [agent]
-model = "openai/project"
+model = "gpt-project"
 reasoning_effort = "medium"
 session_id = "from-project"
 channel = "telegram"
@@ -54,7 +54,7 @@ bash = "deny"
         user_config_path=user_config,
     ).load({"session_id": "from-cli"})
 
-    assert settings.model.name == "openai/project"
+    assert settings.model.name == "gpt-project"
     assert settings.model.reasoning_effort == "medium"
     assert settings.model.max_iterations == 3
     assert settings.state.session_id == "from-cli"
@@ -83,17 +83,17 @@ def test_config_loader_reads_model_profiles(tmp_path: Path) -> None:
     project_config.write_text(
         """
 [agent]
-model = "openai/default"
-fallback_models = "openai/fallback-cli"
+model = "gpt-default"
+fallback_models = "gpt-fallback-cli"
 
 [[agent.model_profiles]]
 name = "primary"
-model = "openai/primary"
+model = "gpt-primary"
 api_key_env = "PRIMARY_KEY"
 
 [[agent.model_profiles]]
 name = "backup"
-model = "anthropic/backup"
+model = "gpt-backup"
 api_key_env = "BACKUP_KEY"
 reasoning_effort = "high"
 extra_kwargs = { base_url = "https://example.invalid" }
@@ -110,9 +110,9 @@ extra_kwargs = { base_url = "https://example.invalid" }
         "fallback-1",
     ]
     assert [profile.model for profile in profiles] == [
-        "openai/primary",
-        "anthropic/backup",
-        "openai/fallback-cli",
+        "gpt-primary",
+        "gpt-backup",
+        "gpt-fallback-cli",
     ]
     assert profiles[1].api_key_env == "BACKUP_KEY"
     assert profiles[1].reasoning_effort == "high"
@@ -126,8 +126,8 @@ def test_global_reasoning_effort_applies_to_implicit_profiles(tmp_path: Path) ->
     project_config.write_text(
         """
 [agent]
-model = "openai/primary"
-fallback_models = "openai/backup-a,openai/backup-b"
+model = "gpt-primary"
+fallback_models = "gpt-backup-a,gpt-backup-b"
 reasoning_effort = "low"
 """.strip(),
         encoding="utf-8",

@@ -12,6 +12,7 @@ from agent.config import AgentSettings
 from agent.models import Message
 from agent.mcp import MCPServerConfig
 from agent.profiles import FallbackModelClient, ModelProfile
+from agent.providers.openai_client import OpenAIModelClient
 from agent.runtime.builder import (
     CLIProgressReporter,
     _attach_mcp_tools,
@@ -108,7 +109,7 @@ async def test_repl_prints_status_banner_and_session_prompt(monkeypatch, tmp_pat
 
     exit_code = await _run_repl(
         settings=AgentSettings(
-            model="openai/test-model",
+            model="gpt-test-model",
             enable_memory=False,
             enable_todos=False,
         ),
@@ -119,7 +120,7 @@ async def test_repl_prints_status_banner_and_session_prompt(monkeypatch, tmp_pat
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "zx-code" in output
-    assert "openai/test-model" in output
+    assert "gpt-test-model" in output
     assert "demo" in output
     assert "resumed" in output
     assert "uv run agent --resume demo" in output
@@ -268,13 +269,32 @@ def test_build_runtime_uses_fallback_client_for_multiple_profiles(monkeypatch, t
             enable_memory=False,
             enable_todos=False,
             model_profiles=[
-                ModelProfile(name="primary", model="openai/primary"),
-                ModelProfile(name="backup", model="openai/backup"),
+                ModelProfile(name="primary", model="gpt-primary"),
+                ModelProfile(name="backup", model="gpt-backup"),
             ],
         ),
     )
 
     assert isinstance(runtime["model_client"], FallbackModelClient)
+
+
+def test_build_runtime_injects_context_summary_client(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    runtime = _build_runtime(
+        AgentSettings(
+            enable_memory=False,
+            enable_todos=False,
+            model="gpt-main",
+            fallback_models="",
+            compact_model="gpt-summary",
+        ),
+    )
+
+    summary_client = runtime["context_guard"].summary_client
+    assert summary_client is not None
+    assert isinstance(summary_client.model_client, OpenAIModelClient)
+    assert summary_client.model_client.model == "gpt-summary"
 
 
 def test_build_stream_output_uses_markdown_renderer_for_streaming_markdown() -> None:

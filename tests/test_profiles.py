@@ -36,8 +36,8 @@ class _FakeClient:
 async def test_fallback_model_client_uses_next_profile_after_rate_limit() -> None:
     calls: list[str] = []
     profiles = [
-        ModelProfile(name="primary", model="openai/primary"),
-        ModelProfile(name="backup", model="openai/backup"),
+        ModelProfile(name="primary", model="gpt-primary"),
+        ModelProfile(name="backup", model="gpt-backup"),
     ]
 
     def client_factory(profile: ModelProfile) -> _FakeClient:
@@ -65,8 +65,8 @@ async def test_fallback_model_client_uses_next_profile_after_rate_limit() -> Non
 async def test_fallback_model_client_does_not_fallback_on_unknown_error() -> None:
     calls: list[str] = []
     profiles = [
-        ModelProfile(name="primary", model="openai/primary"),
-        ModelProfile(name="backup", model="openai/backup"),
+        ModelProfile(name="primary", model="gpt-primary"),
+        ModelProfile(name="backup", model="gpt-backup"),
     ]
 
     def client_factory(profile: ModelProfile) -> _FakeClient:
@@ -90,7 +90,7 @@ def test_model_profile_reads_api_key_from_env(monkeypatch) -> None:
     monkeypatch.setenv("ZX_TEST_MODEL_KEY", "secret-key")
     profile = ModelProfile(
         name="primary",
-        model="openai/gpt-5.4",
+        model="gpt-5.4",
         api_key_env="ZX_TEST_MODEL_KEY",
         reasoning_effort="medium",
         extra_kwargs={"base_url": "https://example.invalid"},

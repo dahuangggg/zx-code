@@ -29,8 +29,8 @@
   - 注入 model client、tool registry 和 core loop
 - 更新 `src/agent/core/loop.py`
   - 记录实际 system prompt、用户请求、发给模型的 messages/tool schemas、assistant message
-- 更新 `src/agent/providers/litellm_client.py`
-  - 记录 LiteLLM request
+- 更新 `src/agent/providers/openai_client.py`
+  - 记录 OpenAI SDK request
   - 记录非流式 raw response
   - 记录流式 raw summary，避免供应商按字符切 chunk 时把日志刷爆
   - 记录归一化后的 `ModelTurn`
@@ -63,7 +63,7 @@ uv run pytest -q
 
 - 调试日志核心：`src/agent/debuglog.py`
 - 核心循环埋点：`src/agent/core/loop.py`
-- 模型 raw 日志：`src/agent/providers/litellm_client.py`
+- 模型 raw 日志：`src/agent/providers/openai_client.py`
 - 工具调用日志：`src/agent/core/tool_executor.py`、`src/agent/tools/registry.py`
 - 配置入口：`src/agent/config.py`、`src/agent/main.py`
 
@@ -515,7 +515,7 @@ git check-ignore -v docs/phase-05E-ResilienceRunner讲解.md docs/README.md
   - 新增 `resolved_model_profiles()`，合并 TOML profile 和 CLI fallback 模型
 - 更新 `src/agent/main.py`
   - 新增 `_build_model_client()`
-  - 单 profile 使用 `LiteLLMModelClient`
+  - 单 profile 使用 `OpenAIModelClient`
   - 多 profile 使用 `FallbackModelClient`
   - CLI 新增 `--fallback-models`
 - 更新 `src/agent/recovery.py`
@@ -532,9 +532,9 @@ git check-ignore -v docs/phase-05E-ResilienceRunner讲解.md docs/README.md
 
 第五阶段要求支持多 profile / 多 key / fallback model。这里先实现模型调用层的 fallback，而不是一次性重构完整 `ResilienceRunner`。
 
-设计上保持 Agent loop 不变：`loop.py` 仍然只依赖 `ModelClient` 协议。`FallbackModelClient` 作为 wrapper 包住多个 `LiteLLMModelClient`，对外仍然暴露同一个 `run_turn()` 接口。
+设计上保持 Agent loop 不变：`loop.py` 仍然只依赖 `ModelClient` 协议。`FallbackModelClient` 作为 wrapper 包住多个 `OpenAIModelClient`，对外仍然暴露同一个 `run_turn()` 接口。
 
-Profile 配置只保存环境变量名，不保存真实 key。这样 `.zx-code/config.toml` 可以提交或展示结构，但不会泄漏密钥。运行时再从 `api_key_env` 读取真实 key，并传给 `litellm` 的 `api_key` 参数。
+Profile 配置只保存环境变量名，不保存真实 key。这样 `.zx-code/config.toml` 可以提交或展示结构，但不会泄漏密钥。运行时再从 `api_key_env` 读取真实 key，并传给 OpenAI SDK。
 
 Fallback 只处理 `rate_limit / auth / billing / timeout` 这类可恢复故障；`unknown` 错误直接抛出。这样可以避免把本地代码 bug、tool schema bug 或 provider response 解析 bug 错误地隐藏成“换个模型就好了”。
 
@@ -987,7 +987,7 @@ uv run agent --no-memory --no-todos --print-system-prompt
 ### 改动内容
 
 - 初始化 Python 项目结构和 `pyproject.toml`
-- 实现 `ModelClient` 抽象和 `LiteLLMModelClient`
+- 实现 `ModelClient` 抽象和 `OpenAIModelClient`
 - 实现 Agent 主循环 `run_task()`
 - 实现基础工具系统：`Tool`、`ToolRegistry`
 - 接入五个基础工具：`bash / read_file / write_file / edit_file / grep`
@@ -1026,4 +1026,4 @@ uv run agent --help
 - 第一阶段讲解：`docs/phase-01-单Agent核心讲解.md`
 - 主循环：`src/agent/loop.py`
 - 工具注册：`src/agent/tools/registry.py`
-- LiteLLM 适配：`src/agent/providers/litellm_client.py`
+- OpenAI SDK 适配：`src/agent/providers/openai_client.py`

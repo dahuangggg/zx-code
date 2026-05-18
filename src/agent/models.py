@@ -37,7 +37,7 @@ class ToolCall(BaseModel):
 
 
 class Message(BaseModel):
-    """一条对话消息，对应 LiteLLM / OpenAI messages 列表中的一项。
+    """一条对话消息，对应 OpenAI messages 列表中的一项。
 
     使用类方法工厂而非直接构造，代码更清晰：
       Message.user("hello")

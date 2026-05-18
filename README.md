@@ -15,12 +15,10 @@
 uv sync --dev
 ```
 
-配置模型 key。模型调用经由 LiteLLM，因此 key 取决于实际使用的 provider：
+配置模型 key。模型调用直接使用 OpenAI Python SDK：
 
 ```bash
 export OPENAI_API_KEY="your-openai-key"
-# 或
-export ANTHROPIC_API_KEY="your-anthropic-key"
 ```
 
 一次性执行：
@@ -38,7 +36,7 @@ uv run agent
 常用参数：
 
 ```bash
-uv run agent --model openai/gpt-5.4 "读取 README"
+uv run agent --model gpt-5.4 "读取 README"
 uv run agent --no-stream "列出当前项目结构"
 uv run agent --max-turns 8 "分析 src/agent/core/loop.py"
 uv run agent --resume demo-session "继续上次任务"
@@ -62,7 +60,7 @@ CLI / Channel
   -> LaneScheduler
   -> runtime builder
   -> core ReAct loop
-  -> LiteLLM model client
+  -> OpenAI model client
   -> ToolRegistry
   -> SessionStore / DeliveryQueue
 ```
@@ -79,7 +77,7 @@ flowchart TD
 
     Runtime --> Prompt["SystemPromptBuilder"]
     Runtime --> Context["ContextGuard"]
-    Runtime --> Model["LiteLLMModelClient / FallbackModelClient"]
+    Runtime --> Model["OpenAIModelClient / FallbackModelClient"]
     Runtime --> Tools["ToolRegistry"]
     Runtime --> Store["SessionStore"]
 
@@ -330,9 +328,9 @@ TOML 可以直接写顶级字段，也可以放到 `[agent]` section。推荐用
 
 ```toml
 [agent]
-model = "openai/gpt-5.4-mini"
-fallback_models = "openai/gpt-5.5"
-reasoning_effort = "" # 可填 "low"、"medium"、"high"，具体取决于模型和 provider
+model = "gpt-5.4-mini"
+fallback_models = "gpt-5.5"
+reasoning_effort = "" # 可填 "low"、"medium"、"high"，具体取决于模型
 max_iterations = 30
 context_max_tokens = 128000
 data_dir = ".agent"
@@ -350,18 +348,18 @@ uv run agent --reasoning-effort medium "分析这个改动的风险"
 ```toml
 [[agent.model_profiles]]
 name = "primary"
-model = "openai/gpt-5.4-mini"
+model = "gpt-5.4-mini"
 api_key_env = "OPENAI_API_KEY"
 reasoning_effort = "medium"
 
 [[agent.model_profiles]]
 name = "backup"
-model = "openai/gpt-5.5"
+model = "gpt-5.5"
 api_key_env = "OPENAI_API_KEY"
 reasoning_effort = "high"
 ```
 
-不支持 `reasoning_effort` 的模型会由 LiteLLM 按其 provider 行为处理；更特殊的 reasoning 参数仍可放进 `extra_kwargs` 透传。
+不支持 `reasoning_effort` 的模型会按 OpenAI SDK/API 的返回行为处理；更特殊的请求参数仍可放进 `extra_kwargs` 透传。
 
 常用功能开关：
 
@@ -566,7 +564,7 @@ src/agent/
   config.py                # AgentSettings + 三层配置加载
   models.py                # Message / ToolCall / ToolResult / RuntimeConfig
   prompt.py                # SystemPromptBuilder
-  providers/               # LiteLLM 模型客户端
+  providers/               # OpenAI SDK 模型客户端
   core/                    # ReAct loop、上下文、恢复、工具执行
   tools/                   # 内置工具和 ToolRegistry
   state/                   # session / memory / todo / task / skill
