@@ -36,6 +36,8 @@ def _now() -> str:
 
 
 class TaskRecord(BaseModel):
+    """单个 DAG task 的持久化记录。"""
+
     model_config = ConfigDict(extra="forbid")
 
     # hex[:8] 取 32 位十六进制前 8 位，碰撞概率极低且 id 简短易读
@@ -205,6 +207,7 @@ class TaskStore:
                 queue.extend(dep_task.blocked_by)
 
     def _ensure_blockers_exist(self, blockers: list[str]) -> dict[str, TaskRecord]:
+        """校验 blocker id 都存在，并返回当前任务快照。"""
         known = {task.id: task for task in self.list()}
         for blocker in blockers:
             if blocker not in known:
@@ -212,6 +215,7 @@ class TaskStore:
         return known
 
     def _path(self, task_id: str) -> Path:
+        """根据 task_id 生成任务文件路径，并阻止路径穿越。"""
         safe = task_id.strip()
         # 禁止路径分隔符，防止 task_id 构造路径穿越（path traversal）攻击
         if not safe or "/" in safe or "\\" in safe:

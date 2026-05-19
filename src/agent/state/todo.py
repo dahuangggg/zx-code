@@ -28,10 +28,13 @@ TodoStatus = Literal["pending", "in_progress", "completed"]
 
 
 def _now() -> str:
+    """返回 UTC ISO 时间戳。"""
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class TodoItem(BaseModel):
+    """会话级 todo 条目。"""
+
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(default_factory=lambda: uuid4().hex[:8])
@@ -43,16 +46,20 @@ class TodoItem(BaseModel):
 
 
 class TodoManager:
+    """单 session todo JSON 文件管理器。"""
+
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path).expanduser()
 
     def list(self) -> list[TodoItem]:
+        """读取当前 todo 列表。"""
         if not self.path.exists():
             return []
         raw = json.loads(self.path.read_text(encoding="utf-8") or "[]")
         return [TodoItem.model_validate(item) for item in raw]
 
     def create(self, title: str, *, notes: str = "") -> TodoItem:
+        """创建 pending todo。"""
         item = TodoItem(title=title, notes=notes)
         items = self.list()
         items.append(item)
@@ -67,6 +74,7 @@ class TodoManager:
         status: TodoStatus | None = None,
         notes: str | None = None,
     ) -> TodoItem:
+        """按 id 更新 todo，未传字段保持原值。"""
         items = self.list()
         for index, item in enumerate(items):
             if item.id != todo_id:
@@ -85,9 +93,11 @@ class TodoManager:
         raise KeyError(f"todo not found: {todo_id}")
 
     def complete(self, todo_id: str) -> TodoItem:
+        """把 todo 标记为 completed。"""
         return self.update(todo_id, status="completed")
 
     def render_for_prompt(self) -> str:
+        """渲染注入 system prompt 的 todo 列表。"""
         items = self.list()
         if not items:
             return ""
@@ -99,6 +109,7 @@ class TodoManager:
         return "\n".join(lines)
 
     def _save(self, items: list[TodoItem]) -> None:
+        """原子写 todo JSON。"""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = [item.model_dump(mode="json") for item in items]
         content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
@@ -117,4 +128,3 @@ class TodoManager:
             except OSError:
                 pass
             raise
-

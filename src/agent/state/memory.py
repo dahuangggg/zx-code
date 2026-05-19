@@ -32,6 +32,8 @@ MemoryType = Literal["user", "feedback", "project", "reference"]
 
 
 class MemoryDocument(BaseModel):
+    """MEMORY.md 的解析结果。"""
+
     model_config = ConfigDict(extra="forbid")
 
     frontmatter: dict[str, Any] = Field(default_factory=dict)
@@ -39,6 +41,8 @@ class MemoryDocument(BaseModel):
 
 
 class MemoryRecord(BaseModel):
+    """独立记忆文档的输入模型。"""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str
@@ -48,16 +52,24 @@ class MemoryRecord(BaseModel):
 
 
 class MemoryStore:
+    """Markdown/frontmatter 记忆存储。
+
+    默认 path 通常是 MEMORY.md 索引文件；save_record() 还会在同目录写独立记忆文档。
+    render_for_prompt() 只注入截断后的索引内容，避免长期记忆无上限进入上下文。
+    """
+
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path).expanduser()
 
     def ensure(self) -> None:
+        """确保 MEMORY.md 存在。"""
         if self.path.exists():
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(self._serialize(MemoryDocument(body="# Memory\n")), encoding="utf-8")
 
     def load(self) -> MemoryDocument:
+        """读取 MEMORY.md；不存在时返回默认空文档。"""
         if not self.path.exists():
             return MemoryDocument(
                 frontmatter={
@@ -76,6 +88,7 @@ class MemoryStore:
         source: str = "user",
         memory_type: MemoryType | str = "user",
     ) -> None:
+        """把一条简短记忆追加到 MEMORY.md 索引中。"""
         document = self.load()
         body = document.body.rstrip()
         entry = f"- **[{memory_type}]** {text.strip()} _(source: {source}, at: {self._now()})_"
@@ -86,6 +99,7 @@ class MemoryStore:
         self._atomic_write(self._serialize(document))
 
     def load_index(self, *, max_lines: int = 200) -> str:
+        """读取 MEMORY.md 前 max_lines 行，供轻量预览使用。"""
         if not self.path.exists():
             return ""
         text = self.path.read_text(encoding="utf-8")
@@ -94,6 +108,7 @@ class MemoryStore:
         return "\n".join(lines)
 
     def save_record(self, record: MemoryRecord) -> Path:
+        """保存独立记忆文档，并把链接追加到 MEMORY.md 索引。"""
         record_path = self.path.parent / f"{_safe_memory_name(record.name)}.md"
         post = frontmatter.Post(
             record.content.rstrip() + "\n",
@@ -108,6 +123,7 @@ class MemoryStore:
         return record_path
 
     def render_for_prompt(self, *, max_chars: int = 4000) -> str:
+        """渲染注入 system prompt 的记忆文本，超长时截断。"""
         document = self.load()
         body = document.body.strip()
         if not body:
@@ -134,6 +150,7 @@ class MemoryStore:
         self._atomic_write_path(self.path, content)
 
     def _atomic_write_path(self, path: Path, content: str) -> None:
+        """原子写 Markdown 文件，避免崩溃留下半写内容。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
             dir=path.parent, suffix=".tmp", prefix=".memory-"
@@ -169,5 +186,6 @@ class MemoryStore:
 
 
 def _safe_memory_name(name: str) -> str:
+    """把记忆名转为安全文件名。"""
     safe = "".join(char if char.isalnum() or char in "._-" else "-" for char in name.strip())
     return safe.strip(".-_") or "memory"

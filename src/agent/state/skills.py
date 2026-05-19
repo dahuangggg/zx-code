@@ -21,6 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class SkillMetadata(BaseModel):
+    """技能索引中展示的轻量元数据。"""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str
@@ -30,6 +32,8 @@ class SkillMetadata(BaseModel):
 
 
 class SkillDocument(BaseModel):
+    """完整技能文档，包含 frontmatter 和 Markdown 正文。"""
+
     model_config = ConfigDict(extra="forbid")
 
     metadata: SkillMetadata
@@ -48,12 +52,14 @@ class SkillStore:
         self.root = Path(root).expanduser()
 
     def list(self) -> list[SkillMetadata]:
+        """扫描技能目录，返回按 name 排序的技能索引。"""
         if not self.root.exists():
             return []
         skills = [self._metadata_for(path) for path in sorted(self.root.rglob("*.md"))]
         return sorted(skills, key=lambda item: item.name)
 
     def load(self, name: str) -> SkillDocument:
+        """按技能名加载完整 Markdown 文档。"""
         path = self._resolve(name)
         post = frontmatter.loads(path.read_text(encoding="utf-8"))
         metadata = self._metadata_for(path, post=post)
@@ -64,6 +70,7 @@ class SkillStore:
         )
 
     def render_index(self, *, max_chars: int = 4000) -> str:
+        """渲染注入 system prompt 的技能索引。"""
         skills = self.list()
         if not skills:
             return ""
@@ -78,6 +85,7 @@ class SkillStore:
         return rendered[:max_chars] + f"\n\n[skill index truncated, omitted {omitted} chars]"
 
     def _resolve(self, name: str) -> Path:
+        """把技能名解析到 root 内的 .md 文件，阻止路径穿越。"""
         safe_name = name.strip().removesuffix(".md")
         if not safe_name:
             raise FileNotFoundError("empty skill name")
@@ -95,6 +103,7 @@ class SkillStore:
         *,
         post: frontmatter.Post | None = None,
     ) -> SkillMetadata:
+        """从 frontmatter 和首个 heading 中提取技能元数据。"""
         loaded = post or frontmatter.loads(path.read_text(encoding="utf-8"))
         name = path.relative_to(self.root).with_suffix("").as_posix()
         title = str(loaded.metadata.get("title", "")).strip() or _first_heading(loaded.content)
@@ -108,6 +117,7 @@ class SkillStore:
 
 
 def _first_heading(content: str) -> str:
+    """返回 Markdown 正文中的第一个 heading。"""
     for line in content.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):

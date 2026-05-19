@@ -28,6 +28,7 @@ from agent.models import Message
 
 
 def safe_session_id(session_id: str) -> str:
+    """把任意 session_id 转成安全文件名。"""
     normalized = session_id.strip() or "default"
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", normalized)
     return safe.strip("._") or "default"
@@ -55,9 +56,11 @@ class SessionStore:
         self.root = Path(root).expanduser()
 
     def path_for(self, session_id: str) -> Path:
+        """返回 session 对应的 JSONL 文件路径。"""
         return self.root / f"{safe_session_id(session_id)}.jsonl"
 
     def append(self, session_id: str, record: SessionRecord | dict[str, Any]) -> None:
+        """追加一条 session 记录；写入期间持文件锁。"""
         parsed = (
             record
             if isinstance(record, SessionRecord)
@@ -74,6 +77,7 @@ class SessionStore:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
     def append_message(self, session_id: str, message: Message) -> None:
+        """追加一条 Message 记录。"""
         self.append(
             session_id,
             SessionRecord(
@@ -83,6 +87,7 @@ class SessionStore:
         )
 
     def read_records(self, session_id: str) -> list[SessionRecord]:
+        """读取并校验 session JSONL 中的全部记录。"""
         path = self.path_for(session_id)
         if not path.exists():
             return []
@@ -101,6 +106,7 @@ class SessionStore:
         return records
 
     def rebuild_messages(self, session_id: str) -> list[Message]:
+        """从 session 记录重建可直接送入主循环的消息历史。"""
         messages: list[Message] = []
         for record in self.read_records(session_id):
             if record.type != "message":
@@ -110,4 +116,3 @@ class SessionStore:
                 continue
             messages.append(Message.model_validate(raw_message))
         return messages
-
