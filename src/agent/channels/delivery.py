@@ -37,6 +37,8 @@ CHANNEL_TEXT_LIMITS = {
 
 
 class DeliveryEntry(BaseModel):
+    """持久化投递任务。"""
+
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -55,6 +57,7 @@ class DeliveryEntry(BaseModel):
 
 
 def chunk_message(channel: str, text: str, *, limit: int | None = None) -> list[str]:
+    """按通道限制切分长消息，优先在换行处断开。"""
     effective_limit = limit or CHANNEL_TEXT_LIMITS.get(channel, 4000)
     if effective_limit <= 0:
         raise ValueError("message chunk limit must be positive")
@@ -76,6 +79,8 @@ def chunk_message(channel: str, text: str, *, limit: int | None = None) -> list[
 
 
 class DeliveryQueue:
+    """基于文件目录的投递队列。"""
+
     def __init__(
         self,
         root: Path | str,
@@ -96,6 +101,7 @@ class DeliveryQueue:
         self.ensure()
 
     def ensure(self) -> None:
+        """确保 queued/sent/failed 三个目录存在。"""
         self.queued_dir.mkdir(parents=True, exist_ok=True)
         self.sent_dir.mkdir(parents=True, exist_ok=True)
         self.failed_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +115,7 @@ class DeliveryQueue:
         account_id: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> DeliveryEntry:
+        """创建 queued 投递任务。"""
         entry = DeliveryEntry(
             id=uuid.uuid4().hex[:12],
             channel=channel,
@@ -129,6 +136,7 @@ class DeliveryQueue:
         return None
 
     def ready(self, *, now: float | None = None) -> list[DeliveryEntry]:
+        """返回已经到达 next_retry_at 的 queued 任务。"""
         current = time.time() if now is None else now
         entries = [
             entry
@@ -258,6 +266,8 @@ class DeliveryQueue:
 
 
 class DeliveryRunner:
+    """消费 DeliveryQueue，并通过 ChannelManager 实际发送消息。"""
+
     def __init__(
         self,
         *,
@@ -269,6 +279,7 @@ class DeliveryRunner:
         self._lock = asyncio.Lock()
 
     async def deliver(self, delivery_id: str) -> bool:
+        """串行投递单条消息，避免同一 runner 并发改同一队列文件。"""
         async with self._lock:
             return await self._deliver_unlocked(delivery_id)
 
@@ -295,6 +306,7 @@ class DeliveryRunner:
         return True
 
     async def deliver_ready_once(self, *, now: float | None = None) -> int:
+        """投递当前所有到期消息，返回成功投递数量。"""
         async with self._lock:
             delivered = 0
             for entry in self.queue.ready(now=now):
@@ -304,6 +316,8 @@ class DeliveryRunner:
 
 
 class DeliveryDaemon:
+    """后台定时 flush delivery queue 的守护任务。"""
+
     def __init__(
         self,
         *,
@@ -315,6 +329,7 @@ class DeliveryDaemon:
         self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
+        """启动后台投递循环。"""
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self.run_forever())
 

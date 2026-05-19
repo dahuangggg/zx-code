@@ -1,3 +1,8 @@
+"""Telegram channel adapter.
+
+TelegramChannel 负责 getUpdates 轮询、offset 持久化、文本合并、媒体组聚合、论坛
+topic peer_id 映射和 sendMessage 投递。它只输出统一 InboundMessage，不直接运行 agent。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +17,8 @@ from agent.channels.base import Channel, InboundMessage
 
 
 class TelegramChannel(Channel):
+    """Telegram Bot API 通道实现。"""
+
     name = "telegram"
     max_message_len = 4096
     max_buffer_size = 1000
@@ -53,6 +60,7 @@ class TelegramChannel(Channel):
         return f"https://api.telegram.org/bot{self.token}"
 
     async def receive(self) -> InboundMessage | None:
+        """返回一条已聚合好的入站消息；没有 ready 消息时轮询一次 API。"""
         if self._ready:
             return self._ready.popleft()
 
@@ -84,6 +92,7 @@ class TelegramChannel(Channel):
             await asyncio.sleep(0.05)
 
     async def poll(self) -> list[InboundMessage]:
+        """调用 getUpdates，更新 offset，并把原始 update 转为入站消息。"""
         params: dict[str, Any] = {
             "offset": self.offset,
             "timeout": self.timeout_s,
@@ -120,6 +129,7 @@ class TelegramChannel(Channel):
         return self._flush_buffers()
 
     async def send(self, to: str, text: str, **kwargs: Any) -> bool:
+        """发送文本消息；超长内容按 Telegram 限制切片。"""
         chat_id, thread_id = self._split_topic_target(to)
         ok = True
         for chunk in self._chunk(text):
@@ -149,6 +159,7 @@ class TelegramChannel(Channel):
         *,
         account_id: str = "telegram-bot",
     ) -> InboundMessage | None:
+        """把 Telegram update 转成通道无关 InboundMessage。"""
         message = update.get("message") or update.get("edited_message")
         if not isinstance(message, dict):
             return None
@@ -190,6 +201,7 @@ class TelegramChannel(Channel):
 
     @classmethod
     def media_from_message(cls, message: dict[str, Any]) -> list[dict[str, Any]]:
+        """提取 Telegram 媒体 file_id 列表。"""
         media: list[dict[str, Any]] = []
         for media_type in ("photo", "video", "document", "audio", "voice"):
             if media_type not in message:

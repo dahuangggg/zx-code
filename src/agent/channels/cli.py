@@ -1,3 +1,8 @@
+"""CLI channel adapter.
+
+CLIChannel 是本地交互和测试用通道：push() 模拟一条入站消息，send() 记录出站消息，
+可选择直接打印到终端。
+"""
 from __future__ import annotations
 
 from collections import deque
@@ -8,6 +13,8 @@ from agent.channels.base import Channel, InboundMessage, OutboundMessage
 
 
 class CLIChannel(Channel):
+    """本地 CLI 消息通道。"""
+
     name = "cli"
 
     def __init__(
@@ -26,6 +33,7 @@ class CLIChannel(Channel):
         self.sent: list[OutboundMessage] = []
 
     def push(self, text: str, *, peer_id: str = "default") -> InboundMessage:
+        """把一条本地输入塞进入站队列。"""
         inbound = InboundMessage.cli(
             text,
             account_id=self.account_id,
@@ -53,4 +61,3 @@ class CLIChannel(Channel):
         if self.emit:
             self.writer(text)
         return True
-

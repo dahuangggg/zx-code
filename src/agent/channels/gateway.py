@@ -29,6 +29,7 @@ AgentTurnHandler = Callable[[InboundMessage, str, str], Awaitable[str]]
 
 
 def _target_peer(peer_id: str, guild_id: str = "") -> tuple[str, str]:
+    """把私聊/群聊目标规范化为 session key 片段。"""
     if guild_id:
         return "group", guild_id
     return "direct", peer_id
@@ -43,6 +44,7 @@ def build_session_key(
     dm_scope: DMScope,
     guild_id: str = "",
 ) -> str:
+    """按 DMScope 生成 session_id，决定不同聊天目标是否共享上下文。"""
     target_type, target_id = _target_peer(peer_id, guild_id)
     if dm_scope == "per-account-channel-peer":
         return f"agent:{agent_id}:{channel}:{account_id}:{target_type}:{target_id}"
@@ -54,6 +56,8 @@ def build_session_key(
 
 
 class AgentRouteConfig(BaseModel):
+    """单个 agent 的路由配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     agent_id: str
@@ -61,6 +65,8 @@ class AgentRouteConfig(BaseModel):
 
 
 class Binding(BaseModel):
+    """把某个 channel/account/guild/peer 绑定到指定 agent。"""
+
     model_config = ConfigDict(extra="forbid")
 
     agent_id: str
@@ -105,6 +111,8 @@ class Binding(BaseModel):
 
 
 class BindingTable:
+    """维护消息目标到 agent_id 的绑定表。"""
+
     def __init__(self, *, default_agent_id: str = "default") -> None:
         self.default_agent_id = default_agent_id
         self.bindings: list[Binding] = []
@@ -198,6 +206,8 @@ class BindingTable:
 
 
 class GatewayResult(BaseModel):
+    """Gateway 处理一条入站消息后的结果。"""
+
     model_config = ConfigDict(extra="forbid")
 
     inbound: InboundMessage
@@ -208,6 +218,8 @@ class GatewayResult(BaseModel):
 
 
 class Gateway:
+    """统一处理外部入站消息、agent 路由和回复投递。"""
+
     def __init__(
         self,
         *,
@@ -228,6 +240,7 @@ class Gateway:
         self.activity_tracker = activity_tracker
 
     def agent_config(self, agent_id: str) -> AgentRouteConfig:
+        """返回 agent 配置；未知 agent 使用默认隔离策略即时创建。"""
         if agent_id not in self.agent_configs:
             self.agent_configs[agent_id] = AgentRouteConfig(agent_id=agent_id)
         return self.agent_configs[agent_id]
@@ -238,6 +251,7 @@ class Gateway:
         *,
         force_agent_id: str | None = None,
     ) -> GatewayResult:
+        """处理一条已获得的入站消息。"""
         if self.activity_tracker is not None:
             self.activity_tracker.mark_inbound(inbound)
             self.activity_tracker.mark_agent_start(inbound)
@@ -280,6 +294,7 @@ class Gateway:
         *,
         force_agent_id: str | None = None,
     ) -> GatewayResult | None:
+        """从指定通道拉取一条消息并处理；没有消息返回 None。"""
         channel = self.channel_manager.get(channel_name)
         inbound = await channel.receive()
         if inbound is None:
@@ -287,6 +302,7 @@ class Gateway:
         return await self.handle_inbound(inbound, force_agent_id=force_agent_id)
 
     async def drain_delivery(self) -> int:
+        """立即投递所有到期的 queued delivery。"""
         if self.delivery_runner is None:
             return 0
         return await self.delivery_runner.deliver_ready_once()
@@ -299,6 +315,7 @@ class Gateway:
         agent_id: str,
         session_id: str,
     ) -> bool:
+        """优先通过 DeliveryQueue 投递；无队列时直接调用 channel.send。"""
         metadata = {
             "inbound": inbound.model_dump(mode="json"),
             "agent_id": agent_id,

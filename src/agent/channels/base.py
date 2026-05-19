@@ -19,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class InboundMessage(BaseModel):
+    """通道无关的入站消息。"""
+
     model_config = ConfigDict(extra="forbid")
 
     text: str
@@ -50,6 +52,8 @@ class InboundMessage(BaseModel):
 
 
 class OutboundMessage(BaseModel):
+    """通道无关的出站消息。"""
+
     model_config = ConfigDict(extra="forbid")
 
     to: str
@@ -60,6 +64,8 @@ class OutboundMessage(BaseModel):
 
 
 class Channel(ABC):
+    """所有外部通道适配器的最小接口。"""
+
     name: str = "unknown"
 
     @abstractmethod
@@ -75,6 +81,8 @@ class Channel(ABC):
 
 
 class ChannelManager:
+    """按 channel name 注册和查找通道适配器。"""
+
     def __init__(self) -> None:
         self._channels: dict[str, Channel] = {}
 
