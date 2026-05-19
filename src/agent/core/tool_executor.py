@@ -202,15 +202,11 @@ class ToolCallExecutor:
             },
         )
         self._log.event(
-            "tool.call.result",
+            "tool.result",
             {
-                "call": call,
-                "result": {
-                    "call_id": result.call_id,
-                    "name": result.name,
-                    "content": result.content,
-                    "envelope": result.envelope,
-                },
+                "call_id": result.call_id,
+                "name": result.name,
+                "envelope": result.envelope,
             },
             session_id=self.session_id,
             level="info",

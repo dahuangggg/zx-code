@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from agent.core.tool_executor import ToolCallExecutor
+from agent.debuglog import DebugLog
 from agent.hooks import HookResult
 from agent.models import ToolCall
 from agent.tools.base import Tool
@@ -157,3 +158,35 @@ async def test_tool_call_executor_centralizes_large_output_truncation(
     assert envelope.data["truncated"] is True
     assert envelope.data["truncation"]["original_lines"] == 100
     assert envelope.data["truncation"]["full_output_path"].startswith("tool-output/")
+
+
+@pytest.mark.asyncio
+async def test_tool_call_executor_logs_structured_tool_result_without_outer_status(
+    tmp_path,
+) -> None:
+    log_path = tmp_path / "debug.jsonl"
+    registry = ToolRegistry()
+    registry.register(_UnsafeTool())
+    executor = ToolCallExecutor(
+        tool_registry=registry,
+        hook_runner=_RecordingHooks(),
+        session_id="session-1",
+        debug_log=DebugLog(log_path, session_id="session-1"),
+    )
+
+    await executor.execute_many(
+        [ToolCall(id="call-1", name="unsafe_tool", arguments={"label": "x"})]
+    )
+
+    events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    tool_result = next(event for event in events if event["event"] == "tool.result")
+
+    assert tool_result["payload"]["call_id"] == "call-1"
+    assert tool_result["payload"]["name"] == "unsafe_tool"
+    assert tool_result["payload"]["envelope"]["status"] == "success"
+    assert tool_result["payload"]["envelope"]["text"] == "x"
+    assert "status" not in tool_result["payload"]
+    assert "is_error" not in tool_result["payload"]

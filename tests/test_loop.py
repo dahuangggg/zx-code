@@ -344,7 +344,7 @@ async def test_debug_log_records_prompt_model_and_tool_events(tmp_path: Path) ->
         "run.model_input",
         "tool.call.requested",
         "tool.hook.pre",
-        "tool.call.result",
+        "tool.result",
         "tool.hook.post",
         "run.assistant_message",
         "run.model_input",
@@ -355,8 +355,12 @@ async def test_debug_log_records_prompt_model_and_tool_events(tmp_path: Path) ->
     assert events[0]["payload"]["system_prompt"] == "system"
     assert events[1]["payload"]["message"]["content"] == "write a file"
     assert events[3]["payload"]["call"]["name"] == "write_file"
-    tool_result = json.loads(events[5]["payload"]["result"]["content"])
-    assert tool_result["data"]["path"] == str(target)
+    tool_result = events[5]["payload"]
+    assert tool_result["call_id"] == "call-1"
+    assert tool_result["name"] == "write_file"
+    assert tool_result["envelope"]["status"] == "success"
+    assert tool_result["envelope"]["data"]["path"] == str(target)
+    assert "status" not in tool_result
 
 
 @pytest.mark.asyncio
