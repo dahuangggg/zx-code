@@ -26,7 +26,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.models import ToolResult
+from agent.models import ToolEnvelope, ToolResult
 from agent.tools.base import Tool
 
 
@@ -106,7 +106,8 @@ class PluginCommandTool(Tool):
             raise RuntimeError(stderr.decode("utf-8", errors="replace").strip())
 
         content = stdout.decode("utf-8", errors="replace").strip()
-        return ToolResult(call_id=call_id, name=self.name, content=content)
+        envelope = _normalize_plugin_stdout(content)
+        return ToolResult(call_id=call_id, name=self.name, envelope=envelope)
 
     async def run(self, arguments: Any) -> str | dict[str, Any]:
         raise NotImplementedError("PluginCommandTool overrides execute")
@@ -153,3 +154,19 @@ def _safe_part(value: str) -> str:
         else:
             safe.append("_")
     return "".join(safe).strip("_") or "plugin"
+
+
+def _normalize_plugin_stdout(content: str) -> ToolEnvelope:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return ToolEnvelope(status="success", data={}, text=content)
+
+    if isinstance(parsed, dict) and parsed.get("status") in {"success", "partial", "error"}:
+        return ToolEnvelope.model_validate(parsed)
+
+    return ToolEnvelope(
+        status="success",
+        data={"raw": parsed},
+        text=content,
+    )

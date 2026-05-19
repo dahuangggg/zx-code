@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from agent.models import ToolResult
 from agent.mcp import MCPToolDefinition, MCPToolRouter, StdioMCPClient
 from agent.permissions import PermissionManager
 from agent.tools.registry import ToolRegistry
@@ -81,7 +82,35 @@ async def test_mcp_tool_propagates_remote_error_flag() -> None:
     )
 
     assert result.is_error
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "MCP_EXECUTION_ERROR"
     assert result.envelope.data["raw"]["isError"] is True
+
+
+async def test_mcp_tool_wraps_string_output_as_success_text(monkeypatch) -> None:
+    def fail_legacy_coercion(*_args, **_kwargs):
+        raise AssertionError("MCP output must construct ToolResult(envelope=...)")
+
+    monkeypatch.setattr(ToolResult, "_coerce_legacy_result_data", fail_legacy_coercion)
+
+    class _StringMCPClient(_FakeMCPClient):
+        async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+            return "plain mcp output"
+
+    router = MCPToolRouter({"local": _StringMCPClient()})
+    registry = ToolRegistry()
+    for tool in await router.discover_tools():
+        registry.register(tool)
+
+    result = await registry.execute(
+        "mcp__local__echo",
+        {"text": "hello"},
+        call_id="mcp-string",
+    )
+
+    assert not result.is_error
+    assert result.envelope.data == {}
+    assert result.envelope.text == "plain mcp output"
 
 
 async def test_mcp_tool_uses_existing_permission_gate() -> None:
@@ -102,7 +131,9 @@ async def test_mcp_tool_uses_existing_permission_gate() -> None:
     )
 
     assert result.is_error
-    assert "permission denied" in result.content
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "ACCESS_DENIED"
+    assert "permission denied" in result.envelope.text
 
 
 async def test_mcp_tool_uses_registry_approval_without_second_denial() -> None:

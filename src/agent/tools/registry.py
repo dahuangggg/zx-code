@@ -5,12 +5,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
-
 from agent.debuglog import DebugLog
-from agent.models import ToolResult
+from agent.models import ToolEnvelope, ToolError, ToolResult
 from agent.permissions import ApprovalCallback, PermissionManager, maybe_await_bool
-from agent.tools.base import ErrorCode, Tool, build_error_envelope
+from agent.tools.base import ErrorCode, Tool
 from agent.tools.circuit_breaker import RECOVERY_TIMEOUT_S, CircuitBreaker
 
 _WRITE_TOOL_NAMES = frozenset({"write_file", "edit_file"})
@@ -73,16 +71,16 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if tool is None:
             self._debug("tool.registry.unknown", {"tool_name": name, "call_id": call_id})
-            content = build_error_envelope(ErrorCode.NOT_FOUND, f"unknown tool: {name}")
-            return ToolResult(call_id=call_id, name=name, content=content, status="error", is_error=True)
+            return self._error_result(call_id, name, ErrorCode.NOT_FOUND, f"unknown tool: {name}")
 
         # Circuit breaker
         if self._circuit_breaker.is_open(name):
-            content = build_error_envelope(
+            return self._error_result(
+                call_id,
+                name,
                 ErrorCode.CIRCUIT_OPEN,
                 f"Tool '{name}' is temporarily disabled after repeated failures. Retry in {RECOVERY_TIMEOUT_S:.0f}s.",
             )
-            return ToolResult(call_id=call_id, name=name, content=content, status="error", is_error=True)
 
         # Optimistic locking for write tools
         if name in _WRITE_TOOL_NAMES:
@@ -127,11 +125,12 @@ class ToolRegistry:
             return None
         if current_mtime_ms == cached_mtime_ms:
             return None
-        content = build_error_envelope(
+        return self._error_result(
+            call_id,
+            name,
             ErrorCode.CONFLICT,
             f"File '{path_str}' was modified since last read. Re-read before editing.",
         )
-        return ToolResult(call_id=call_id, name=name, content=content, status="error", is_error=True)
 
     def _maybe_cache_read(self, result: ToolResult) -> None:
         if result.is_error:
@@ -159,16 +158,28 @@ class ToolRegistry:
         if check.decision == "allow":
             return None
         if check.decision == "deny":
-            content = build_error_envelope(ErrorCode.ACCESS_DENIED, f"permission denied: {check.reason}")
-            return ToolResult(call_id=call_id, name=name, content=content, status="error", is_error=True)
+            return self._error_result(call_id, name, ErrorCode.ACCESS_DENIED, f"permission denied: {check.reason}")
         if self.approval_callback is None:
-            content = build_error_envelope(ErrorCode.ACCESS_DENIED, f"permission required: {check.reason}")
-            return ToolResult(call_id=call_id, name=name, content=content, status="error", is_error=True)
+            return self._error_result(call_id, name, ErrorCode.ACCESS_DENIED, f"permission required: {check.reason}")
         approved = await maybe_await_bool(self.approval_callback(check))
         if approved:
             return None
-        content = build_error_envelope(ErrorCode.ACCESS_DENIED, f"permission rejected: {check.reason}")
-        return ToolResult(call_id=call_id, name=name, content=content, status="error", is_error=True)
+        return self._error_result(call_id, name, ErrorCode.ACCESS_DENIED, f"permission rejected: {check.reason}")
+
+    @staticmethod
+    def _error_result(call_id: str, name: str, code: ErrorCode, message: str) -> ToolResult:
+        return ToolResult(
+            call_id=call_id,
+            name=name,
+            envelope=ToolEnvelope(
+                status="error",
+                data={},
+                text=message,
+                error=ToolError(code=code.value, message=message),
+                stats={"time_ms": 0},
+                context={"cwd": "."},
+            ),
+        )
 
     def _debug(self, event: str, payload: dict[str, Any]) -> None:
         self._log.event(event, payload)

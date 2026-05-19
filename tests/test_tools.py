@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from agent.models import ToolResult
 from agent.tools import build_default_registry
+from agent.tools.registry import ToolRegistry
 
 
 @pytest.mark.asyncio
@@ -123,8 +125,22 @@ async def test_validation_errors_return_error_status(tmp_path: Path) -> None:
     )
     assert result.is_error
     assert result.status == "error"
-    env = json.loads(result.content)
-    assert env["error"]["code"] == "INVALID_PARAM"
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "INVALID_PARAM"
+
+
+@pytest.mark.asyncio
+async def test_registry_unknown_tool_error_does_not_use_legacy_content(monkeypatch) -> None:
+    def fail_legacy_coercion(*_args, **_kwargs):
+        raise AssertionError("registry errors must construct ToolResult(envelope=...)")
+
+    monkeypatch.setattr(ToolResult, "_coerce_legacy_result_data", fail_legacy_coercion)
+
+    result = await ToolRegistry().execute("missing_tool", {}, call_id="missing-1")
+
+    assert result.is_error
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "NOT_FOUND"
 
 
 # ---------------------------------------------------------------------------
@@ -156,14 +172,14 @@ async def test_circuit_breaker_opens_after_three_failures() -> None:
     for i in range(3):
         result = await registry.execute("always_fail", {}, call_id=f"f{i}")
         assert result.is_error
-        env = json.loads(result.content)
-        assert env["error"]["code"] == "INTERNAL_ERROR", f"call {i} should be INTERNAL_ERROR"
+        assert result.envelope.error is not None
+        assert result.envelope.error.code == "INTERNAL_ERROR", f"call {i} should be INTERNAL_ERROR"
 
     # 4th call: circuit is now open
     result = await registry.execute("always_fail", {}, call_id="f3")
     assert result.is_error
-    env = json.loads(result.content)
-    assert env["error"]["code"] == "CIRCUIT_OPEN"
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "CIRCUIT_OPEN"
 
 
 @pytest.mark.asyncio
@@ -240,8 +256,8 @@ async def test_conflict_detected_when_file_modified_after_read(tmp_path: Path) -
         call_id="edit-1",
     )
     assert edit_result.is_error
-    env = json.loads(edit_result.content)
-    assert env["error"]["code"] == "CONFLICT"
+    assert edit_result.envelope.error is not None
+    assert edit_result.envelope.error.code == "CONFLICT"
     assert file_path.read_text() == "original\n"  # file must be untouched
 
 
@@ -282,5 +298,5 @@ async def test_write_file_conflict_after_read(tmp_path: Path) -> None:
         call_id="write-1",
     )
     assert write_result.is_error
-    env = json.loads(write_result.content)
-    assert env["error"]["code"] == "CONFLICT"
+    assert write_result.envelope.error is not None
+    assert write_result.envelope.error.code == "CONFLICT"

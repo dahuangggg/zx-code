@@ -19,7 +19,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
 from agent.mcp.client import MCPToolDefinition
-from agent.models import ToolResult
+from agent.models import ToolEnvelope, ToolError, ToolResult
 from agent.tools.base import Tool
 
 if TYPE_CHECKING:
@@ -76,20 +76,10 @@ class MCPProxyTool(Tool):
             arguments,
             skip_permission=True,
         )
-        content = output if isinstance(output, str) else json.dumps(
-            output,
-            indent=2,
-            sort_keys=True,
-        )
-        is_error = (
-            isinstance(output, dict)
-            and bool(output.get("isError") or output.get("is_error"))
-        )
         return ToolResult(
             call_id=call_id,
             name=self.name,
-            content=content,
-            is_error=is_error,
+            envelope=_normalize_mcp_output(output),
         )
 
     async def run(self, arguments: Any) -> str | dict[str, Any]:
@@ -216,3 +206,45 @@ def _safe_part(value: str) -> str:
         else:
             safe.append("_")
     return "".join(safe).strip("_") or "tool"
+
+
+def _normalize_mcp_output(output: Any) -> ToolEnvelope:
+    if isinstance(output, str):
+        return ToolEnvelope(status="success", data={}, text=output)
+
+    if isinstance(output, dict):
+        if bool(output.get("isError") or output.get("is_error")):
+            text = _mcp_text(output) or "MCP tool returned an error"
+            return ToolEnvelope(
+                status="error",
+                data={"raw": output},
+                text=text,
+                error=ToolError(code="MCP_EXECUTION_ERROR", message=text),
+                stats={"time_ms": 0},
+                context={"cwd": "."},
+            )
+        return ToolEnvelope(
+            status="success",
+            data={"raw": output},
+            text=_mcp_text(output) or json.dumps(output, ensure_ascii=False, sort_keys=True),
+        )
+
+    return ToolEnvelope(
+        status="success",
+        data={"raw": output},
+        text=str(output),
+    )
+
+
+def _mcp_text(output: dict[str, Any]) -> str:
+    content = output.get("content")
+    if isinstance(content, list):
+        parts = [
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text" and item.get("text")
+        ]
+        return "\n".join(parts)
+    if isinstance(content, str):
+        return content
+    return ""
