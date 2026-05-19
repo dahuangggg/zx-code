@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.models import ToolEnvelope
 from agent.tools.base import Tool
 
 
@@ -29,7 +30,7 @@ class ToolSearchTool(Tool):
     def __init__(self, registry: Any) -> None:
         self.registry = registry
 
-    async def run(self, arguments: ToolSearchInput) -> str:
+    async def run(self, arguments: ToolSearchInput) -> ToolEnvelope:
         schemas = self.registry.schemas()
         matches = self._find_matches(schemas, arguments)
         activated = [self._tool_name(schema) for schema in matches]

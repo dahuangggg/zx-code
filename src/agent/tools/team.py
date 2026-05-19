@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.agents.team import Team
+from agent.models import ToolEnvelope
 from agent.tools.base import ErrorCode, Tool
 
 
@@ -34,7 +35,7 @@ class TeamListTool(Tool):
     def __init__(self, team: Team) -> None:
         self.team = team
 
-    async def run(self, arguments: TeamListParams) -> str:
+    async def run(self, arguments: TeamListParams) -> ToolEnvelope:
         members = self.team.members_summary()
         return self.success(data={"members": members}, text=f"Team has {len(members)} member{'s' if len(members) != 1 else ''}: {', '.join(m.get('name', '?') for m in members)}.")
 
@@ -53,7 +54,7 @@ class TeamDispatchTool(Tool):
         self.team = team
         self.default_timeout_s = default_timeout_s
 
-    async def run(self, arguments: TeamDispatchParams) -> str:
+    async def run(self, arguments: TeamDispatchParams) -> ToolEnvelope:
         timeout_s = arguments.timeout_s or self.default_timeout_s
         self.team.ensure_started()
         try:
@@ -75,7 +76,7 @@ class TeamBroadcastTool(Tool):
     def __init__(self, team: Team) -> None:
         self.team = team
 
-    async def run(self, arguments: TeamBroadcastParams) -> str:
+    async def run(self, arguments: TeamBroadcastParams) -> ToolEnvelope:
         self.team.ensure_started()
         await self.team.broadcast(arguments.content)
         members = self.team.members_summary()

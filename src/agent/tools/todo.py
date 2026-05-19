@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from agent.models import ToolEnvelope
 from agent.state.todo import TodoManager, TodoStatus
 from agent.tools.base import Tool
 
@@ -40,7 +41,7 @@ class TodoCreateTool(Tool):
     def __init__(self, manager: TodoManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: TodoCreateInput) -> str:
+    async def run(self, arguments: TodoCreateInput) -> ToolEnvelope:
         item = self.manager.create(arguments.title, notes=arguments.notes)
         return self.success(
             data=item.model_dump(mode="json"),
@@ -56,7 +57,7 @@ class TodoUpdateTool(Tool):
     def __init__(self, manager: TodoManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: TodoUpdateInput) -> str:
+    async def run(self, arguments: TodoUpdateInput) -> ToolEnvelope:
         item = self.manager.update(
             arguments.todo_id,
             title=arguments.title,
@@ -77,7 +78,7 @@ class TodoCompleteTool(Tool):
     def __init__(self, manager: TodoManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: TodoCompleteInput) -> str:
+    async def run(self, arguments: TodoCompleteInput) -> ToolEnvelope:
         item = self.manager.complete(arguments.todo_id)
         return self.success(
             data=item.model_dump(mode="json"),
@@ -93,10 +94,9 @@ class TodoListTool(Tool):
     def __init__(self, manager: TodoManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: TodoListInput) -> str:
+    async def run(self, arguments: TodoListInput) -> ToolEnvelope:
         items = self.manager.list()
         return self.success(
             data={"todos": [i.model_dump(mode="json") for i in items]},
             text=f"Listed {len(items)} todo item{'s' if len(items) != 1 else ''}.",
         )
-

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from agent.models import ToolEnvelope
 from agent.tools.base import ErrorCode, Tool
 
 
@@ -35,7 +36,7 @@ class ReadFileTool(Tool):
     description = "Read a text file, optionally by line range."
     input_model = ReadFileInput
 
-    async def run(self, arguments: ReadFileInput) -> str:
+    async def run(self, arguments: ReadFileInput) -> ToolEnvelope:
         raw_path = Path(arguments.path).expanduser()
         if raw_path.is_symlink():
             return self.error(code=ErrorCode.ACCESS_DENIED, message=f"refusing to follow symbolic link: {arguments.path}")

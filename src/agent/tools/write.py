@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from agent.models import ToolEnvelope
 from agent.tools.base import ErrorCode, Tool
 
 
@@ -21,7 +22,7 @@ class WriteFileTool(Tool):
     description = "Write or append text content to a file."
     input_model = WriteFileInput
 
-    async def run(self, arguments: WriteFileInput) -> str:
+    async def run(self, arguments: WriteFileInput) -> ToolEnvelope:
         raw_path = Path(arguments.path).expanduser()
         if raw_path.is_symlink():
             return self.error(code=ErrorCode.ACCESS_DENIED, message=f"refusing to follow symbolic link: {arguments.path}")

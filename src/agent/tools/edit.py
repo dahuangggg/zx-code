@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from agent.models import ToolEnvelope
 from agent.tools.base import ErrorCode, Tool
 
 
@@ -22,7 +23,7 @@ class EditFileTool(Tool):
     description = "Replace text in a file."
     input_model = EditFileInput
 
-    async def run(self, arguments: EditFileInput) -> str:
+    async def run(self, arguments: EditFileInput) -> ToolEnvelope:
         raw_path = Path(arguments.path).expanduser()
         if raw_path.is_symlink():
             return self.error(code=ErrorCode.ACCESS_DENIED, message=f"refusing to follow symbolic link: {arguments.path}")

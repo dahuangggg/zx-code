@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.models import ToolEnvelope
 from agent.state.tasks import TaskStore, TaskStatus
 from agent.tools.base import Tool
 
@@ -51,7 +52,7 @@ class TaskCreateTool(Tool):
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    async def run(self, arguments: TaskCreateInput) -> str:
+    async def run(self, arguments: TaskCreateInput) -> ToolEnvelope:
         task = self.store.create(
             arguments.title,
             description=arguments.description,
@@ -71,7 +72,7 @@ class TaskCompleteTool(Tool):
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    async def run(self, arguments: TaskCompleteInput) -> str:
+    async def run(self, arguments: TaskCompleteInput) -> ToolEnvelope:
         task, unlocked = self.store.complete(arguments.task_id, result=arguments.result)
         unlocked_titles = [t.title for t in unlocked]
         unlock_note = f" Unlocked: {', '.join(unlocked_titles)}." if unlocked_titles else ""
@@ -89,7 +90,7 @@ class TaskCancelTool(Tool):
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    async def run(self, arguments: TaskCancelInput) -> str:
+    async def run(self, arguments: TaskCancelInput) -> ToolEnvelope:
         task, unlocked = self.store.cancel(arguments.task_id, result=arguments.result)
         return self.success(
             data={"cancelled": task.model_dump(mode="json"), "unlocked": [t.model_dump(mode="json") for t in unlocked]},
@@ -105,7 +106,7 @@ class TaskUpdateTool(Tool):
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    async def run(self, arguments: TaskUpdateInput) -> str:
+    async def run(self, arguments: TaskUpdateInput) -> ToolEnvelope:
         task = self.store.update_status(arguments.task_id, arguments.status)
         return self.success(
             data=task.model_dump(mode="json"),
@@ -121,7 +122,7 @@ class TaskListTool(Tool):
     def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    async def run(self, arguments: TaskListInput) -> str:
+    async def run(self, arguments: TaskListInput) -> ToolEnvelope:
         tasks = self.store.list()
         if not arguments.include_completed:
             tasks = [task for task in tasks if task.status != "completed"]

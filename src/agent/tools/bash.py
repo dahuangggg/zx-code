@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.models import ToolEnvelope
 from agent.tools.base import ErrorCode, Tool
 
 
@@ -21,7 +22,7 @@ class BashTool(Tool):
     description = "Run a shell command and capture stdout, stderr, and exit code."
     input_model = BashInput
 
-    async def run(self, arguments: BashInput) -> str:
+    async def run(self, arguments: BashInput) -> ToolEnvelope:
         workdir = str(Path(arguments.workdir).resolve()) if arguments.workdir else None
         process = await asyncio.create_subprocess_shell(
             arguments.command,

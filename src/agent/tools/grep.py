@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.models import ToolEnvelope
 from agent.tools.base import ErrorCode, Tool
 
 
@@ -25,7 +26,7 @@ class GrepTool(Tool):
     description = "Search files with ripgrep and return matching lines."
     input_model = GrepInput
 
-    async def run(self, arguments: GrepInput) -> str:
+    async def run(self, arguments: GrepInput) -> ToolEnvelope:
         search_root = Path(arguments.path).expanduser().resolve()
         if not search_root.exists():
             return self.error(code=ErrorCode.NOT_FOUND, message=f"path not found: {arguments.path}")

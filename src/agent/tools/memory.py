@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.models import ToolEnvelope
 from agent.state.memory import MemoryStore
 from agent.tools.base import Tool
 
@@ -38,7 +39,7 @@ class MemoryAppendTool(Tool):
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
 
-    async def run(self, arguments: MemoryAppendInput) -> str:
+    async def run(self, arguments: MemoryAppendInput) -> ToolEnvelope:
         self.store.append(
             arguments.text,
             source=arguments.source,
@@ -48,4 +49,3 @@ class MemoryAppendTool(Tool):
             data={"path": str(self.store.path), "appended": arguments.text, "type": arguments.memory_type},
             text=f"Saved {arguments.memory_type} memory.",
         )
-

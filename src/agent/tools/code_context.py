@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.code_context.indexer import CodeContextIndexer
+from agent.models import ToolEnvelope
 from agent.tools.base import Tool
 
 
@@ -56,7 +57,7 @@ class CodeIndexTool(Tool):
     def __init__(self, indexer: CodeContextIndexer) -> None:
         self.indexer = indexer
 
-    async def run(self, arguments: CodeIndexInput) -> str:
+    async def run(self, arguments: CodeIndexInput) -> ToolEnvelope:
         if arguments.background:
             result = self.indexer.start_background_index(
                 _path_arg(arguments.path),
@@ -84,7 +85,7 @@ class CodeSearchTool(Tool):
     def __init__(self, indexer: CodeContextIndexer) -> None:
         self.indexer = indexer
 
-    async def run(self, arguments: CodeSearchInput) -> str:
+    async def run(self, arguments: CodeSearchInput) -> ToolEnvelope:
         path = _path_arg(arguments.path)
         results = self.indexer.search_code(path, arguments.query, top_k=arguments.top_k)
         status = self.indexer.get_status(path)
@@ -105,7 +106,7 @@ class CodeIndexStatusTool(Tool):
     def __init__(self, indexer: CodeContextIndexer) -> None:
         self.indexer = indexer
 
-    async def run(self, arguments: CodeIndexStatusInput) -> str:
+    async def run(self, arguments: CodeIndexStatusInput) -> ToolEnvelope:
         data = self.indexer.get_status(_path_arg(arguments.path)).model_dump()
         return self.success(data=data, text=f"Index status for '{arguments.path or '.'}': {data.get('status', '?')}.")
 
@@ -121,7 +122,7 @@ class CodeIndexListTool(Tool):
     def __init__(self, indexer: CodeContextIndexer) -> None:
         self.indexer = indexer
 
-    async def run(self, arguments: CodeIndexListInput) -> str:
+    async def run(self, arguments: CodeIndexListInput) -> ToolEnvelope:
         codebases = self.indexer.list_indexes()
         return self.success(data={"codebases": codebases}, text=f"Found {len(codebases)} indexed codebase{'s' if len(codebases) != 1 else ''}.")
 
@@ -137,7 +138,7 @@ class CodeIndexInfoTool(Tool):
     def __init__(self, indexer: CodeContextIndexer) -> None:
         self.indexer = indexer
 
-    async def run(self, arguments: CodeIndexInfoInput) -> str:
+    async def run(self, arguments: CodeIndexInfoInput) -> ToolEnvelope:
         data = self.indexer.get_index_info(_path_arg(arguments.path))
         return self.success(data=data, text=f"Index info for '{arguments.path or '.'}'.")
 
@@ -153,7 +154,7 @@ class CodeIndexClearTool(Tool):
     def __init__(self, indexer: CodeContextIndexer) -> None:
         self.indexer = indexer
 
-    async def run(self, arguments: CodeIndexClearInput) -> str:
+    async def run(self, arguments: CodeIndexClearInput) -> ToolEnvelope:
         data = self.indexer.clear_index(_path_arg(arguments.path)).model_dump()
         return self.success(data=data, text=f"Cleared index for '{arguments.path or '.'}'.")
 

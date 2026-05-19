@@ -4,8 +4,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from agent.tools.base import Tool
 from agent.agents.worktree import WorktreeLease, WorktreeManager
+from agent.models import ToolEnvelope
+from agent.tools.base import Tool
 
 
 class WorktreeCreateInput(BaseModel):
@@ -32,7 +33,7 @@ class WorktreeCreateTool(Tool):
     def __init__(self, manager: WorktreeManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: WorktreeCreateInput) -> str:
+    async def run(self, arguments: WorktreeCreateInput) -> ToolEnvelope:
         lease = self.manager.create(arguments.task_id, base_ref=arguments.base_ref)
         data = lease.model_dump(mode="json")
         return self.success(data=data, text=f"Created worktree for task '{arguments.task_id}' at {data.get('path', '?')} (branch: {data.get('branch', '?')}).")
@@ -46,7 +47,7 @@ class WorktreeCleanupTool(Tool):
     def __init__(self, manager: WorktreeManager) -> None:
         self.manager = manager
 
-    async def run(self, arguments: WorktreeCleanupInput) -> str:
+    async def run(self, arguments: WorktreeCleanupInput) -> ToolEnvelope:
         lease = WorktreeLease(
             task_id=arguments.task_id,
             branch=arguments.branch,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.agents.subagent import SubagentRunner
+from agent.models import ToolEnvelope
 from agent.tools.base import Tool
 
 
@@ -23,7 +24,7 @@ class SubagentRunTool(Tool):
     def __init__(self, runner: SubagentRunner) -> None:
         self.runner = runner
 
-    async def run(self, arguments: SubagentRunParams) -> str:
+    async def run(self, arguments: SubagentRunParams) -> ToolEnvelope:
         result = await self.runner.run(arguments.task, label=arguments.label)
         data = result.model_dump(mode="json")
         summary = str(data.get("summary") or data.get("output") or "Subagent completed.")[:200]

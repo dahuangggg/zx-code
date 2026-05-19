@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.models import ToolEnvelope
 from agent.state.skills import SkillStore
 from agent.tools.base import Tool
 
@@ -21,7 +22,7 @@ class LoadSkillTool(Tool):
     def __init__(self, store: SkillStore) -> None:
         self.store = store
 
-    async def run(self, arguments: LoadSkillInput) -> str:
+    async def run(self, arguments: LoadSkillInput) -> ToolEnvelope:
         document = self.store.load(arguments.name)
         content = document.content
         truncated = len(content) > arguments.max_chars
