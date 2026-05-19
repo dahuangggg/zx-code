@@ -1,3 +1,8 @@
+"""CodeContext 搜索排序与融合。
+
+keyword_search() 提供内存 BM25 风格检索；rrf_fuse() 用 Reciprocal Rank Fusion
+融合向量结果和关键词结果，避免直接比较两种不同分数尺度。
+"""
 from __future__ import annotations
 
 import math
@@ -12,6 +17,7 @@ def keyword_search(
     *,
     limit: int,
 ) -> list[CodeSearchResult]:
+    """对传入文档集合执行关键词检索，返回带 keyword_rank 的结果。"""
     query_terms = _tokenize(query)
     if not query_terms or not documents:
         return []
@@ -55,6 +61,7 @@ def rrf_fuse(
     limit: int,
     k: int = 60,
 ) -> list[CodeSearchResult]:
+    """用 RRF 融合多个已排序结果列表，并合并同一代码范围的命中来源。"""
     by_key: dict[tuple[str, int, int], CodeSearchResult] = {}
     scores: dict[tuple[str, int, int], float] = {}
     for ranked in ranked_lists:
@@ -71,10 +78,12 @@ def rrf_fuse(
 
 
 def _result_key(result: CodeSearchResult) -> tuple[str, int, int]:
+    """同一路径和同一行范围视为同一个检索结果。"""
     return (result.relative_path, result.start_line, result.end_line)
 
 
 def _merge_results(left: CodeSearchResult, right: CodeSearchResult) -> CodeSearchResult:
+    """合并向量/关键词重复命中的元数据，保留最好的 rank。"""
     matched_by = [*left.matched_by]
     for channel in right.matched_by:
         if channel not in matched_by:
@@ -97,4 +106,5 @@ def _merge_results(left: CodeSearchResult, right: CodeSearchResult) -> CodeSearc
 
 
 def _tokenize(text: str) -> list[str]:
+    """排序阶段使用的轻量 token 化。"""
     return re.findall(r"[a-z0-9_]+", text.lower())

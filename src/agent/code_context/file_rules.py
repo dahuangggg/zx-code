@@ -1,3 +1,8 @@
+"""CodeContext 文件发现规则。
+
+iter_code_files() 决定哪些源码会进入索引：先解析代码库根目录，再合并默认忽略规则、
+.gitignore/.*ignore 和用户传入规则，最后按扩展名筛选普通文件。
+"""
 from __future__ import annotations
 
 import fnmatch
@@ -83,6 +88,7 @@ DEFAULT_IGNORE_PATTERNS = {
 
 
 def resolve_codebase_path(path: str | Path | None) -> Path:
+    """把空 path 解析为 cwd，其他 path 展开为绝对路径。"""
     if path is None or str(path).strip() == "":
         return Path.cwd().resolve()
     return Path(path).expanduser().resolve()
@@ -93,6 +99,7 @@ def load_ignore_patterns(
     *,
     custom_ignore_patterns: list[str] | set[str] | None = None,
 ) -> list[str]:
+    """加载默认忽略规则、仓库 ignore 文件和用户自定义规则。"""
     root = Path(codebase_path)
     patterns = set(DEFAULT_IGNORE_PATTERNS)
     if custom_ignore_patterns:
@@ -117,6 +124,7 @@ def iter_code_files(
     custom_extensions: set[str] | list[str] | None = None,
     custom_ignore_patterns: list[str] | set[str] | None = None,
 ) -> list[Path]:
+    """返回应进入 CodeContext 索引的源码文件列表。"""
     root = Path(codebase_path).resolve()
     extensions = set(supported_extensions or DEFAULT_SUPPORTED_EXTENSIONS)
     if custom_extensions:
@@ -142,6 +150,7 @@ def iter_code_files(
 
 
 def _normalize_extensions(extensions: set[str] | list[str]) -> set[str]:
+    """把 py/js 这类扩展名规范化为 .py/.js。"""
     normalized: set[str] = set()
     for extension in extensions:
         value = extension.strip()
@@ -152,6 +161,7 @@ def _normalize_extensions(extensions: set[str] | list[str]) -> set[str]:
 
 
 def _is_ignored(relative_path: str, patterns: list[str]) -> bool:
+    """用 gitignore 风格的简单 glob 判断相对路径是否应跳过。"""
     parts = relative_path.split("/")
     candidates = [relative_path, Path(relative_path).name, *parts]
     for pattern in patterns:

@@ -1,3 +1,9 @@
+"""CodeContext 索引器。
+
+CodeContextIndexer 负责完整索引生命周期：扫描文件、计算哈希、增量切块、写入
+Chroma、重建关键词索引、维护 snapshot/status、后台任务和取消信号。它不处理模型
+消息，也不持久化 Memory。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -32,10 +38,14 @@ INDEX_LOCK_STALE_SECONDS = 10 * 60
 
 
 class IndexCancelled(RuntimeError):
+    """索引任务收到取消信号时抛出的内部异常。"""
+
     pass
 
 
 class CodeContextIndexer:
+    """代码库索引和检索的协调器。"""
+
     def __init__(
         self,
         *,
@@ -160,6 +170,7 @@ class CodeContextIndexer:
         return self.get_status(root)
 
     async def wait_background_index(self, path: str | Path | None = None) -> None:
+        """等待某个代码库的后台索引任务完成；没有任务则立即返回。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
         task = self._background_tasks.get(codebase_id)
@@ -167,6 +178,7 @@ class CodeContextIndexer:
             await task
 
     def cancel_index(self, path: str | Path | None = None) -> CodeIndexStatus:
+        """设置取消信号；正在运行的索引会在下一个检查点退出。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
         self._cancel_event_for(codebase_id).set()
@@ -228,6 +240,7 @@ class CodeContextIndexer:
         return sorted(deduped, key=lambda item: item.score, reverse=True)
 
     def get_status(self, path: str | Path | None = None) -> CodeIndexStatus:
+        """读取代码库当前索引状态，优先使用 status 文件，其次使用 snapshot。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
         snapshot = self._load_snapshot(codebase_id)
@@ -269,6 +282,7 @@ class CodeContextIndexer:
         )
 
     def list_indexes(self) -> list[dict[str, Any]]:
+        """列出 snapshot_dir 中已知的所有代码库索引。"""
         if not self.snapshot_dir.exists():
             return []
         entries: list[dict[str, Any]] = []
@@ -293,6 +307,7 @@ class CodeContextIndexer:
         return entries
 
     def get_index_info(self, path: str | Path | None = None) -> dict[str, Any]:
+        """返回单个代码库的状态、collection 和索引规则元数据。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
         status = self.get_status(root).model_dump()
@@ -306,6 +321,7 @@ class CodeContextIndexer:
         }
 
     def clear_index(self, path: str | Path | None = None) -> CodeClearResult:
+        """清理向量索引、snapshot、status 和关键词索引。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
         self.cancel_index(root)
@@ -348,6 +364,7 @@ class CodeContextIndexer:
         custom_extensions: list[str] | set[str] | None = None,
         ignore_patterns: list[str] | set[str] | None = None,
     ) -> CodeIndexStats:
+        """持有进程内锁和文件锁后的实际索引实现。"""
         codebase_id = codebase_hash(root)
         self._check_cancelled(codebase_id)
         old_snapshot = self._load_snapshot(codebase_id)
@@ -488,6 +505,7 @@ class CodeContextIndexer:
         )
 
     def _lock_for(self, codebase_id: str) -> threading.RLock:
+        """返回进程内 per-codebase 锁，避免同进程并发写同一 snapshot。"""
         with self._state_lock:
             lock = self._codebase_locks.get(codebase_id)
             if lock is None:
@@ -496,6 +514,7 @@ class CodeContextIndexer:
             return lock
 
     def _cancel_event_for(self, codebase_id: str) -> threading.Event:
+        """返回 per-codebase 取消事件。"""
         with self._state_lock:
             event = self._cancel_events.get(codebase_id)
             if event is None:
@@ -504,11 +523,13 @@ class CodeContextIndexer:
             return event
 
     def _check_cancelled(self, codebase_id: str) -> None:
+        """在长循环中检查取消信号。"""
         event = self._cancel_events.get(codebase_id)
         if event is not None and event.is_set():
             raise IndexCancelled()
 
     def _index_file_lock(self, codebase_id: str) -> "_IndexFileLock":
+        """返回跨进程文件锁，避免多个进程同时索引同一代码库。"""
         return _IndexFileLock(self.snapshot_dir / "locks" / f"{codebase_id}.lock")
 
     def _snapshot_path(self, codebase_id: str) -> Path:
@@ -536,6 +557,7 @@ class CodeContextIndexer:
         self._write_json(self._status_path(codebase_id), codebase_id, status)
 
     def _write_json(self, path: Path, codebase_id: str, payload: dict[str, Any]) -> None:
+        """原子写 snapshot/status JSON，避免崩溃留下损坏文件。"""
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         fd, tmp_path = tempfile.mkstemp(dir=self.snapshot_dir, prefix=f".tmp.{codebase_id}.", suffix=".json")
@@ -578,6 +600,7 @@ class CodeContextIndexer:
 
 
 def codebase_hash(path: str | Path) -> str:
+    """把绝对代码库路径映射成短 id。"""
     # 用 MD5 前 12 位作为代码库 ID：不用于安全目的，仅作路径唯一标识，12 位碰撞概率可接受
     return hashlib.md5(str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
 
@@ -633,6 +656,8 @@ def _find_overlapping_result(
 
 
 class _IndexFileLock:
+    """基于目录创建的跨进程锁；过期锁会被清理后重试。"""
+
     def __init__(self, path: Path, *, stale_seconds: int = INDEX_LOCK_STALE_SECONDS) -> None:
         self.path = path
         self.stale_seconds = stale_seconds

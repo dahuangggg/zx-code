@@ -1,3 +1,8 @@
+"""CodeContext 本地关键词索引。
+
+SparseKeywordIndex 把每个代码库的 chunk 以 JSON 文件保存成 BM25 风格倒排统计。
+它是 Chroma 向量检索的补充：向量适合语义相近，关键词适合精确符号/文件名片段。
+"""
 from __future__ import annotations
 
 import json
@@ -12,10 +17,13 @@ from agent.code_context.models import CodeSearchResult
 
 
 class SparseKeywordIndex:
+    """按 codebase_id 维护一个轻量 JSON 关键词索引。"""
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path).expanduser()
 
     def replace_codebase(self, codebase_id: str, documents: list[CodeSearchResult]) -> None:
+        """用当前代码库的完整文档集合替换旧关键词索引。"""
         entries: list[dict[str, Any]] = []
         df: dict[str, int] = {}
         for document in documents:
@@ -52,14 +60,17 @@ class SparseKeywordIndex:
         self._write_json(self._path_for(codebase_id), payload)
 
     def delete_codebase(self, codebase_id: str) -> None:
+        """删除某个代码库的关键词索引文件。"""
         path = self._path_for(codebase_id)
         if path.exists():
             path.unlink()
 
     def exists(self, codebase_id: str) -> bool:
+        """判断某个代码库是否已有关键词索引。"""
         return self._path_for(codebase_id).exists()
 
     def search(self, codebase_id: str, query: str, *, limit: int) -> list[CodeSearchResult]:
+        """执行 BM25 风格关键词检索，返回带 keyword_rank 的结果。"""
         if limit <= 0:
             return []
         query_terms = _tokenize(query)
@@ -111,6 +122,7 @@ class SparseKeywordIndex:
         ]
 
     def _path_for(self, codebase_id: str) -> Path:
+        """返回 codebase_id 对应的 JSON 索引文件路径。"""
         return self.path / f"{codebase_id}.json"
 
     def _load_json(self, path: Path) -> dict[str, Any]:
@@ -119,6 +131,7 @@ class SparseKeywordIndex:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
+        """原子写 JSON，避免进程中断留下半截索引文件。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".tmp.{path.stem}.", suffix=".json")
@@ -137,4 +150,5 @@ class SparseKeywordIndex:
 
 
 def _tokenize(text: str) -> list[str]:
+    """关键词索引用的简单 token 化，偏向代码标识符和英文单词。"""
     return re.findall(r"[a-z0-9_]+", text.lower())

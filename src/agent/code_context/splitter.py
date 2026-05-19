@@ -1,3 +1,8 @@
+"""CodeContext 文件切块逻辑。
+
+Python 文件优先按顶层 class/function/async function 切块，保留 symbol 名称；其他
+语言按行数和字符预算切块，并保留少量行重叠，提升跨边界搜索命中率。
+"""
 from __future__ import annotations
 
 import ast
@@ -31,6 +36,7 @@ def split_file(
     max_chars: int = 1800,
     overlap_lines: int = 2,
 ) -> list[CodeChunk]:
+    """读取单个文件并切成 CodeChunk。"""
     file_path = Path(path)
     root = Path(codebase_path).resolve()
     text = file_path.read_text(encoding="utf-8", errors="replace")
@@ -56,6 +62,7 @@ def _split_python(
     *,
     max_chars: int,
 ) -> list[CodeChunk]:
+    """按 Python AST 顶层定义切块；语法错误时返回空让调用方走行切块。"""
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -103,6 +110,7 @@ def _split_lines(
     overlap_lines: int,
     start_line_offset: int = 0,
 ) -> list[CodeChunk]:
+    """通用行切块，按 max_chars 控制片段大小并保留 overlap。"""
     lines = text.splitlines()
     if not lines:
         return []

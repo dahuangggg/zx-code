@@ -1,3 +1,8 @@
+"""CodeContext 的 Chroma 持久化适配层。
+
+ChromaCodeStore 只负责向量库读写和 metadata 转换。增量判断、文件扫描、chunk id
+生成、稀疏索引和结果融合都在 indexer/ranker 中完成。
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +14,8 @@ from agent.code_context.models import CodeChunk, CodeSearchResult
 
 
 class ChromaCodeStore:
+    """以 codebase_id 隔离多代码库的 Chroma collection。"""
+
     def __init__(
         self,
         *,
@@ -26,6 +33,7 @@ class ChromaCodeStore:
         self._collection = self._client.get_or_create_collection(**kwargs)
 
     def upsert_chunks(self, chunks: list[CodeChunk]) -> None:
+        """把 chunk 内容和 metadata 写入 Chroma。"""
         if not chunks:
             return
         self._collection.upsert(
@@ -35,6 +43,7 @@ class ChromaCodeStore:
         )
 
     def delete_ids(self, ids: list[str]) -> int:
+        """按 chunk id 删除向量，返回请求删除的有效 id 数量。"""
         safe_ids = [item for item in ids if item]
         if not safe_ids:
             return 0
@@ -42,14 +51,17 @@ class ChromaCodeStore:
         return len(safe_ids)
 
     def delete_codebase(self, codebase_id: str) -> int:
+        """删除某个代码库所有向量。"""
         ids = self.ids_for_codebase(codebase_id)
         return self.delete_ids(ids)
 
     def ids_for_codebase(self, codebase_id: str) -> list[str]:
+        """查询某个代码库在 collection 中的所有 chunk id。"""
         result = self._collection.get(where={"codebase_id": codebase_id})
         return list(result.get("ids", []))
 
     def documents_for_codebase(self, codebase_id: str) -> list[CodeSearchResult]:
+        """导出某个代码库的所有文档，供 SparseKeywordIndex 重建。"""
         result = self._collection.get(
             where={"codebase_id": codebase_id},
             include=["documents", "metadatas"],
@@ -70,6 +82,7 @@ class ChromaCodeStore:
         query: str,
         top_k: int,
     ) -> list[CodeSearchResult]:
+        """执行向量检索，并把 Chroma distance 转成越大越好的 score。"""
         if top_k <= 0:
             return []
         result = self._collection.query(
@@ -90,6 +103,7 @@ class ChromaCodeStore:
 
 
 def _metadata(chunk: CodeChunk) -> dict[str, str | int]:
+    """把 CodeChunk 转成 Chroma metadata 支持的标量 dict。"""
     return {
         "codebase_id": chunk.codebase_id,
         "codebase_path": chunk.codebase_path,
@@ -104,6 +118,7 @@ def _metadata(chunk: CodeChunk) -> dict[str, str | int]:
 
 
 def _to_search_result(document: Any, metadata: dict[str, Any], *, score: float) -> CodeSearchResult:
+    """把 Chroma document/metadata 转回内部搜索结果模型。"""
     return CodeSearchResult(
         relative_path=str(metadata.get("relative_path", "")),
         start_line=int(metadata.get("start_line", 1)),
@@ -115,12 +130,15 @@ def _to_search_result(document: Any, metadata: dict[str, Any], *, score: float) 
 
 
 def _wrap_embedding_function(embedding_function: Any | None) -> Any | None:
+    """兼容不同版本 Chroma 对 embedding function 接口的要求。"""
     if embedding_function is None:
         return None
     if hasattr(embedding_function, "name"):
         return embedding_function
 
     class _CompatibleEmbeddingFunction:
+        """把简单 callable 包装成 Chroma 期望的 embedding function 形状。"""
+
         def __call__(self, input):
             return embedding_function(input)
 
