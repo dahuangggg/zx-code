@@ -25,6 +25,12 @@ StreamHandler = Callable[[str], Awaitable[None] | None]
 
 
 class ModelClient(Protocol):
+    """主循环调用模型的唯一接口。
+
+    实现方负责把内部 Message/Tool schema 转换成具体 SDK 请求，并把 SDK 返回统一
+    规范化成 ModelTurn。loop.py 只依赖这个协议，不感知 OpenAI 或其他供应商细节。
+    """
+
     async def run_turn(
         self,
         *,
@@ -34,4 +40,3 @@ class ModelClient(Protocol):
         stream_handler: StreamHandler | None = None,
     ) -> ModelTurn:
         ...
-

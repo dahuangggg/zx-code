@@ -21,6 +21,7 @@ from agent.providers.base import StreamHandler
 
 
 def _parse_arguments(raw_arguments: Any) -> dict[str, Any]:
+    """把 SDK 返回的 tool arguments 规范化成 dict。"""
     if raw_arguments in (None, ""):
         return {}
     if isinstance(raw_arguments, dict):
@@ -31,6 +32,7 @@ def _parse_arguments(raw_arguments: Any) -> dict[str, Any]:
 
 
 def _extract_usage(usage: Any) -> TokenUsage | None:
+    """从 OpenAI usage 对象中抽取统一 TokenUsage。"""
     if usage is None:
         return None
     prompt = getattr(usage, "prompt_tokens", 0) or 0
@@ -48,6 +50,7 @@ def _extract_usage(usage: Any) -> TokenUsage | None:
 
 
 async def _maybe_await(value: Any) -> None:
+    """支持同步或异步 stream_handler。"""
     if value is None:
         return
     if hasattr(value, "__await__"):
@@ -59,6 +62,12 @@ _CLIENT_KWARGS = {"base_url", "organization", "timeout", "max_retries", "default
 
 
 class OpenAIModelClient:
+    """基于 openai Python SDK 的 ModelClient 实现。
+
+    当前请求形状是 Chat Completions 风格：messages + tools + optional stream。
+    这个类的边界是 SDK 适配层：外部只看 ModelTurn，raw response 只写入 debug trace。
+    """
+
     def __init__(
         self,
         *,
@@ -81,6 +90,7 @@ class OpenAIModelClient:
         self._client: Any = None
 
     def _get_client(self) -> Any:
+        """延迟创建 AsyncOpenAI，避免测试或 dry-run 时提前要求真实 API 配置。"""
         if self._client is None:
             from openai import AsyncOpenAI
 
@@ -100,6 +110,11 @@ class OpenAIModelClient:
         tools: list[dict[str, Any]],
         stream_handler: StreamHandler | None = None,
     ) -> ModelTurn:
+        """调用一次模型，并把响应规范化成 ModelTurn。
+
+        非流式路径记录 model.response.raw；流式路径只记录聚合摘要，避免每个 chunk
+        都写 debug log 造成日志膨胀。
+        """
         client = self._get_client()
         payload_messages = self._build_messages(system_prompt, messages)
 
@@ -151,6 +166,11 @@ class OpenAIModelClient:
         system_prompt: str,
         messages: Sequence[Message],
     ) -> list[dict[str, Any]]:
+        """把内部 Message 列表转换为 OpenAI Chat Completions messages。
+
+        ContextGuard 生成的 compaction system summary 会和主 system prompt 合并成第一条
+        system 消息；tool 消息必须保留 tool_call_id，以满足 OpenAI 的配对要求。
+        """
         payload: list[dict[str, Any]] = []
 
         compaction_summaries = [m.content for m in messages if m.role == "system" and m.content]
@@ -185,6 +205,7 @@ class OpenAIModelClient:
 
     @staticmethod
     def _normalize_tool_calls(raw_calls: Any) -> list[ToolCall]:
+        """把非流式响应里的 SDK tool_calls 转成内部 ToolCall。"""
         if not raw_calls:
             return []
         normalized: list[ToolCall] = []
@@ -202,6 +223,11 @@ class OpenAIModelClient:
         stream: Any,
         stream_handler: StreamHandler,
     ) -> ModelTurn:
+        """消费流式响应，累积文本、tool call 参数片段和 usage。
+
+        OpenAI 流式 tool_call arguments 会分片返回，所以这里按 index 聚合 name/id/
+        arguments，流结束后再解析 JSON。
+        """
         text_parts: list[str] = []
         raw_tool_calls: dict[int, dict[str, Any]] = {}
         chunk_count = 0
