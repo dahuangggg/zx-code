@@ -394,7 +394,6 @@ def _build_runtime(
         "context_guard": ContextGuard(
             max_tokens=effective_settings.context.max_tokens,
             keep_recent=effective_settings.context.keep_recent,
-            tool_result_max_chars=effective_settings.context.tool_result_max_chars,
             compact_model=effective_settings.context.compact_model,
             model=effective_settings.model.name,
             summary_client=ModelSummaryClient(summary_model_client),

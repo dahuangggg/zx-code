@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from time import monotonic
 from typing import Any
 
@@ -61,6 +62,18 @@ class _UnsafeTool(Tool):
         return parsed.label
 
 
+class _LargeOutputTool(Tool):
+    name = "large_output"
+    description = "A tool that returns a large envelope payload."
+    input_model = _Input
+
+    async def run(self, arguments: BaseModel) -> str:
+        return self.success(
+            data={"content": "\n".join(str(index) for index in range(100))},
+            text="large output",
+        )
+
+
 @pytest.mark.asyncio
 async def test_tool_call_executor_runs_hooks_and_denies_before_registry() -> None:
     registry = ToolRegistry()
@@ -113,3 +126,31 @@ async def test_tool_call_executor_batches_concurrency_safe_calls_in_order() -> N
         "post_tool_use",
         "post_tool_use",
     ]
+
+
+@pytest.mark.asyncio
+async def test_tool_call_executor_centralizes_large_output_truncation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("agent.tools.truncator._MAX_LINES", 5)
+    monkeypatch.setattr("agent.tools.truncator._MAX_BYTES", 99999)
+    registry = ToolRegistry()
+    registry.register(_LargeOutputTool())
+    executor = ToolCallExecutor(
+        tool_registry=registry,
+        hook_runner=_RecordingHooks(),
+        session_id="session-1",
+        project_root=tmp_path,
+    )
+
+    results, _ = await executor.execute_many(
+        [ToolCall(id="call-1", name="large_output", arguments={"label": "x"})]
+    )
+
+    envelope = json.loads(results[0].content)
+    assert results[0].status == "partial"
+    assert envelope["status"] == "partial"
+    assert envelope["data"]["truncated"] is True
+    assert envelope["data"]["truncation"]["original_lines"] == 100
+    assert envelope["data"]["truncation"]["full_output_path"].startswith("tool-output/")

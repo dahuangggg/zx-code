@@ -10,14 +10,13 @@ def _run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
-def test_context_guard_truncates_large_tool_results() -> None:
-    guard = ContextGuard(max_tokens=250, tool_result_max_chars=10)
+def test_context_guard_preserves_tool_results_for_unified_truncator() -> None:
+    guard = ContextGuard(max_tokens=250)
     messages = [Message.tool("call-1", "read_file", "x" * 40)]
 
     prepared = _run(guard.prepare(messages))
 
-    assert "tool result truncated" in prepared[0].content
-    assert len(prepared[0].content) < 80
+    assert prepared[0].content == "x" * 40
 
 
 def test_context_guard_compacts_old_history() -> None:

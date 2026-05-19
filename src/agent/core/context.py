@@ -1,12 +1,6 @@
 """core.context — 上下文窗口管理与历史压缩（s06）。
 
-ContextGuard 在每次 LLM 调用前被调用（``prepare()``），执行两个任务：
-
-1. **截断超大工具结果**
-   单条工具输出超过 ``tool_result_max_chars`` 时截断，附上省略字节数提示。
-   这是轻量级保护，不影响历史结构。
-
-2. **历史压缩（Compact）**
+ContextGuard 在每次 LLM 调用前被调用（``prepare()``），执行历史压缩（Compact）：
    总 token 超过 ``max_tokens`` 时触发：
    - 保留最近 ``keep_recent`` 条消息的原文（近场保留）
    - 对更早的消息生成摘要（远程压缩），策略优先级：
@@ -157,7 +151,6 @@ class ModelSummaryClient:
 class ContextGuard:
     max_tokens: int = 12000
     keep_recent: int = 6
-    tool_result_max_chars: int = 6000
     summary_entry_chars: int = 240
     compact_model: str = ""
     model: str = ""
@@ -166,30 +159,11 @@ class ContextGuard:
 
     async def prepare(self, messages: list[Message]) -> list[Message]:
         """主入口：在每次 LLM 调用前对消息列表做预算控制，返回可直接送模型的副本。"""
-        # 两步式预算控制：先做廉价的单条截断，仍超预算才走昂贵的 LLM 摘要
-        current = self.truncate_large_tool_results(messages)
-        if _total_tokens(current, self.model) <= self.max_tokens:
-            return current
-        return await self.compact_history(current)
-
-    def truncate_large_tool_results(self, messages: list[Message]) -> list[Message]:
-        """对单条超长的 tool 消息做硬截断，附上省略字节数提示；不改变消息总数。"""
-        truncated: list[Message] = []
-        for message in messages:
-            if (
-                message.role == "tool"
-                and self.tool_result_max_chars > 0
-                and len(message.content) > self.tool_result_max_chars
-            ):
-                omitted = len(message.content) - self.tool_result_max_chars
-                content = (
-                    message.content[: self.tool_result_max_chars]
-                    + f"\n\n[tool result truncated, omitted {omitted} chars]"
-                )
-                truncated.append(message.model_copy(update={"content": content}))
-            else:
-                truncated.append(message)
-        return truncated
+        # Tool output truncation is centralized in ObservationTruncator at tool
+        # execution time. ContextGuard only decides whether history needs compacting.
+        if _total_tokens(messages, self.model) <= self.max_tokens:
+            return messages
+        return await self.compact_history(messages)
 
     async def compact_history(self, messages: list[Message]) -> list[Message]:
         """把"远端旧消息"摘要为一条 system 消息 + "近端消息"原样保留，整体替换历史。"""
