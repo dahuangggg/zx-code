@@ -85,7 +85,11 @@ class Message(BaseModel):
 
 
 class ToolError(BaseModel):
-    """结构化工具错误载荷。"""
+    """结构化工具错误载荷。
+
+    这个对象只在 ToolEnvelope.status == "error" 时出现。code 面向程序分支
+    和测试断言，message 面向模型与 trace 阅读者。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -94,7 +98,18 @@ class ToolError(BaseModel):
 
 
 class ToolEnvelope(BaseModel):
-    """工具返回给模型的统一信封。"""
+    """工具返回协议的唯一规范格式。
+
+    ToolEnvelope 是会进入 role="tool" 消息的内层协议。调用链外层仍然需要
+    ToolResult 保存 call_id/name，用来和模型发出的 tool_call 精确配对。
+
+    字段分工：
+      data    — 机器可读结果，供后续工具、测试和 trace 解析。
+      text    — 给模型看的简短自然语言摘要，尤其适合终端输出或错误说明。
+      error   — 仅 error 状态存在，提供稳定错误码。
+      stats   — 执行耗时、计数等运行时统计，不应影响业务语义。
+      context — cwd、原始参数、文件 mtime 等运行上下文，不应替代 data。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -107,6 +122,7 @@ class ToolEnvelope(BaseModel):
 
     @model_validator(mode="after")
     def validate_error_payload(self) -> "ToolEnvelope":
+        """保持 status 和 error 的一一对应，避免出现半错误状态。"""
         if self.status == "error" and self.error is None:
             raise ValueError("error status requires error payload")
         if self.status != "error" and self.error is not None:
@@ -115,7 +131,15 @@ class ToolEnvelope(BaseModel):
 
 
 class ToolResult(BaseModel):
-    """工具执行完毕后的结果，可用 to_message() 转回 tool 角色的 Message。"""
+    """一次工具调用的外层结果。
+
+    ToolResult 不再承载业务协议；业务结果统一在 envelope 里。它保留 call_id
+    和 name，是为了满足 OpenAI tool message 必须按 tool_call_id 回填的约束，
+    也让 debug trace 能定位是哪一次调用产生了这个 envelope。
+
+    content/status/is_error 是兼容属性，给旧代码和测试平滑迁移使用。新代码应优先
+    读取 result.envelope。
+    """
 
     model_config = ConfigDict(extra="forbid")
     _PROTOCOL_STATUSES: ClassVar[frozenset[str]] = frozenset({"success", "partial", "error"})
@@ -126,6 +150,13 @@ class ToolResult(BaseModel):
 
     @classmethod
     def _coerce_legacy_result_data(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """把旧的 content/status/is_error 构造方式规范化为 envelope。
+
+        插件、MCP 以及部分历史测试曾经直接构造 ToolResult(content=...)。这里不能
+        简单把任意 JSON dict 当成协议，否则插件返回 {"foo": "bar"} 会被 Pydantic
+        当作非法 ToolEnvelope。只有带合法 status 的 dict 才按协议解析；其他 dict
+        放入 data.raw，并保留原始文本给模型读取。
+        """
         existing_envelope = value.get("envelope")
         if isinstance(existing_envelope, ToolEnvelope):
             envelope_data: dict[str, Any] = existing_envelope.model_dump()
@@ -208,6 +239,12 @@ class ToolResult(BaseModel):
         update: Mapping[str, Any] | None = None,
         deep: bool = False,
     ) -> "ToolResult":
+        """重新校验 copy(update=...)，防止旧字段绕过 extra="forbid"。
+
+        Pydantic 的默认 model_copy(update=...) 不会重新验证 update 内容。旧调用如果
+        传入 content/status/is_error，可能在对象上生成影子字段；这里统一走
+        model_validate，让兼容转换仍然生效。
+        """
         if update is None:
             return super().model_copy(update=update, deep=deep)
         data = self.model_dump()
@@ -216,6 +253,7 @@ class ToolResult(BaseModel):
 
     @property
     def content(self) -> str:
+        """兼容旧 provider/message 路径的字符串载荷。"""
         return self.envelope.model_dump_json(exclude_none=True)
 
     @property
@@ -227,6 +265,7 @@ class ToolResult(BaseModel):
         return self.envelope.status == "error"
 
     def to_message(self) -> Message:
+        """转换成 role="tool" 消息，content 内放完整 ToolEnvelope JSON。"""
         return Message.tool(
             tool_call_id=self.call_id,
             name=self.name,

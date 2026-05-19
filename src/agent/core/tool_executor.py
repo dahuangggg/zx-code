@@ -1,4 +1,8 @@
-"""core.tool_executor — tool call lifecycle execution."""
+"""core.tool_executor — 执行模型请求的工具调用。
+
+本模块连接 LLM tool_call、ToolRegistry、hook、进度事件、截断和 debug trace。
+它不理解具体工具的业务语义，只维护调用顺序、call_id 对齐和失败隔离。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -16,12 +20,18 @@ from agent.tools.truncator import ObservationTruncator
 
 
 class ToolHookRunner(Protocol):
+    """ToolCallExecutor 需要的 hook runner 最小接口。"""
+
     async def run(self, event: str, payload: dict) -> HookResult:
         ...
 
 
 class ToolCallExecutor:
-    """Execute tool calls with hooks and concurrency-safe batching."""
+    """执行一轮模型返回的 tool calls。
+
+    execute_many() 保证返回结果顺序和输入 calls 顺序一致。即使部分工具被 hook
+    拒绝，或部分工具并发执行，最终 role="tool" 消息仍能按 call_id 精确回填给模型。
+    """
 
     def __init__(
         self,
@@ -52,6 +62,7 @@ class ToolCallExecutor:
         safe_batch: list[tuple[int, ToolCall]] = []
 
         async def flush_safe_batch() -> None:
+            """并发执行已收集的安全工具，并把结果写回原始位置。"""
             if not safe_batch:
                 return
             batch = list(safe_batch)
@@ -91,6 +102,8 @@ class ToolCallExecutor:
                 session_id=self.session_id,
             )
             if hook_result.denied:
+                # hook deny 是执行链外部拒绝，不经过具体 Tool.run()，因此这里直接
+                # 构造 error envelope，仍然保持 ToolResult 的 call_id/name 配对。
                 await flush_safe_batch()
                 await self._emit_progress(
                     "tool.start",
@@ -146,6 +159,7 @@ class ToolCallExecutor:
         return results, metrics  # type: ignore[return-value]
 
     async def _run_pre_hook(self, call: ToolCall) -> HookResult:
+        """运行 pre_tool_use hook；hook 可以拒绝本次工具调用。"""
         return await self.hook_runner.run(
             "pre_tool_use",
             {
@@ -157,6 +171,7 @@ class ToolCallExecutor:
         )
 
     async def _run_post_hook(self, call: ToolCall, result: ToolResult) -> None:
+        """运行 post_tool_use hook，并保留旧 hook payload 的 result 字符串。"""
         await self.hook_runner.run(
             "post_tool_use",
             {
@@ -179,6 +194,11 @@ class ToolCallExecutor:
         )
 
     async def _execute_allowed(self, call: ToolCall) -> ToolResult:
+        """执行已通过 hook/权限入口的工具，并完成截断与 trace。
+
+        ToolRegistry 返回完整 ToolEnvelope；ObservationTruncator 只在过大时替换成
+        partial/error envelope，并把完整 envelope JSON 落盘，模型只看到摘要路径。
+        """
         await self._emit_progress(
             "tool.start",
             {
@@ -221,10 +241,12 @@ class ToolCallExecutor:
         return result
 
     def _is_concurrency_safe(self, call: ToolCall) -> bool:
+        """询问具体工具是否允许在同一轮中和其他安全工具并发。"""
         tool = self.tool_registry.get(call.name)
         return tool is not None and tool.is_concurrency_safe(call.arguments)
 
     async def _emit_progress(self, event: str, payload: dict[str, Any]) -> None:
+        """向 CLI/UI 汇报工具状态；同步和异步 handler 都支持。"""
         if self.progress_handler is None:
             return
         result = self.progress_handler(event, payload)

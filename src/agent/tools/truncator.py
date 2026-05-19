@@ -1,4 +1,9 @@
-"""tools.truncator — unified output truncation + disk persistence."""
+"""tools.truncator — 工具输出截断和完整结果落盘。
+
+主循环不能把超大工具输出原样塞回模型上下文。ObservationTruncator 在保持
+ToolEnvelope 协议的前提下，把完整 envelope JSON 保存到本地文件，并把模型可见
+结果替换成 partial/error envelope 摘要。
+"""
 from __future__ import annotations
 
 import os
@@ -18,13 +23,19 @@ _RETENTION_DAYS: int = int(os.getenv("TOOL_OUTPUT_RETENTION_DAYS", "7"))
 
 
 class ObservationTruncator:
-    """Truncate large tool outputs and persist the full content to disk."""
+    """截断过大的 ToolEnvelope，同时保留完整输出可追溯。
+
+    截断判断优先看工具 data 中常见的原始文本字段（content/stdout/stderr），这样
+    bash 等工具不会因为 envelope 外壳较小而漏截断。没有可抽取文本时，退回按完整
+    envelope JSON 计算大小。
+    """
 
     def __init__(self, project_root: Path | str | None = None) -> None:
         self._root = Path(project_root) if project_root else Path.cwd()
         self._output_dir = self._root / _OUTPUT_DIR
 
     def truncate(self, tool_name: str, envelope: ToolEnvelope) -> ToolEnvelope:
+        """必要时返回截断后的 envelope；不需要截断则原样返回。"""
         if envelope.context.get("truncation_skip"):
             return envelope
 
@@ -47,7 +58,7 @@ class ObservationTruncator:
         )
 
     def _extract_text(self, envelope: ToolEnvelope) -> str | None:
-        """Extract primary raw output text from common tool payload fields."""
+        """从常见工具 data 字段提取模型真正关心的原始文本。"""
         parts: list[str] = []
         for key in ("content", "stdout", "stderr"):
             val = envelope.data.get(key)
@@ -66,6 +77,7 @@ class ObservationTruncator:
         orig_lines: int,
         orig_bytes: int,
     ) -> ToolEnvelope:
+        """保存完整 JSON，并构造模型可见的截断 envelope。"""
         output_path = self._save(tool_name, raw)
         rel_path = (
             str(output_path.relative_to(self._root)) if output_path else None
@@ -104,6 +116,7 @@ class ObservationTruncator:
         )
 
     def _truncate_text(self, text: str, direction: str) -> tuple[str, int, int]:
+        """按配置保留 head/tail/head_tail，并再次应用字节上限。"""
         lines = text.split("\n")
         if direction == "head_tail":
             n = _HEAD_TAIL_LINES
@@ -128,6 +141,7 @@ class ObservationTruncator:
         return result, result.count("\n") + 1, len(result.encode("utf-8"))
 
     def _save(self, tool_name: str, content: str) -> Path | None:
+        """保存完整 envelope JSON；失败时静默降级为只返回摘要。"""
         try:
             self._output_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -139,6 +153,7 @@ class ObservationTruncator:
             return None
 
     def _hint(self, rel_path: str | None, lines: int, byte_size: int) -> str:
+        """生成给模型看的截断说明和完整文件路径。"""
         kb = byte_size / 1024
         hint = f"⚠️ Output truncated ({lines} lines, {kb:.1f}KB)."
         if rel_path:
@@ -147,6 +162,7 @@ class ObservationTruncator:
         return hint
 
     def _cleanup(self) -> None:
+        """按保留天数机会性清理旧输出文件，避免每次工具调用都扫目录。"""
         try:
             if not self._output_dir.exists():
                 return
