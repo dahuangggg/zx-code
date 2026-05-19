@@ -151,9 +151,9 @@ async def test_tool_call_executor_centralizes_large_output_truncation(
         [ToolCall(id="call-1", name="large_output", arguments={"label": "x"})]
     )
 
-    envelope = json.loads(results[0].content)
+    envelope = results[0].envelope
     assert results[0].status == "partial"
-    assert envelope["status"] == "partial"
-    assert envelope["data"]["truncated"] is True
-    assert envelope["data"]["truncation"]["original_lines"] == 100
-    assert envelope["data"]["truncation"]["full_output_path"].startswith("tool-output/")
+    assert envelope.status == "partial"
+    assert envelope.data["truncated"] is True
+    assert envelope.data["truncation"]["original_lines"] == 100
+    assert envelope.data["truncation"]["full_output_path"].startswith("tool-output/")

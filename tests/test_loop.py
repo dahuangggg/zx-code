@@ -296,7 +296,7 @@ async def test_loop_runs_concurrency_safe_tool_calls_together() -> None:
 
     assert monotonic() - started_at < 0.2
     assert result.final_text == "done"
-    assert [tool_result.content for tool_result in result.tool_results] == ["one", "two"]
+    assert [tool_result.envelope.text for tool_result in result.tool_results] == ["one", "two"]
     assert all(not tool_result.is_error for tool_result in result.tool_results)
 
 

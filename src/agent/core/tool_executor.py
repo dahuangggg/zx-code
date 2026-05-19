@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import Callable
 from inspect import isawaitable
@@ -186,21 +185,11 @@ class ToolCallExecutor:
             call.arguments,
             call_id=call.id,
         )
-        # Truncate large outputs
-        truncated_content = self._truncator.truncate(call.name, result.content)
-        if truncated_content != result.content:
-            try:
-                new_status = json.loads(truncated_content).get("status", result.status)
-            except Exception:
-                new_status = result.status
-            result = result.model_copy(update={"content": truncated_content, "status": new_status})
+        truncated_envelope = self._truncator.truncate(call.name, result.envelope)
+        if truncated_envelope != result.envelope:
+            result = result.model_copy(update={"envelope": truncated_envelope})
 
-        # Extract text for terminal progress
-        result_text = ""
-        try:
-            result_text = json.loads(result.content).get("text", "") or ""
-        except Exception:
-            pass
+        result_text = result.envelope.text
 
         await self._emit_progress(
             "tool.end",
@@ -214,7 +203,15 @@ class ToolCallExecutor:
         )
         self._log.event(
             "tool.call.result",
-            {"call": call, "result": result},
+            {
+                "call": call,
+                "result": {
+                    "call_id": result.call_id,
+                    "name": result.name,
+                    "content": result.content,
+                    "envelope": result.envelope,
+                },
+            },
             session_id=self.session_id,
             level="info",
         )

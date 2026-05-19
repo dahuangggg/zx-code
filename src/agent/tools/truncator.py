@@ -1,12 +1,13 @@
 """tools.truncator — unified output truncation + disk persistence."""
 from __future__ import annotations
 
-import json
 import os
 import random
+from uuid import uuid4
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+
+from agent.models import ToolEnvelope
 
 _MAX_LINES: int = int(os.getenv("TOOL_OUTPUT_MAX_LINES", "2000"))
 _MAX_BYTES: int = int(os.getenv("TOOL_OUTPUT_MAX_BYTES", "51200"))
@@ -23,44 +24,48 @@ class ObservationTruncator:
         self._root = Path(project_root) if project_root else Path.cwd()
         self._output_dir = self._root / _OUTPUT_DIR
 
-    def truncate(self, tool_name: str, content: str) -> str:
-        try:
-            envelope = json.loads(content)
-        except (json.JSONDecodeError, ValueError):
-            return content
+    def truncate(self, tool_name: str, envelope: ToolEnvelope) -> ToolEnvelope:
+        if envelope.context.get("truncation_skip"):
+            return envelope
 
-        if envelope.get("context", {}).get("truncation_skip"):
-            return content
-
-        # Extract inner text content for measurement (JSON escaping hides newlines)
-        inner_text = self._extract_text(envelope) or content
+        full_json = envelope.model_dump_json(exclude_none=True)
+        extracted_text = self._extract_text(envelope)
+        inner_text = extracted_text if extracted_text is not None else full_json
         orig_lines = inner_text.count("\n") + 1
         orig_bytes = len(inner_text.encode("utf-8"))
 
         if orig_lines <= _MAX_LINES and orig_bytes <= _MAX_BYTES:
-            return content
+            return envelope
 
-        return self._do_truncate(tool_name, content, envelope, inner_text, orig_lines, orig_bytes)
+        return self._do_truncate(
+            tool_name,
+            full_json,
+            envelope,
+            inner_text,
+            orig_lines,
+            orig_bytes,
+        )
 
-    def _extract_text(self, envelope: dict[str, Any]) -> str | None:
-        """Extract the primary text content from data.content if present."""
-        try:
-            val = envelope.get("data", {}).get("content")
+    def _extract_text(self, envelope: ToolEnvelope) -> str | None:
+        """Extract primary raw output text from common tool payload fields."""
+        parts: list[str] = []
+        for key in ("content", "stdout", "stderr"):
+            val = envelope.data.get(key)
             if isinstance(val, str):
-                return val
-        except Exception:
-            pass
+                parts.append(val)
+        if parts:
+            return "\n".join(parts)
         return None
 
     def _do_truncate(
         self,
         tool_name: str,
         raw: str,
-        envelope: dict[str, Any],
+        envelope: ToolEnvelope,
         inner_text: str,
         orig_lines: int,
         orig_bytes: int,
-    ) -> str:
+    ) -> ToolEnvelope:
         output_path = self._save(tool_name, raw)
         rel_path = (
             str(output_path.relative_to(self._root)) if output_path else None
@@ -69,13 +74,16 @@ class ObservationTruncator:
         direction = _DIRECTION if _DIRECTION in ("head", "tail", "head_tail") else "head"
         preview, kept_lines, kept_bytes = self._truncate_text(inner_text, direction)
 
-        status = envelope.get("status", "success")
+        status = envelope.status
         if status != "error":
             status = "partial"
 
-        result: dict[str, Any] = {
-            "status": status,
-            "data": {
+        if random.random() < 0.1:
+            self._cleanup()
+
+        return ToolEnvelope(
+            status=status,
+            data={
                 "truncated": True,
                 "truncation": {
                     "direction": direction,
@@ -89,17 +97,11 @@ class ObservationTruncator:
                 },
                 "preview": preview,
             },
-            "text": self._hint(rel_path, orig_lines, orig_bytes),
-            "stats": envelope.get("stats") or {},
-            "context": envelope.get("context") or {},
-        }
-        if status == "error" and "error" in envelope:
-            result["error"] = envelope["error"]
-
-        if random.random() < 0.1:
-            self._cleanup()
-
-        return json.dumps(result, ensure_ascii=False)
+            text=self._hint(rel_path, orig_lines, orig_bytes),
+            error=envelope.error if status == "error" else None,
+            stats=envelope.stats,
+            context=envelope.context,
+        )
 
     def _truncate_text(self, text: str, direction: str) -> tuple[str, int, int]:
         lines = text.split("\n")
@@ -129,7 +131,8 @@ class ObservationTruncator:
         try:
             self._output_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            path = self._output_dir / f"tool_{ts}_{tool_name}.json"
+            suffix = uuid4().hex[:8]
+            path = self._output_dir / f"tool_{ts}_{tool_name}_{suffix}.json"
             path.write_text(content, encoding="utf-8")
             return path
         except Exception:
