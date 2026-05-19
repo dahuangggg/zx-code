@@ -17,7 +17,9 @@ async def test_dangerous_bash_requires_permission() -> None:
     )
 
     assert result.is_error
-    assert "permission required" in result.content
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "ACCESS_DENIED"
+    assert "permission required" in result.envelope.text
 
 
 @pytest.mark.asyncio
@@ -33,5 +35,6 @@ async def test_configured_deny_blocks_tool(tmp_path) -> None:
     )
 
     assert result.is_error
-    assert "permission denied" in result.content
-
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "ACCESS_DENIED"
+    assert "permission denied" in result.envelope.text
