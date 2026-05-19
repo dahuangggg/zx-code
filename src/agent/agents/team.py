@@ -26,10 +26,13 @@ AgentRunFn = Callable[[str, str], Awaitable[str]]
 
 
 def _now() -> str:
+    """返回 UTC ISO 时间戳。"""
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class TeamMessage(BaseModel):
+    """Team 内部消息；request/response 通过 reply_to 配对。"""
+
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(default_factory=lambda: uuid4().hex[:12])
@@ -182,6 +185,8 @@ class MessageBus:
 
 @dataclass(frozen=True)
 class TeamMemberInfo:
+    """注入 prompt 和 team_list 工具的成员元数据。"""
+
     agent_id: str
     role: str = ""
 
