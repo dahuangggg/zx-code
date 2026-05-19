@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from agent.debuglog import DebugLog
 from agent.hooks import HookRunner, HookResult
-from agent.models import ToolCall, ToolMetric, ToolResult
+from agent.models import ToolCall, ToolEnvelope, ToolError, ToolMetric, ToolResult
 from agent.tools.registry import ToolRegistry
 from agent.tools.truncator import ObservationTruncator
 
@@ -112,8 +112,15 @@ class ToolCallExecutor:
                 results[idx] = ToolResult(
                     call_id=call.id,
                     name=call.name,
-                    content=f"[hook denied]: {hook_result.reason}",
-                    is_error=True,
+                    envelope=ToolEnvelope(
+                        status="error",
+                        data={},
+                        text=f"[hook denied]: {hook_result.reason}",
+                        error=ToolError(
+                            code="ACCESS_DENIED",
+                            message=f"[hook denied]: {hook_result.reason}",
+                        ),
+                    ),
                 )
                 continue
 

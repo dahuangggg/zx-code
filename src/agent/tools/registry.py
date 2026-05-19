@@ -1,7 +1,6 @@
 """tools.registry — tool routing, permissions, circuit breaker, optimistic locking."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -136,8 +135,7 @@ class ToolRegistry:
         if result.is_error:
             return
         try:
-            env = json.loads(result.content)
-            ctx = env.get("context", {})
+            ctx = result.envelope.context
             mtime_ms = ctx.get("file_mtime_ms")
             params = ctx.get("params_input") or {}
             path_str = next((params.get(k) for k in _PATH_KEYS if params.get(k)), None)
