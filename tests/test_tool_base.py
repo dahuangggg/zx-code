@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import BaseModel
 from agent.tools.base import Tool, ErrorCode, build_error_envelope
-from agent.models import ToolResult
+from agent.models import ToolEnvelope, ToolError, ToolResult
 
 
 class _DummyInput(BaseModel):
@@ -52,6 +52,90 @@ def test_build_error_envelope_standalone():
     env = json.loads(raw)
     assert env["status"] == "error"
     assert env["error"]["code"] == "CIRCUIT_OPEN"
+
+
+def test_tool_result_serializes_envelope_as_tool_message_content():
+    result = ToolResult(
+        call_id="call-1",
+        name="dummy",
+        envelope=ToolEnvelope(
+            status="success",
+            data={"value": 7},
+            text="done",
+            stats={"time_ms": 3},
+            context={"params_input": {"x": 7}},
+        ),
+    )
+
+    message = result.to_message()
+    content = json.loads(message.content)
+
+    assert message.role == "tool"
+    assert message.tool_call_id == "call-1"
+    assert message.name == "dummy"
+    assert content["status"] == "success"
+    assert content["data"] == {"value": 7}
+    assert content["text"] == "done"
+    assert result.status == "success"
+    assert result.is_error is False
+
+
+def test_tool_result_model_copy_normalizes_legacy_content_and_status_update():
+    result = ToolResult(
+        call_id="call-1",
+        name="dummy",
+        envelope=ToolEnvelope(status="success", data={"value": 7}, text="full"),
+    )
+    truncated_content = json.dumps(
+        {
+            "status": "partial",
+            "data": {"truncated": True},
+            "text": "preview",
+            "stats": {"time_ms": 4},
+            "context": {"full_output_path": "tool-output/call-1.txt"},
+        }
+    )
+
+    copied = result.model_copy(
+        update={"content": truncated_content, "status": "partial", "is_error": False}
+    )
+    copied_content = json.loads(copied.content)
+
+    assert copied.status == "partial"
+    assert copied.is_error is False
+    assert copied_content["status"] == "partial"
+    assert copied_content["data"] == {"truncated": True}
+    assert copied_content["text"] == "preview"
+    assert "content" not in copied.__dict__
+    assert "status" not in copied.__dict__
+    assert "is_error" not in copied.__dict__
+
+
+def test_tool_result_model_copy_normalizes_legacy_status_only_update():
+    result = ToolResult(
+        call_id="call-1",
+        name="dummy",
+        envelope=ToolEnvelope(status="success", data={"value": 7}, text="full"),
+    )
+
+    copied = result.model_copy(update={"status": "partial"})
+
+    assert copied.status == "partial"
+    assert json.loads(copied.content)["status"] == "partial"
+    assert "status" not in copied.__dict__
+
+
+def test_tool_envelope_requires_error_payload_for_error_status():
+    with pytest.raises(ValueError, match="error payload"):
+        ToolEnvelope(status="error")
+
+
+def test_tool_envelope_rejects_error_payload_for_success_status():
+    with pytest.raises(ValueError, match="non-error"):
+        ToolEnvelope(
+            status="success",
+            error=ToolError(code="INTERNAL_ERROR", message="boom"),
+        )
 
 
 def test_extra_context_propagated():

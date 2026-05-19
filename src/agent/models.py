@@ -14,9 +14,10 @@
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+import json
+from typing import Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 DMScope = Literal[
     "per-account-channel-peer",  # 每个账号+频道+用户独立会话（最严格）
@@ -83,6 +84,36 @@ class Message(BaseModel):
         )
 
 
+class ToolError(BaseModel):
+    """结构化工具错误载荷。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
+
+
+class ToolEnvelope(BaseModel):
+    """工具返回给模型的统一信封。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["success", "partial", "error"]
+    data: dict[str, Any] = Field(default_factory=dict)
+    text: str = ""
+    error: ToolError | None = None
+    stats: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_error_payload(self) -> "ToolEnvelope":
+        if self.status == "error" and self.error is None:
+            raise ValueError("error status requires error payload")
+        if self.status != "error" and self.error is not None:
+            raise ValueError("non-error status rejects error payload")
+        return self
+
+
 class ToolResult(BaseModel):
     """工具执行完毕后的结果，可用 to_message() 转回 tool 角色的 Message。"""
 
@@ -90,9 +121,85 @@ class ToolResult(BaseModel):
 
     call_id: str
     name: str
-    content: str
-    is_error: bool = False
-    status: str = "success"
+    envelope: ToolEnvelope
+
+    @classmethod
+    def _coerce_legacy_result_data(cls, value: dict[str, Any]) -> dict[str, Any]:
+        existing_envelope = value.get("envelope")
+        if isinstance(existing_envelope, ToolEnvelope):
+            envelope_data: dict[str, Any] = existing_envelope.model_dump()
+        elif isinstance(existing_envelope, dict):
+            envelope_data = dict(existing_envelope)
+        else:
+            envelope_data = {}
+
+        status = value.get("status") or envelope_data.get("status")
+        is_error = value.get("is_error", False)
+        has_content = "content" in value
+        raw_content = value.get("content", "")
+        if has_content:
+            if isinstance(raw_content, str):
+                try:
+                    parsed = json.loads(raw_content)
+                except Exception:
+                    parsed = None
+            else:
+                parsed = raw_content
+
+            if isinstance(parsed, dict):
+                envelope_data.update(parsed)
+            else:
+                envelope_data.update({"text": str(raw_content)})
+        else:
+            raw_content = envelope_data.get("text", "")
+
+        if status is not None:
+            envelope_data["status"] = status
+        else:
+            envelope_data.setdefault("status", "error" if is_error else "success")
+
+        if envelope_data.get("status") == "error" and envelope_data.get("error") is None:
+            message = envelope_data.get("text") or str(raw_content)
+            envelope_data["error"] = {"code": "EXECUTION_ERROR", "message": message}
+
+        return {
+            key: item
+            for key, item in value.items()
+            if key not in {"content", "status", "is_error"}
+        } | {"envelope": envelope_data}
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_legacy_content(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if not {"content", "status", "is_error"} & value.keys():
+            return value
+        return cls._coerce_legacy_result_data(value)
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> "ToolResult":
+        if update is None:
+            return super().model_copy(update=update, deep=deep)
+        data = self.model_dump()
+        data.update(update)
+        return type(self).model_validate(data)
+
+    @property
+    def content(self) -> str:
+        return self.envelope.model_dump_json(exclude_none=True)
+
+    @property
+    def status(self) -> Literal["success", "partial", "error"]:
+        return self.envelope.status
+
+    @property
+    def is_error(self) -> bool:
+        return self.envelope.status == "error"
 
     def to_message(self) -> Message:
         return Message.tool(

@@ -91,7 +91,10 @@ async def test_tool_call_executor_runs_hooks_and_denies_before_registry() -> Non
 
     assert len(results) == 1
     assert results[0].is_error is True
-    assert results[0].content == "[hook denied]: blocked"
+    denied_envelope = json.loads(results[0].content)
+    assert denied_envelope["status"] == "error"
+    assert denied_envelope["text"] == "[hook denied]: blocked"
+    assert denied_envelope["error"]["message"] == "[hook denied]: blocked"
     assert [event for event, _ in hooks.events] == ["pre_tool_use"]
 
 
@@ -117,7 +120,7 @@ async def test_tool_call_executor_batches_concurrency_safe_calls_in_order() -> N
     )
 
     assert monotonic() - started_at < 0.2
-    assert [result.content for result in results] == ["one", "two"]
+    assert [json.loads(result.content)["text"] for result in results] == ["one", "two"]
     assert len(metrics) == 2
     assert all(m.duration_ms >= 0 for m in metrics)
     assert [event for event, _ in hooks.events] == [
