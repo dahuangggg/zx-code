@@ -317,15 +317,20 @@ class RuntimeConfig(BaseModel):
     model_timeout_s: float = 60.0
     stream: bool = True
     session_id: str = "default"
-    data_dir: str = ".agent"
+    data_dir: str = ".zx-code/state"
     context_max_tokens: int = 12000
     context_keep_recent: int = 6
     context_tool_result_max_chars: int = 6000
-    memory_path: str = ".memory/MEMORY.md"
+    memory_path: str = ".zx-code/state/memory/MEMORY.md"
     enable_memory: bool = True
     enable_todos: bool = True
     debug_log_enabled: bool = False
-    debug_log_path: str = ".agent/debug.jsonl"
+    debug_log_path: str = ".zx-code/logs/debug.jsonl"
+    trace_enabled: bool = False
+    trace_dir: str = ".zx-code/logs/traces"
+    trace_sanitize: bool = True
+    trace_html: bool = False
+    trace_html_include_raw_response: bool = False
 
 
 class AgentState(BaseModel):

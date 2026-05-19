@@ -18,7 +18,7 @@ _MAX_LINES: int = int(os.getenv("TOOL_OUTPUT_MAX_LINES", "2000"))
 _MAX_BYTES: int = int(os.getenv("TOOL_OUTPUT_MAX_BYTES", "51200"))
 _DIRECTION: str = os.getenv("TOOL_OUTPUT_TRUNCATE_DIRECTION", "head")
 _HEAD_TAIL_LINES: int = int(os.getenv("TOOL_OUTPUT_HEAD_TAIL_LINES", "40"))
-_OUTPUT_DIR: str = os.getenv("TOOL_OUTPUT_DIR", "tool-output")
+_OUTPUT_DIR: str = os.getenv("TOOL_OUTPUT_DIR", ".zx-code/artifacts/tool-output")
 _RETENTION_DAYS: int = int(os.getenv("TOOL_OUTPUT_RETENTION_DAYS", "7"))
 
 

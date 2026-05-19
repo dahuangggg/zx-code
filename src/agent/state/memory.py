@@ -153,7 +153,7 @@ class MemoryStore:
         """原子写 Markdown 文件，避免崩溃留下半写内容。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
-            dir=path.parent, suffix=".tmp", prefix=".memory-"
+            dir=path.parent, suffix=".tmp", prefix="memory-"
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:

@@ -14,7 +14,7 @@ from agent.tools import build_default_registry
 
 
 def test_memory_store_uses_frontmatter_and_renders_prompt(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path / ".memory" / "MEMORY.md")
+    store = MemoryStore(tmp_path / ".zx-code" / "state" / "memory" / "MEMORY.md")
     store.append("Prefer concise Chinese explanations.", source="test")
 
     text = store.path.read_text(encoding="utf-8")
@@ -26,7 +26,7 @@ def test_memory_store_uses_frontmatter_and_renders_prompt(tmp_path: Path) -> Non
 
 
 def test_memory_store_can_save_named_markdown_records(tmp_path: Path) -> None:
-    store = MemoryStore(tmp_path / ".memory" / "MEMORY.md")
+    store = MemoryStore(tmp_path / ".zx-code" / "state" / "memory" / "MEMORY.md")
     record = MemoryRecord(
         name="project-rules",
         description="Rules for this repository",
@@ -55,7 +55,7 @@ def test_todo_manager_persists_items(tmp_path: Path) -> None:
 
 
 def test_system_prompt_builder_includes_memory_and_todos(tmp_path: Path) -> None:
-    memory = MemoryStore(tmp_path / ".memory" / "MEMORY.md")
+    memory = MemoryStore(tmp_path / ".zx-code" / "state" / "memory" / "MEMORY.md")
     memory.append("Use pathlib for filesystem code.", source="test")
     todos = TodoManager(tmp_path / "todos.json")
     item = todos.create("add SessionStore tests")

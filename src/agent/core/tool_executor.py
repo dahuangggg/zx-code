@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from agent.debuglog import DebugLog
 from agent.hooks import HookRunner, HookResult
 from agent.models import ToolCall, ToolEnvelope, ToolError, ToolMetric, ToolResult
+from agent.trace import TraceLogger
 from agent.tools.registry import ToolRegistry
 from agent.tools.truncator import ObservationTruncator
 
@@ -40,6 +41,8 @@ class ToolCallExecutor:
         hook_runner: ToolHookRunner | None = None,
         session_id: str,
         debug_log: DebugLog | None = None,
+        trace_logger: TraceLogger | None = None,
+        trace_step: int = 0,
         progress_handler: Callable[[str, dict[str, Any]], Any] | None = None,
         project_root: Path | str | None = None,
     ) -> None:
@@ -47,6 +50,8 @@ class ToolCallExecutor:
         self.hook_runner = hook_runner or HookRunner.empty()
         self.session_id = session_id
         self._log = debug_log or DebugLog.null()
+        self._trace = trace_logger or TraceLogger.null()
+        self.trace_step = trace_step
         self.progress_handler = progress_handler
         self._truncator = ObservationTruncator(project_root)
 
@@ -91,6 +96,7 @@ class ToolCallExecutor:
                 session_id=self.session_id,
                 level="info",
             )
+            self._trace_tool_call(call)
             hook_result = await self._run_pre_hook(call)
             self._log.event(
                 "tool.hook.pre",
@@ -135,6 +141,7 @@ class ToolCallExecutor:
                         ),
                     ),
                 )
+                self._trace_tool_result(results[idx])
                 continue
 
             if self._is_concurrency_safe(call):
@@ -238,6 +245,7 @@ class ToolCallExecutor:
             session_id=self.session_id,
             level="info",
         )
+        self._trace_tool_result(result)
         return result
 
     def _is_concurrency_safe(self, call: ToolCall) -> bool:
@@ -252,3 +260,25 @@ class ToolCallExecutor:
         result = self.progress_handler(event, payload)
         if isawaitable(result):
             await result
+
+    def _trace_tool_call(self, call: ToolCall) -> None:
+        self._trace.log_event(
+            "tool_call",
+            {
+                "tool": call.name,
+                "tool_call_id": call.id,
+                "args": call.arguments,
+            },
+            step=self.trace_step,
+        )
+
+    def _trace_tool_result(self, result: ToolResult) -> None:
+        self._trace.log_event(
+            "tool_result",
+            {
+                "tool": result.name,
+                "tool_call_id": result.call_id,
+                "result": result.envelope,
+            },
+            step=self.trace_step,
+        )

@@ -35,3 +35,34 @@ def test_cli_session_id_remains_resume_alias(monkeypatch) -> None:
     assert result.exit_code == 0
     assert seen["task"] == "continue"
     assert seen["resume_session_id"] == "legacy"
+
+
+def test_cli_trace_options_override_settings(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run_cli(**kwargs: object) -> int:
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("agent.main._run_cli", fake_run_cli)
+
+    result = CliRunner().invoke(
+        _build_typer_app(),
+        [
+            "--trace",
+            "--trace-dir",
+            ".zx-code/logs/custom-traces",
+            "--no-trace-sanitize",
+            "--trace-html",
+            "--trace-html-include-raw-response",
+            "hello",
+        ],
+    )
+
+    assert result.exit_code == 0
+    settings = seen["settings"]
+    assert settings.trace.enabled is True
+    assert settings.trace.dir == ".zx-code/logs/custom-traces"
+    assert settings.trace.sanitize is False
+    assert settings.trace.html is True
+    assert settings.trace.html_include_raw_response is True

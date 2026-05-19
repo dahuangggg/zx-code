@@ -42,14 +42,14 @@ class StateSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = "default"
-    data_dir: str = ".agent"
-    memory_path: str = ".memory/MEMORY.md"
+    data_dir: str = ".zx-code/state"
+    memory_path: str = ".zx-code/state/memory/MEMORY.md"
     enable_memory: bool = True
     enable_skills: bool = True
     skills_dir: str = "skills"
     enable_todos: bool = True
     enable_tasks: bool = True
-    tasks_dir: str = ".tasks"
+    tasks_dir: str = ".zx-code/state/tasks"
 
 
 class PermissionSettings(BaseModel):
@@ -130,7 +130,7 @@ class TeamSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
-    log_path: str = ".agent/team/messages.jsonl"
+    log_path: str = ".zx-code/logs/team/messages.jsonl"
     timeout_s: float = Field(default=30.0, gt=0)
     max_depth: int = Field(default=1, ge=0)
     members: list[TeamMemberSettings] = Field(default_factory=list)
@@ -140,15 +140,15 @@ class WorktreeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     isolation_enabled: bool = False
-    dir: str = ".agent/worktrees"
+    dir: str = ".zx-code/state/worktrees"
 
 
 class CodeContextSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
-    path: str = ".agent/code-context/chroma"
-    snapshot_dir: str = ".agent/code-context/snapshots"
+    path: str = ".zx-code/cache/code-context/chroma"
+    snapshot_dir: str = ".zx-code/cache/code-context/snapshots"
     collection: str = "agent_code_context"
     top_k: int = Field(default=5, ge=1, le=20)
     max_result_chars: int = Field(default=4000, ge=500)
@@ -159,7 +159,17 @@ class DebugSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     log_enabled: bool = False
-    log_path: str = ".agent/debug.jsonl"
+    log_path: str = ".zx-code/logs/debug.jsonl"
+
+
+class TraceSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    dir: str = ".zx-code/logs/traces"
+    sanitize: bool = True
+    html: bool = False
+    html_include_raw_response: bool = False
 
 
 class ExtensionSettings(BaseModel):
@@ -239,6 +249,11 @@ _FLAT_ALIASES: dict[str, tuple[str, ...]] = {
     "code_context_max_total_chars": ("code_context", "max_total_chars"),
     "debug_log_enabled": ("debug", "log_enabled"),
     "debug_log_path": ("debug", "log_path"),
+    "trace_enabled": ("trace", "enabled"),
+    "trace_dir": ("trace", "dir"),
+    "trace_sanitize": ("trace", "sanitize"),
+    "trace_html": ("trace", "html"),
+    "trace_html_include_raw_response": ("trace", "html_include_raw_response"),
     "hooks_path": ("extensions", "hooks_path"),
     "mcp_servers": ("extensions", "mcp_servers"),
     "plugin_dirs": ("extensions", "plugin_dirs"),
@@ -263,6 +278,7 @@ class AgentSettings(BaseModel):
     worktree: WorktreeSettings = Field(default_factory=WorktreeSettings)
     code_context: CodeContextSettings = Field(default_factory=CodeContextSettings)
     debug: DebugSettings = Field(default_factory=DebugSettings)
+    trace: TraceSettings = Field(default_factory=TraceSettings)
     extensions: ExtensionSettings = Field(default_factory=ExtensionSettings)
 
     @model_validator(mode="before")
@@ -299,6 +315,11 @@ class AgentSettings(BaseModel):
             enable_todos=self.state.enable_todos,
             debug_log_enabled=self.debug.log_enabled,
             debug_log_path=self.debug.log_path,
+            trace_enabled=self.trace.enabled,
+            trace_dir=self.trace.dir,
+            trace_sanitize=self.trace.sanitize,
+            trace_html=self.trace.html,
+            trace_html_include_raw_response=self.trace.html_include_raw_response,
         )
 
     def resolved_model_profiles(self) -> list[ModelProfile]:

@@ -45,6 +45,7 @@ htmlcov/
 # IDE / editors
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -71,6 +72,10 @@ interview/
 .agent/
 .tasks/
 .memory/
-.zx-code/*
-!.zx-code/config.toml.example
 tool-output/
+.zx-code/config.toml
+.zx-code/state/
+.zx-code/logs/
+.zx-code/cache/
+.zx-code/artifacts/
+!.zx-code/config.toml.example

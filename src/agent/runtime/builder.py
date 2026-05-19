@@ -40,6 +40,7 @@ from agent.providers.openai_client import OpenAIModelClient
 from agent.runtime.markdown_stream import MarkdownStreamRenderer
 from agent.runtime.utils import _approval_prompt, _resolve_project_path, _stream_printer, console
 from agent.state.sessions import SessionStore, safe_session_id
+from agent.trace import TraceLogger
 from agent.state.skills import SkillStore
 from agent.agents.subagent import SubagentRunner
 from agent.agents.team import Team
@@ -220,6 +221,18 @@ def _build_runtime(
         )
         if effective_settings.debug.log_enabled
         else DebugLog.null()
+    )
+    trace_logger = (
+        TraceLogger(
+            session_id=effective_settings.state.session_id,
+            trace_dir=_resolve_project_path(project_root, effective_settings.trace.dir),
+            enabled=True,
+            sanitize=effective_settings.trace.sanitize,
+            html_enabled=effective_settings.trace.html,
+            html_include_raw_response=effective_settings.trace.html_include_raw_response,
+        )
+        if effective_settings.trace.enabled
+        else TraceLogger.null()
     )
     memory_store = (
         MemoryStore(_resolve_project_path(project_root, effective_settings.state.memory_path))
@@ -429,6 +442,7 @@ def _build_runtime(
         "tool_registry": registry,
         "team": team,
         "debug_log": debug_log,
+        "trace_logger": trace_logger,
         "project_root": project_root,
     }
     debug_log.event(
@@ -528,6 +542,7 @@ async def _run_agent_text(
             prompt_builder=runtime["prompt_builder"],
             hook_runner=runtime["hook_runner"],
             debug_log=runtime.get("debug_log"),
+            trace_logger=runtime.get("trace_logger"),
             project_root=runtime.get("project_root"),
             progress_handler=(
                 progress_reporter.handle

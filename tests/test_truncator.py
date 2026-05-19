@@ -73,7 +73,7 @@ def test_truncation_over_line_limit(tmp_path: Path, monkeypatch):
     assert json.loads(saved_path.read_text(encoding="utf-8")) == json.loads(
         envelope.model_dump_json(exclude_none=True)
     )
-    assert (tmp_path / "tool-output").exists()
+    assert (tmp_path / ".zx-code" / "artifacts" / "tool-output").exists()
 
 
 def test_truncation_skip(tmp_path: Path, monkeypatch):

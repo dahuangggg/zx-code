@@ -297,6 +297,38 @@ def test_build_runtime_injects_context_summary_client(monkeypatch, tmp_path) -> 
     assert summary_client.model_client.model == "gpt-summary"
 
 
+def test_build_runtime_creates_trace_logger_when_enabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    runtime = _build_runtime(
+        AgentSettings(
+            enable_memory=False,
+            enable_todos=False,
+            trace_enabled=True,
+            trace_dir=".zx-code/logs/traces",
+            trace_html=True,
+        ),
+    )
+
+    trace_logger = runtime["trace_logger"]
+    assert trace_logger.enabled is True
+    assert trace_logger.session_id == "default"
+    assert trace_logger.trace_dir == tmp_path / ".zx-code" / "logs" / "traces"
+    assert trace_logger.html_enabled is True
+
+
+def test_build_runtime_uses_disabled_trace_logger_by_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    runtime = _build_runtime(
+        AgentSettings(enable_memory=False, enable_todos=False),
+    )
+
+    trace_logger = runtime["trace_logger"]
+    assert trace_logger.enabled is False
+    assert not (tmp_path / ".zx-code" / "logs" / "traces").exists()
+
+
 def test_build_stream_output_uses_markdown_renderer_for_streaming_markdown() -> None:
     output = _build_stream_output(
         AgentSettings(

@@ -6,7 +6,7 @@ from agent.state.tasks import TaskStore
 
 
 def test_task_store_persists_dag_and_unlocks_dependents(tmp_path: Path) -> None:
-    store = TaskStore(tmp_path / ".tasks")
+    store = TaskStore(tmp_path / ".zx-code" / "state" / "tasks")
     parent = store.create("write implementation")
     child = store.create("run verification", blocked_by=[parent.id])
 
@@ -19,11 +19,11 @@ def test_task_store_persists_dag_and_unlocks_dependents(tmp_path: Path) -> None:
     assert completed.status == "completed"
     assert [task.id for task in unlocked] == [child.id]
     assert reloaded_child.status == "pending"
-    assert (tmp_path / ".tasks" / f"{parent.id}.json").exists()
+    assert (tmp_path / ".zx-code" / "state" / "tasks" / f"{parent.id}.json").exists()
 
 
 def test_task_store_creates_ready_task_when_blockers_are_complete(tmp_path: Path) -> None:
-    store = TaskStore(tmp_path / ".tasks")
+    store = TaskStore(tmp_path / ".zx-code" / "state" / "tasks")
     parent = store.create("write implementation")
     store.complete(parent.id)
 
@@ -35,7 +35,7 @@ def test_task_store_creates_ready_task_when_blockers_are_complete(tmp_path: Path
 
 
 def test_task_store_rejects_missing_blockers(tmp_path: Path) -> None:
-    store = TaskStore(tmp_path / ".tasks")
+    store = TaskStore(tmp_path / ".zx-code" / "state" / "tasks")
 
     try:
         store.create("blocked task", blocked_by=["missing"])
@@ -47,7 +47,7 @@ def test_task_store_rejects_missing_blockers(tmp_path: Path) -> None:
 
 def test_task_store_rejects_direct_cycle(tmp_path: Path) -> None:
     """A -> B -> A 应被拒绝。"""
-    store = TaskStore(tmp_path / ".tasks")
+    store = TaskStore(tmp_path / ".zx-code" / "state" / "tasks")
     a = store.create("task A")
     b = store.create("task B", blocked_by=[a.id])
 
@@ -61,7 +61,7 @@ def test_task_store_rejects_direct_cycle(tmp_path: Path) -> None:
 
 def test_task_store_rejects_transitive_cycle(tmp_path: Path) -> None:
     """A -> B -> C -> A 传递环应被拒绝。"""
-    store = TaskStore(tmp_path / ".tasks")
+    store = TaskStore(tmp_path / ".zx-code" / "state" / "tasks")
     a = store.create("task A")
     b = store.create("task B", blocked_by=[a.id])
     c = store.create("task C", blocked_by=[b.id])

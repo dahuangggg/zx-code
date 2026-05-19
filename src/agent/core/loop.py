@@ -43,6 +43,7 @@ from agent.providers.base import ModelClient, StreamHandler
 from agent.errors import MaxIterationsExceededError
 from agent.core.recovery import RecoveryBudget, ResilienceRunner
 from agent.state.sessions import SessionStore
+from agent.trace import TraceLogger
 from agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ async def run_task(
     prompt_builder: SystemPromptBuilder | None = None,
     hook_runner: HookRunner | None = None,
     debug_log: DebugLog | None = None,
+    trace_logger: TraceLogger | None = None,
     progress_handler: Callable[[str, dict[str, Any]], Any] | None = None,
     project_root: Any | None = None,
 ) -> AgentRunResult:
@@ -70,6 +72,7 @@ async def run_task(
     """
     # 规范化：外部传 None 时用 NullDebugLog，内部代码无需再判断 is not None
     _log = debug_log or DebugLog.null()
+    _trace = trace_logger or TraceLogger.null()
     runtime_config = config or RuntimeConfig()
     # system_prompt 三级回退：调用方显式传入 → prompt_builder 动态构建 → 框架内置默认值
     system_prompt = runtime_config.system_prompt
@@ -81,6 +84,23 @@ async def run_task(
         "run.system_prompt",
         {"system_prompt": system_prompt},
         session_id=runtime_config.session_id,
+    )
+    _trace.log_event(
+        "run_start",
+        {
+            "session_id": runtime_config.session_id,
+            "model": runtime_config.model,
+            "max_iterations": runtime_config.max_iterations,
+        },
+        step=0,
+    )
+    _trace.log_event(
+        "system_messages",
+        {
+            "system_prompt": system_prompt,
+            "tool_schemas": tool_registry.active_schemas(),
+        },
+        step=0,
     )
 
     state = AgentState(
@@ -99,6 +119,11 @@ async def run_task(
         {"message": user_message},
         session_id=runtime_config.session_id,
         level="info",
+    )
+    _trace.log_event(
+        "user_input",
+        {"message": user_message},
+        step=0,
     )
     # 每条消息都立即落盘，崩溃后能从最后一条消息处恢复，不需要等回合结束才持久化
     if session_store is not None:
@@ -130,6 +155,58 @@ async def run_task(
                 session_id=runtime_config.session_id,
             )
 
+    try:
+        result = await _run_task_loop(
+            state=state,
+            runtime_config=runtime_config,
+            model_client=model_client,
+            tool_registry=tool_registry,
+            stream_handler=stream_handler,
+            session_store=session_store,
+            context_guard=context_guard,
+            hook_runner=hook_runner,
+            debug_log=debug_log,
+            trace_logger=_trace,
+            progress_handler=progress_handler,
+            project_root=project_root,
+            run_metrics=run_metrics,
+            recovery_budget=recovery_budget,
+            emit_progress=emit_progress,
+            progress_stream_handler=progress_stream_handler,
+            log=_log,
+        )
+    except Exception as exc:
+        _trace.log_event(
+            "error",
+            {"type": type(exc).__name__, "message": str(exc)},
+            step=state.turn_count,
+        )
+        _trace.finalize({"metrics": run_metrics, "error": type(exc).__name__})
+        raise
+    _trace.finalize({"metrics": run_metrics})
+    return result
+
+
+async def _run_task_loop(
+    *,
+    state: AgentState,
+    runtime_config: RuntimeConfig,
+    model_client: ModelClient,
+    tool_registry: ToolRegistry,
+    stream_handler: StreamHandler | None,
+    session_store: SessionStore | None,
+    context_guard: ContextGuard | None,
+    hook_runner: HookRunner | None,
+    debug_log: DebugLog | None,
+    trace_logger: TraceLogger,
+    progress_handler: Callable[[str, dict[str, Any]], Any] | None,
+    project_root: Any | None,
+    run_metrics: RunMetrics,
+    recovery_budget: RecoveryBudget,
+    emit_progress: Callable[[str, dict[str, Any]], Any],
+    progress_stream_handler: Callable[[str], Any],
+    log: DebugLog,
+) -> AgentRunResult:
     # max_iterations 是硬上限，防止 LLM 与工具陷入无限循环把 token 烧光
     while state.turn_count < state.max_iterations:
         state.turn_count += 1
@@ -141,7 +218,7 @@ async def run_task(
             if context_guard is not None
             else state.messages
         )
-        _log.event(
+        log.event(
             "run.model_input",
             {
                 "turn": state.turn_count,
@@ -149,6 +226,15 @@ async def run_task(
                 "tool_schemas": tool_registry.active_schemas(),
             },
             session_id=runtime_config.session_id,
+        )
+        trace_logger.log_event(
+            "context_build",
+            {
+                "turn": state.turn_count,
+                "message_count": len(model_messages),
+                "tool_count": len(tool_registry.active_schemas()),
+            },
+            step=state.turn_count,
         )
         await emit_progress("model.start", {"turn": state.turn_count})
         llm_t0 = time.monotonic()
@@ -173,6 +259,16 @@ async def run_task(
         finally:
             await emit_progress("model.end", {"turn": state.turn_count})
         llm_duration_ms = round((time.monotonic() - llm_t0) * 1000, 1)
+        trace_logger.log_event(
+            "model_output",
+            {
+                "text": turn.text,
+                "tool_calls": turn.tool_calls,
+                "usage": turn.usage,
+                "finish_reason": turn.stop_reason,
+            },
+            step=state.turn_count,
+        )
 
         assistant_message = Message.assistant(
             content=turn.text,
@@ -184,7 +280,7 @@ async def run_task(
             if session_store is not None:
                 session_store.append_message(runtime_config.session_id, assistant_message)
             state.messages.append(assistant_message)
-            _log.event(
+            log.event(
                 "run.assistant_message",
                 {
                     "turn": state.turn_count,
@@ -194,16 +290,30 @@ async def run_task(
                 session_id=runtime_config.session_id,
                 level="info",
             )
+            trace_logger.log_event(
+                "message_written",
+                {"role": "assistant", "message": assistant_message},
+                step=state.turn_count,
+            )
             run_metrics.record_turn(TurnMetric(
                 turn=state.turn_count,
                 llm_duration_ms=llm_duration_ms,
                 usage=turn.usage or TokenUsage(),
             ))
-            _log.event(
+            log.event(
                 "run.metrics",
                 {"metrics": run_metrics},
                 session_id=runtime_config.session_id,
                 level="info",
+            )
+            trace_logger.log_event(
+                "finish",
+                {
+                    "stop_reason": turn.stop_reason,
+                    "final_text": turn.text,
+                    "iterations": state.turn_count,
+                },
+                step=state.turn_count,
             )
             return AgentRunResult(
                 final_text=turn.text,
@@ -222,6 +332,8 @@ async def run_task(
             hook_runner=hook_runner or HookRunner.empty(),
             session_id=runtime_config.session_id,
             debug_log=debug_log,
+            trace_logger=trace_logger,
+            trace_step=state.turn_count,
             progress_handler=progress_handler,
             project_root=project_root,
         )
@@ -240,7 +352,7 @@ async def run_task(
         if session_store is not None:
             session_store.append_message(runtime_config.session_id, assistant_message)
         state.messages.append(assistant_message)
-        _log.event(
+        log.event(
             "run.assistant_message",
             {
                 "turn": state.turn_count,
@@ -249,6 +361,11 @@ async def run_task(
             },
             session_id=runtime_config.session_id,
             level="info",
+        )
+        trace_logger.log_event(
+            "message_written",
+            {"role": "assistant", "message": assistant_message},
+            step=state.turn_count,
         )
 
         for result in tool_results:

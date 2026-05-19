@@ -41,7 +41,7 @@ uv run agent --no-stream "列出当前项目结构"
 uv run agent --max-turns 8 "分析 src/agent/core/loop.py"
 uv run agent --resume demo-session "继续上次任务"
 uv run agent --print-system-prompt
-uv run agent --debug-log --debug-log-path .agent/debug.jsonl "调试一次运行"
+uv run agent --debug-log --debug-log-path .zx-code/logs/debug.jsonl "调试一次运行"
 ```
 
 运行测试：
@@ -192,7 +192,7 @@ sequenceDiagram
 设计上要区分几类状态：
 
 - `SessionStore`：完整对话历史，用于恢复上下文。
-- `MemoryStore`：长期记忆，默认路径 `.memory/MEMORY.md`。
+- `MemoryStore`：长期记忆，默认路径 `.zx-code/state/memory/MEMORY.md`。
 - `TodoManager`：当前 session 的轻量待办状态。
 - `TaskStore`：持久化 DAG 任务系统，支持 `blocked_by` 和依赖解锁。
 - `SkillStore`：只在 prompt 注入技能索引，完整技能正文通过 `load_skill` 按需读取。
@@ -241,9 +241,9 @@ flowchart LR
 
 出站消息不直接发送，而是先进入 `DeliveryQueue`：
 
-- `.agent/delivery/queued/`
-- `.agent/delivery/sent/`
-- `.agent/delivery/failed/`
+- `.zx-code/state/delivery/queued/`
+- `.zx-code/state/delivery/sent/`
+- `.zx-code/state/delivery/failed/`
 
 `DeliveryRunner` 负责发送、重试、指数退避和失败归档。`--watch` 模式下会启动 `DeliveryDaemon` 持续 drain 队列。
 
@@ -269,7 +269,7 @@ main > subagent > cron > heartbeat
 
 `SubagentRunner` 支持主 Agent 通过 `subagent_run` 把聚焦任务交给子代理执行。子代理使用独立 session，并受递归深度限制。开启 worktree isolation 后，子代理可以配合 `WorktreeManager` 在独立 git worktree 中工作。
 
-`Team` 支持主 Agent 通过 `team_list`、`team_dispatch`、`team_broadcast` 和持久队友协作。Team 在 runtime composition root 中装配，队友使用独立 session，消息写入 `.agent/team/messages.jsonl`，主 Agent 仍负责拆分任务、判断结果和最终汇总。
+`Team` 支持主 Agent 通过 `team_list`、`team_dispatch`、`team_broadcast` 和持久队友协作。Team 在 runtime composition root 中装配，队友使用独立 session，消息写入 `.zx-code/logs/team/messages.jsonl`，主 Agent 仍负责拆分任务、判断结果和最终汇总。
 
 ### MCP, Plugin, Hooks
 
@@ -303,12 +303,12 @@ CodeContext 是代码库语义上下文层，默认关闭。开启后会注册 `
 
 实现要点：
 
-- ChromaDB `PersistentClient` 持久化到 `.agent/code-context/chroma`
+- ChromaDB `PersistentClient` 持久化到 `.zx-code/cache/code-context/chroma`
 - collection 内通过 `codebase_id` / `codebase_path` metadata 隔离多个仓库
 - Python 文件使用 AST-aware chunking，其他常见代码/文档文件使用 line-based chunking
 - 读取 `.gitignore` / `.contextignore`
 - 支持 `custom_extensions` / `ignore_patterns`，并读取 `.cursorignore` 等 `.xxxignore`
-- 忽略 `.env`、`.git`、`node_modules`、`.agent` 等敏感或低价值路径
+- 忽略 `.env`、`.git`、`node_modules`、`.zx-code` 等敏感或低价值路径
 - 使用文件级 `sha256` snapshot 支持 added / modified / removed 增量索引
 - 后台索引支持 partial search、进程内 cancel、文件系统级 index lock
 - `code_search` 使用 Chroma vector search、持久化 sparse BM25-like 关键词通道和 RRF 融合
@@ -333,8 +333,8 @@ fallback_models = "gpt-5.5"
 reasoning_effort = "" # 可填 "low"、"medium"、"high"，具体取决于模型
 max_iterations = 30
 context_max_tokens = 128000
-data_dir = ".agent"
-memory_path = ".memory/MEMORY.md"
+data_dir = ".zx-code/state"
+memory_path = ".zx-code/state/memory/MEMORY.md"
 ```
 
 临时开启支持模型的推理强度：
@@ -370,16 +370,16 @@ enable_skills = true
 skills_dir = "skills"
 enable_todos = true
 enable_tasks = true
-tasks_dir = ".tasks"
+tasks_dir = ".zx-code/state/tasks"
 enable_subagents = true
 subagent_max_depth = 1
 enable_worktree_isolation = false
-worktree_dir = ".agent/worktrees"
+worktree_dir = ".zx-code/state/worktrees"
 
 [agent.teams]
 enabled = true
 timeout_s = 30
-log_path = ".agent/team/messages.jsonl"
+log_path = ".zx-code/logs/team/messages.jsonl"
 
 [[agent.teams.members]]
 id = "researcher"
@@ -395,8 +395,8 @@ CodeContext：
 ```toml
 [agent]
 code_context_enabled = true
-code_context_path = ".agent/code-context/chroma"
-code_context_snapshot_dir = ".agent/code-context/snapshots"
+code_context_path = ".zx-code/cache/code-context/chroma"
+code_context_snapshot_dir = ".zx-code/cache/code-context/snapshots"
 code_context_collection = "agent_code_context"
 code_context_max_result_chars = 4000
 code_context_max_total_chars = 12000
@@ -497,7 +497,7 @@ uv run agent \
 Telegram offset 持久化在：
 
 ```text
-.agent/channels/telegram/offset-<account_id>.txt
+.zx-code/state/channels/telegram/offset-<account_id>.txt
 ```
 
 如果之前配置过 webhook，可以先清掉：
@@ -525,13 +525,13 @@ uv run agent \
 Cron job 从文件加载：
 
 ```bash
-uv run agent --watch --cron-jobs .agent/cron-jobs.toml
+uv run agent --watch --cron-jobs .zx-code/cron.json
 ```
 
 Cron 状态持久化到：
 
 ```text
-.agent/cron-state.json
+.zx-code/state/cron-state.json
 ```
 
 ## Debug Log
@@ -539,7 +539,7 @@ Cron 状态持久化到：
 开启：
 
 ```bash
-uv run agent --debug-log --debug-log-path .agent/debug.jsonl "分析一次工具调用"
+uv run agent --debug-log --debug-log-path .zx-code/logs/debug.jsonl "分析一次工具调用"
 ```
 
 常见事件：

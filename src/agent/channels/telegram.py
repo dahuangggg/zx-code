@@ -30,7 +30,7 @@ class TelegramChannel(Channel):
         account_id: str = "telegram-bot",
         offset: int | None = None,
         timeout_s: int = 30,
-        state_dir: str | Path = ".agent/channels",
+        state_dir: str | Path = ".zx-code/state/channels",
         allowed_chats: str | set[str] = "",
         text_coalesce_s: float = 1.0,
         media_group_coalesce_s: float = 0.5,

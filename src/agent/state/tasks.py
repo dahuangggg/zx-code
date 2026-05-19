@@ -2,7 +2,7 @@
 
 ``TaskStore`` 实现类似 Claude Code TodoWrite 的任务系统，但额外支持依赖关系：
 
-每个任务存为独立 JSON 文件（.tasks/<id>.json），包含：
+每个任务存为独立 JSON 文件（.zx-code/state/tasks/<id>.json），包含：
   - id / title / status（pending / in_progress / completed / cancelled）
   - blocked_by：依赖的上游任务 id 列表
 

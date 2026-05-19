@@ -96,7 +96,7 @@ def test_tool_result_model_copy_normalizes_legacy_content_and_status_update():
             "data": {"truncated": True},
             "text": "preview",
             "stats": {"time_ms": 4},
-            "context": {"full_output_path": "tool-output/call-1.txt"},
+            "context": {"full_output_path": ".zx-code/artifacts/tool-output/call-1.txt"},
         }
     )
 

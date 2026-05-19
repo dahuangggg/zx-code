@@ -31,9 +31,9 @@ dm_scope = "per-channel-peer"
 telegram_allowed_chats = "123,456"
 plugin_dirs = [".zx-code/plugins"]
 enable_worktree_isolation = true
-worktree_dir = ".agent/worktrees"
+worktree_dir = ".zx-code/state/worktrees"
 debug_log_enabled = true
-debug_log_path = ".agent/trace.jsonl"
+debug_log_path = ".zx-code/logs/debug.jsonl"
 render_markdown = true
 markdown_streaming = true
 
@@ -64,9 +64,9 @@ bash = "deny"
     assert settings.channel.telegram.allowed_chats == "123,456"
     assert settings.extensions.plugin_dirs == [".zx-code/plugins"]
     assert settings.worktree.isolation_enabled is True
-    assert settings.worktree.dir == ".agent/worktrees"
+    assert settings.worktree.dir == ".zx-code/state/worktrees"
     assert settings.debug.log_enabled is True
-    assert settings.debug.log_path == ".agent/trace.jsonl"
+    assert settings.debug.log_path == ".zx-code/logs/debug.jsonl"
     assert settings.model.render_markdown is True
     assert settings.model.markdown_streaming is True
     assert settings.permissions.tools == {"bash": "deny"}
@@ -137,6 +137,74 @@ reasoning_effort = "low"
     profiles = settings.resolved_model_profiles()
 
     assert [profile.reasoning_effort for profile in profiles] == ["low", "low", "low"]
+
+
+def test_config_loader_reads_nested_trace_settings(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_config = project_dir / ".zx-code" / "config.toml"
+    project_config.parent.mkdir(parents=True)
+    project_config.write_text(
+        """
+[agent.trace]
+enabled = true
+dir = ".zx-code/logs/traces"
+sanitize = false
+html = true
+html_include_raw_response = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = ConfigLoader(project_dir=project_dir).load()
+    runtime = settings.to_runtime_config()
+
+    assert settings.trace.enabled is True
+    assert settings.trace.dir == ".zx-code/logs/traces"
+    assert settings.trace.sanitize is False
+    assert settings.trace.html is True
+    assert settings.trace.html_include_raw_response is True
+    assert runtime.trace_enabled is True
+    assert runtime.trace_dir == ".zx-code/logs/traces"
+    assert runtime.trace_sanitize is False
+    assert runtime.trace_html is True
+    assert runtime.trace_html_include_raw_response is True
+    assert runtime.trace_sanitize is False
+    assert runtime.trace_html is True
+    assert runtime.trace_html_include_raw_response is True
+
+
+def test_config_loader_reads_flat_trace_settings(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_config = project_dir / ".zx-code" / "config.toml"
+    project_config.parent.mkdir(parents=True)
+    project_config.write_text(
+        """
+[agent]
+trace_enabled = true
+trace_dir = ".zx-code/logs/traces"
+trace_sanitize = false
+trace_html = true
+trace_html_include_raw_response = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = ConfigLoader(project_dir=project_dir).load().to_runtime_config()
+
+    assert runtime.trace_enabled is True
+    assert runtime.trace_dir == ".zx-code/logs/traces"
+
+
+def test_default_runtime_paths_use_zx_code_home(tmp_path: Path) -> None:
+    runtime = ConfigLoader(project_dir=tmp_path).load({}).to_runtime_config()
+
+    assert runtime.data_dir == ".zx-code/state"
+    assert runtime.memory_path == ".zx-code/state/memory/MEMORY.md"
+    assert runtime.debug_log_path == ".zx-code/logs/debug.jsonl"
+    assert runtime.trace_dir == ".zx-code/logs/traces"
+    assert runtime.trace_sanitize is True
+    assert runtime.trace_html is False
+    assert runtime.trace_html_include_raw_response is False
 
 
 def test_config_loader_reads_nested_channel_settings(tmp_path: Path) -> None:

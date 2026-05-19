@@ -45,7 +45,7 @@ class WorktreeManager:
         self.worktree_root = (
             Path(worktree_root).expanduser().resolve()
             if worktree_root is not None
-            else self.repo_root / ".agent" / "worktrees"
+            else self.repo_root / ".zx-code" / "state" / "worktrees"
         )
 
     def create(self, task_id: str, *, base_ref: str = "HEAD") -> WorktreeLease:

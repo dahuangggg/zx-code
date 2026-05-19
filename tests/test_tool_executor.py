@@ -12,6 +12,7 @@ from agent.core.tool_executor import ToolCallExecutor
 from agent.debuglog import DebugLog
 from agent.hooks import HookResult
 from agent.models import ToolCall
+from agent.trace import TraceLogger
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 
@@ -159,7 +160,9 @@ async def test_tool_call_executor_centralizes_large_output_truncation(
     assert envelope.status == "partial"
     assert envelope.data["truncated"] is True
     assert envelope.data["truncation"]["original_lines"] == 100
-    assert envelope.data["truncation"]["full_output_path"].startswith("tool-output/")
+    assert envelope.data["truncation"]["full_output_path"].startswith(
+        ".zx-code/artifacts/tool-output/"
+    )
 
 
 @pytest.mark.asyncio
@@ -193,3 +196,79 @@ async def test_tool_call_executor_logs_structured_tool_result_without_outer_stat
     assert tool_result["payload"]["envelope"]["text"] == "x"
     assert "status" not in tool_result["payload"]
     assert "is_error" not in tool_result["payload"]
+
+
+@pytest.mark.asyncio
+async def test_tool_call_executor_traces_tool_call_and_result(tmp_path) -> None:
+    trace_logger = TraceLogger(
+        session_id="session-1",
+        trace_dir=tmp_path,
+        enabled=True,
+        sanitize=False,
+        run_id="run-test",
+    )
+    registry = ToolRegistry()
+    registry.register(_UnsafeTool())
+    executor = ToolCallExecutor(
+        tool_registry=registry,
+        hook_runner=_RecordingHooks(),
+        session_id="session-1",
+        trace_logger=trace_logger,
+        trace_step=2,
+    )
+
+    await executor.execute_many(
+        [ToolCall(id="call-1", name="unsafe_tool", arguments={"label": "x"})]
+    )
+
+    events = [
+        json.loads(line)
+        for line in trace_logger.jsonl_path.read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert [event["event"] for event in events] == ["tool_call", "tool_result"]
+    assert events[0]["step"] == 2
+    assert events[0]["payload"] == {
+        "tool": "unsafe_tool",
+        "tool_call_id": "call-1",
+        "args": {"label": "x"},
+    }
+    assert events[1]["payload"]["tool"] == "unsafe_tool"
+    assert events[1]["payload"]["tool_call_id"] == "call-1"
+    assert events[1]["payload"]["result"]["status"] == "success"
+    assert events[1]["payload"]["result"]["text"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_executor_traces_hook_denied_result(tmp_path) -> None:
+    trace_logger = TraceLogger(
+        session_id="session-1",
+        trace_dir=tmp_path,
+        enabled=True,
+        sanitize=False,
+        run_id="run-test",
+    )
+    registry = ToolRegistry()
+    registry.register(_UnsafeTool())
+    executor = ToolCallExecutor(
+        tool_registry=registry,
+        hook_runner=_RecordingHooks(denied_tools={"unsafe_tool"}),
+        session_id="session-1",
+        trace_logger=trace_logger,
+        trace_step=3,
+    )
+
+    await executor.execute_many(
+        [ToolCall(id="call-1", name="unsafe_tool", arguments={"label": "x"})]
+    )
+
+    events = [
+        json.loads(line)
+        for line in trace_logger.jsonl_path.read_text(encoding="utf-8").splitlines()
+    ]
+    result_event = events[-1]
+
+    assert [event["event"] for event in events] == ["tool_call", "tool_result"]
+    assert result_event["step"] == 3
+    assert result_event["payload"]["result"]["status"] == "error"
+    assert result_event["payload"]["result"]["error"]["code"] == "ACCESS_DENIED"

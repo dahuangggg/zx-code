@@ -74,6 +74,11 @@ def _settings_from_cli(
     worktree_isolation: bool,
     debug_log: bool,
     debug_log_path: str | None,
+    trace: bool,
+    trace_dir: str | None,
+    no_trace_sanitize: bool,
+    trace_html: bool,
+    trace_html_include_raw_response: bool,
 ) -> AgentSettings:
     """把 Typer 参数转换为 ConfigLoader 可合并的 override dict。"""
     overrides: dict[str, Any] = {
@@ -114,6 +119,7 @@ def _settings_from_cli(
         "subagent_max_depth": subagent_max_depth,
         "worktree_dir": worktree_dir,
         "debug_log_path": debug_log_path,
+        "trace_dir": trace_dir,
     }
     if heartbeat_enabled:
         overrides["heartbeat_enabled"] = True
@@ -133,6 +139,14 @@ def _settings_from_cli(
         overrides["enable_worktree_isolation"] = True
     if debug_log:
         overrides["debug_log_enabled"] = True
+    if trace:
+        overrides["trace_enabled"] = True
+    if no_trace_sanitize:
+        overrides["trace_sanitize"] = False
+    if trace_html:
+        overrides["trace_html"] = True
+    if trace_html_include_raw_response:
+        overrides["trace_html_include_raw_response"] = True
     return ConfigLoader(project_dir=Path.cwd()).load(overrides)
 
 
@@ -197,6 +211,14 @@ def _build_typer_app() -> Any:
         worktree_isolation: bool = typer.Option(False, "--worktree-isolation"),
         debug_log: bool = typer.Option(False, "--debug-log"),
         debug_log_path: str | None = typer.Option(None, "--debug-log-path"),
+        trace: bool = typer.Option(False, "--trace"),
+        trace_dir: str | None = typer.Option(None, "--trace-dir"),
+        no_trace_sanitize: bool = typer.Option(False, "--no-trace-sanitize"),
+        trace_html: bool = typer.Option(False, "--trace-html"),
+        trace_html_include_raw_response: bool = typer.Option(
+            False,
+            "--trace-html-include-raw-response",
+        ),
         print_system_prompt: bool = typer.Option(False, "--print-system-prompt"),
     ) -> None:
         settings = _settings_from_cli(
@@ -246,6 +268,11 @@ def _build_typer_app() -> Any:
             worktree_isolation=worktree_isolation,
             debug_log=debug_log,
             debug_log_path=debug_log_path,
+            trace=trace,
+            trace_dir=trace_dir,
+            no_trace_sanitize=no_trace_sanitize,
+            trace_html=trace_html,
+            trace_html_include_raw_response=trace_html_include_raw_response,
         )
         exit_code = _run_cli(
             task=" ".join(task).strip() if task else None,

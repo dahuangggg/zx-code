@@ -15,6 +15,7 @@ from agent.debuglog import DebugLog
 from agent.models import RuntimeConfig, Message, ModelTurn, ToolCall
 from agent.errors import MaxIterationsExceededError
 from agent.state.sessions import SessionStore
+from agent.trace import TraceLogger
 from agent.tools.base import Tool
 from agent.tools import build_default_registry
 from agent.tools.registry import ToolRegistry
@@ -362,6 +363,112 @@ async def test_debug_log_records_prompt_model_and_tool_events(tmp_path: Path) ->
     assert tool_result["envelope"]["status"] == "success"
     assert tool_result["envelope"]["data"]["path"] == str(target)
     assert "status" not in tool_result
+
+
+@pytest.mark.asyncio
+async def test_run_task_writes_trace_lifecycle_and_tool_events(tmp_path: Path) -> None:
+    target = tmp_path / "answer.txt"
+    trace_logger = TraceLogger(
+        session_id="trace-session",
+        trace_dir=tmp_path / "traces",
+        enabled=True,
+        sanitize=False,
+        run_id="run-test",
+    )
+    registry = build_default_registry()
+    client = ScriptedModelClient(
+        [
+            ModelTurn(
+                text="writing",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="write_file",
+                        arguments={"path": str(target), "content": "done\n"},
+                    )
+                ],
+            ),
+            ModelTurn(text="done", tool_calls=[]),
+        ]
+    )
+
+    await run_task(
+        "write a file",
+        model_client=client,
+        tool_registry=registry,
+        config=RuntimeConfig(
+            system_prompt="system",
+            max_iterations=4,
+            session_id="trace-session",
+        ),
+        trace_logger=trace_logger,
+    )
+
+    events = [
+        json.loads(line)
+        for line in trace_logger.jsonl_path.read_text(encoding="utf-8").splitlines()
+    ]
+    names = [event["event"] for event in events]
+
+    assert names == [
+        "run_start",
+        "system_messages",
+        "user_input",
+        "context_build",
+        "model_output",
+        "tool_call",
+        "tool_result",
+        "message_written",
+        "context_build",
+        "model_output",
+        "message_written",
+        "finish",
+        "session_summary",
+        "run_end",
+    ]
+    assert events[0]["payload"]["session_id"] == "trace-session"
+    assert events[4]["payload"]["text"] == "writing"
+    assert events[4]["payload"]["tool_calls"][0]["name"] == "write_file"
+    assert events[6]["payload"]["result"]["status"] == "success"
+    assert events[-2]["payload"]["metrics"]["total_tool_calls"] == 1
+    assert {event["session_id"] for event in events} == {"trace-session"}
+
+
+@pytest.mark.asyncio
+async def test_run_task_trace_finalizes_on_error(tmp_path: Path) -> None:
+    trace_logger = TraceLogger(
+        session_id="trace-session",
+        trace_dir=tmp_path / "traces",
+        enabled=True,
+        sanitize=False,
+        run_id="run-test",
+    )
+    registry = build_default_registry()
+    client = ScriptedModelClient(
+        [
+            ModelTurn(
+                text="keep going",
+                tool_calls=[ToolCall(id="call-1", name="grep", arguments={"pattern": "x"})],
+            ),
+        ]
+    )
+
+    with pytest.raises(MaxIterationsExceededError):
+        await run_task(
+            "loop",
+            model_client=client,
+            tool_registry=registry,
+            config=RuntimeConfig(max_iterations=1, session_id="trace-session"),
+            trace_logger=trace_logger,
+        )
+
+    events = [
+        json.loads(line)
+        for line in trace_logger.jsonl_path.read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert "error" in [event["event"] for event in events]
+    assert events[-1]["event"] == "run_end"
 
 
 @pytest.mark.asyncio

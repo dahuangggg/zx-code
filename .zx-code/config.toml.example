@@ -41,14 +41,14 @@ compact_model = ""
 
 [agent.state]
 session_id = "default"
-data_dir = ".agent"
-memory_path = ".memory/MEMORY.md"
+data_dir = ".zx-code/state"
+memory_path = ".zx-code/state/memory/MEMORY.md"
 enable_memory = true
 enable_skills = true
 skills_dir = "skills"
 enable_todos = true
 enable_tasks = true
-tasks_dir = ".tasks"
+tasks_dir = ".zx-code/state/tasks"
 
 [agent.permissions]
 default = "allow"
@@ -99,12 +99,12 @@ max_depth = 1
 
 [agent.worktree]
 isolation_enabled = false
-dir = ".agent/worktrees"
+dir = ".zx-code/state/worktrees"
 
 [agent.code_context]
 enabled = false
-path = ".agent/code-context/chroma"
-snapshot_dir = ".agent/code-context/snapshots"
+path = ".zx-code/cache/code-context/chroma"
+snapshot_dir = ".zx-code/cache/code-context/snapshots"
 collection = "agent_code_context"
 top_k = 5
 max_result_chars = 4000
@@ -112,7 +112,14 @@ max_total_chars = 12000
 
 [agent.debug]
 log_enabled = false
-log_path = ".agent/debug.jsonl"
+log_path = ".zx-code/logs/debug.jsonl"
+
+[agent.trace]
+enabled = false
+dir = ".zx-code/logs/traces"
+sanitize = true
+html = false
+html_include_raw_response = false
 
 [agent.extensions]
 hooks_path = ""
