@@ -302,6 +302,7 @@ async def test_loop_runs_concurrency_safe_tool_calls_together() -> None:
 
 @pytest.mark.asyncio
 async def test_debug_log_records_prompt_model_and_tool_events(tmp_path: Path) -> None:
+    """端到端 debug trace 要保留 prompt/model/tool 事件，并使用 tool.result envelope 协议。"""
     target = tmp_path / "answer.txt"
     log_path = tmp_path / "debug.jsonl"
     registry = build_default_registry()

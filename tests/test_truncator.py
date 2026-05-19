@@ -130,6 +130,7 @@ def test_non_string_content_measures_full_envelope_json(tmp_path: Path, monkeypa
 
 
 def test_stdout_and_stderr_are_measured_as_raw_output(tmp_path: Path, monkeypatch):
+    """bash 输出截断应按 stdout/stderr 原始文本计算，而不是只看 envelope 外壳。"""
     monkeypatch.setattr("agent.tools.truncator._MAX_LINES", 5)
     monkeypatch.setattr("agent.tools.truncator._MAX_BYTES", 99999)
     t = ObservationTruncator(tmp_path)
@@ -152,6 +153,7 @@ def test_stdout_and_stderr_are_measured_as_raw_output(tmp_path: Path, monkeypatc
 
 
 def test_repeated_truncations_use_unique_output_paths(tmp_path: Path, monkeypatch):
+    """同一秒内多次截断也不能覆盖完整输出文件。"""
     monkeypatch.setattr("agent.tools.truncator._MAX_LINES", 2)
     monkeypatch.setattr("agent.tools.truncator._MAX_BYTES", 99999)
     t = ObservationTruncator(tmp_path)
@@ -169,6 +171,7 @@ def test_empty_string_content_is_measured_as_content_not_full_envelope(
     tmp_path: Path,
     monkeypatch,
 ):
+    """空字符串 content 是有效原始输出，不能退回按完整 envelope JSON 计算。"""
     monkeypatch.setattr("agent.tools.truncator._MAX_LINES", 99999)
     monkeypatch.setattr("agent.tools.truncator._MAX_BYTES", 1)
     t = ObservationTruncator(tmp_path)

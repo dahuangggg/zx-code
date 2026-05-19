@@ -84,6 +84,7 @@ def test_tool_result_serializes_envelope_as_tool_message_content():
 
 
 def test_tool_result_model_copy_normalizes_legacy_content_and_status_update():
+    """保护旧截断路径：model_copy(update=content/status) 不能生成影子字段。"""
     result = ToolResult(
         call_id="call-1",
         name="dummy",
@@ -129,6 +130,7 @@ def test_tool_result_model_copy_normalizes_legacy_status_only_update():
 
 
 def test_tool_result_wraps_arbitrary_legacy_dict_content_as_raw_data():
+    """保护插件/MCP 兼容路径：任意 dict 不是 ToolEnvelope 协议时必须包进 data.raw。"""
     result = ToolResult(
         call_id="call-1",
         name="dummy",

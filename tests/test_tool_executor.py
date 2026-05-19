@@ -77,6 +77,7 @@ class _LargeOutputTool(Tool):
 
 @pytest.mark.asyncio
 async def test_tool_call_executor_runs_hooks_and_denies_before_registry() -> None:
+    """hook deny 必须在工具执行前短路，同时仍返回可配对的 error envelope。"""
     registry = ToolRegistry()
     registry.register(_UnsafeTool())
     hooks = _RecordingHooks(denied_tools={"unsafe_tool"})
@@ -101,6 +102,7 @@ async def test_tool_call_executor_runs_hooks_and_denies_before_registry() -> Non
 
 @pytest.mark.asyncio
 async def test_tool_call_executor_batches_concurrency_safe_calls_in_order() -> None:
+    """并发安全工具可以批量执行，但返回顺序仍必须匹配模型 tool_calls 顺序。"""
     both_started = asyncio.Event()
     starts: list[str] = []
     registry = ToolRegistry()
@@ -164,6 +166,7 @@ async def test_tool_call_executor_centralizes_large_output_truncation(
 async def test_tool_call_executor_logs_structured_tool_result_without_outer_status(
     tmp_path,
 ) -> None:
+    """trace 只记录 envelope，不在外层重复 status/is_error。"""
     log_path = tmp_path / "debug.jsonl"
     registry = ToolRegistry()
     registry.register(_UnsafeTool())
