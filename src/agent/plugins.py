@@ -31,6 +31,8 @@ from agent.tools.base import Tool
 
 
 class PluginToolConfig(BaseModel):
+    """plugin.json 中单个工具的配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str
@@ -43,6 +45,8 @@ class PluginToolConfig(BaseModel):
 
 
 class PluginManifest(BaseModel):
+    """plugin.json 清单。"""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str
@@ -50,6 +54,8 @@ class PluginManifest(BaseModel):
 
 
 class PluginCommandTool(Tool):
+    """把外部命令包装成 ToolRegistry 可执行工具。"""
+
     name: str
     description: str
     input_model = object  # type: ignore[assignment]
@@ -81,6 +87,7 @@ class PluginCommandTool(Tool):
         }
 
     async def execute(self, arguments: dict[str, Any], call_id: str) -> ToolResult:
+        """执行插件命令，并把 stdout 规范化为 ToolEnvelope。"""
         process = await asyncio.create_subprocess_exec(
             *shlex.split(self.command),
             cwd=self.plugin_dir,
@@ -114,10 +121,13 @@ class PluginCommandTool(Tool):
 
 
 class PluginManager:
+    """扫描插件目录并实例化 PluginCommandTool。"""
+
     def __init__(self, plugin_roots: list[str | Path]) -> None:
         self.plugin_roots = [Path(root).expanduser().resolve() for root in plugin_roots]
 
     def load_tools(self) -> list[PluginCommandTool]:
+        """加载所有发现到的插件工具。"""
         tools: list[PluginCommandTool] = []
         for plugin_dir, manifest in self.discover():
             for tool_config in manifest.tools:
@@ -131,6 +141,7 @@ class PluginManager:
         return tools
 
     def discover(self) -> list[tuple[Path, PluginManifest]]:
+        """发现所有 */plugin.json 清单。"""
         manifests: list[tuple[Path, PluginManifest]] = []
         for root in self.plugin_roots:
             if not root.exists():
@@ -157,6 +168,11 @@ def _safe_part(value: str) -> str:
 
 
 def _normalize_plugin_stdout(content: str) -> ToolEnvelope:
+    """把插件 stdout 转成 ToolEnvelope。
+
+    带合法 status 的 JSON 视为完整 envelope；其他 JSON 保存在 data.raw；非 JSON
+    作为 success text 返回。
+    """
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:

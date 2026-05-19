@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 class MCPServerConfig(BaseModel):
+    """单个 MCP stdio server 的配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str
@@ -32,6 +34,8 @@ class MCPServerConfig(BaseModel):
 
 
 class MCPToolDefinition(BaseModel):
+    """MCP tools/list 返回的工具定义。"""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str
@@ -40,7 +44,7 @@ class MCPToolDefinition(BaseModel):
 
 
 class StdioMCPClient:
-    """MCP client backed by the official Anthropic mcp SDK (stdio transport)."""
+    """基于官方 mcp SDK 的 stdio 客户端。"""
 
     def __init__(
         self,
@@ -58,12 +62,15 @@ class StdioMCPClient:
         self._stack = contextlib.AsyncExitStack()
 
     async def list_tools(self) -> list[MCPToolDefinition]:
+        """列出服务器暴露的工具。"""
         return await self._with_retry(self._list_tools)
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        """调用服务器工具。"""
         return await self._with_retry(lambda: self._call_tool(name, arguments))
 
     async def close(self) -> None:
+        """关闭 MCP session 和底层子进程。"""
         await self._stack.aclose()
         self._session = None
 
@@ -117,6 +124,7 @@ class StdioMCPClient:
         self._stack = contextlib.AsyncExitStack()
 
     async def _ensure_initialized(self) -> None:
+        """懒初始化 MCP stdio 连接和 ClientSession。"""
         if self._session is not None:
             return
         from mcp import ClientSession

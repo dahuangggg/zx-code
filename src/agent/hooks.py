@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 class HookResult:
+    """单个 hook 链的决策结果。"""
+
     __slots__ = ("denied", "reason")
 
     def __init__(self, *, denied: bool = False, reason: str = "") -> None:
@@ -56,6 +58,7 @@ class HookRunner:
 
     @classmethod
     def from_file(cls, path: str | Path) -> "HookRunner":
+        """从 TOML 文件加载 hook 配置；文件不存在时返回空 runner。"""
         hooks_path = Path(path)
         if not hooks_path.exists():
             return cls({})
@@ -86,6 +89,7 @@ class HookRunner:
         return HookResult()
 
     async def _exec(self, command: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """执行单个 hook 命令，失败或超时都按 allow 降级。"""
         try:
             proc = await asyncio.create_subprocess_exec(
                 *shlex.split(command),

@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 
 class MCPClient(Protocol):
+    """MCPToolRouter 需要的客户端最小接口。"""
+
     async def list_tools(self) -> list[MCPToolDefinition]:
         ...
 
@@ -40,6 +42,8 @@ class MCPClient(Protocol):
 
 
 class MCPProxyTool(Tool):
+    """把远端 MCP 工具代理成本地 Tool。"""
+
     name: str
     description: str
     input_model = object  # type: ignore[assignment]
@@ -60,6 +64,7 @@ class MCPProxyTool(Tool):
         self.router = router
 
     def schema(self) -> dict[str, Any]:
+        """返回 MCP 工具对应的 OpenAI function schema。"""
         return {
             "type": "function",
             "function": {
@@ -87,6 +92,8 @@ class MCPProxyTool(Tool):
 
 
 class MCPToolRouter:
+    """管理多个 MCP server，并按 mcp__server__tool 名称路由调用。"""
+
     def __init__(
         self,
         clients: dict[str, MCPClient],
@@ -183,6 +190,7 @@ class MCPToolRouter:
                 logger.warning("MCP server %r failed to close cleanly: %s", server_name, result)
 
     def parse_name(self, full_name: str) -> tuple[str, str]:
+        """把完整工具名解析成 server_name/tool_name。"""
         # 优先查 _tool_map（精确），找不到再按 __ 切割（兜底，支持 discover 前直接调用）
         if full_name in self._tool_map:
             return self._tool_map[full_name]
@@ -193,6 +201,7 @@ class MCPToolRouter:
 
     @staticmethod
     def format_name(server_name: str, tool_name: str) -> str:
+        """生成 ToolRegistry 中使用的 MCP 工具名。"""
         return f"mcp__{_safe_part(server_name)}__{_safe_part(tool_name)}"
 
 
@@ -209,6 +218,7 @@ def _safe_part(value: str) -> str:
 
 
 def _normalize_mcp_output(output: Any) -> ToolEnvelope:
+    """把 MCP 返回值规范化成 ToolEnvelope。"""
     if isinstance(output, str):
         return ToolEnvelope(status="success", data={}, text=output)
 
@@ -237,6 +247,7 @@ def _normalize_mcp_output(output: Any) -> ToolEnvelope:
 
 
 def _mcp_text(output: dict[str, Any]) -> str:
+    """从 MCP content 数组中提取文本片段。"""
     content = output.get("content")
     if isinstance(content, list):
         parts = [
