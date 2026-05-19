@@ -19,21 +19,22 @@ class ActivityTracker:
       mark_agent_end()  — agent 处理完毕时调用
       is_busy()         — 心跳 tick 时调用，判断是否应跳过本次心跳
     """
-    """Track per-conversation request lifecycle for heartbeat idle detection."""
-
     def __init__(self) -> None:
         self._active: set[tuple[str, str, str]] = set()
         self._last_user_at: dict[tuple[str, str, str], float] = {}
 
     def mark_inbound(self, inbound: InboundMessage, *, now: float | None = None) -> None:
+        """记录用户最近一次入站消息时间。"""
         self._last_user_at[self._key(inbound.channel, inbound.account_id, inbound.peer_id)] = (
             time.time() if now is None else now
         )
 
     def mark_agent_start(self, inbound: InboundMessage) -> None:
+        """标记该会话正在被 agent 处理。"""
         self._active.add(self._key(inbound.channel, inbound.account_id, inbound.peer_id))
 
     def mark_agent_end(self, inbound: InboundMessage) -> None:
+        """标记该会话 agent 处理结束。"""
         self._active.discard(self._key(inbound.channel, inbound.account_id, inbound.peer_id))
 
     def is_busy(
@@ -45,6 +46,7 @@ class ActivityTracker:
         min_idle_s: float,
         now: float | None = None,
     ) -> bool:
+        """判断 heartbeat 是否应跳过该会话。"""
         key = self._key(channel, account_id, peer_id)
         if key in self._active:
             return True

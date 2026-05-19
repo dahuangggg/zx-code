@@ -44,6 +44,8 @@ _current_scheduler: ContextVar["LaneScheduler | None"] = ContextVar(
 
 
 class LaneRunRecord(BaseModel):
+    """一次 lane job 的运行指标。"""
+
     model_config = ConfigDict(extra="forbid")
 
     job_id: str
@@ -93,6 +95,7 @@ class LaneScheduler:
         *,
         job_id: str | None = None,
     ) -> asyncio.Future[Any]:
+        """提交任务并返回 future；不会等待执行完成。"""
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Any] = loop.create_future()
         priority = LANE_PRIORITIES.get(lane, 100)
@@ -122,6 +125,7 @@ class LaneScheduler:
         *,
         job_id: str | None = None,
     ) -> Any:
+        """提交任务并等待结果；在同一 scheduler 内递归调用时内联执行。"""
         if _current_scheduler.get() is self:
             loop = asyncio.get_running_loop()
             future: asyncio.Future[Any] = loop.create_future()
@@ -138,10 +142,12 @@ class LaneScheduler:
         return await self.submit(lane, run, job_id=job_id)
 
     def start(self) -> None:
+        """启动后台 worker。"""
         if self._worker_task is None or self._worker_task.done():
             self._worker_task = asyncio.create_task(self._worker())
 
     async def close(self) -> None:
+        """停止后台 worker。"""
         if self._worker_task is None:
             return
         self._worker_task.cancel()

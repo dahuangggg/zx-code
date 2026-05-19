@@ -26,7 +26,10 @@ from agent.channels.delivery import DeliveryEntry, DeliveryQueue
 
 HeartbeatTurnHandler = Callable[[str, str], Awaitable[str]]
 
+
 class HeartbeatConfig(BaseModel):
+    """心跳配置。sentinel 表示“无需通知用户”的空结果。"""
+
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
@@ -40,6 +43,8 @@ class HeartbeatConfig(BaseModel):
 
 
 class HeartbeatRunner:
+    """按间隔运行心跳 prompt，并在需要时入队投递回复。"""
+
     def __init__(
         self,
         *,
@@ -55,6 +60,7 @@ class HeartbeatRunner:
         self.next_run_at = 0.0
 
     async def tick(self, *, now: float | None = None) -> DeliveryEntry | None:
+        """执行一次心跳检查；未到期、用户忙或无更新时返回 None。"""
         current = time.time() if now is None else now
         if not self.config.enabled:
             return None

@@ -24,6 +24,8 @@ BackgroundStatus = Literal["succeeded", "failed"]
 
 
 class BackgroundResult(BaseModel):
+    """后台任务完成后放入 results 队列的结果。"""
+
     model_config = ConfigDict(extra="forbid")
 
     task_id: str
@@ -33,13 +35,14 @@ class BackgroundResult(BaseModel):
 
 
 class BackgroundTaskManager:
-    """Small asyncio task manager with queue-based result notification."""
+    """带结果队列的小型 asyncio 任务管理器。"""
 
     def __init__(self) -> None:
         self.results: asyncio.Queue[BackgroundResult] = asyncio.Queue()
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
     def start(self, task_id: str, awaitable: Awaitable[Any]) -> asyncio.Task[None]:
+        """启动后台任务；同 task_id 仍在运行时拒绝重复启动。"""
         if task_id in self._tasks and not self._tasks[task_id].done():
             raise ValueError(f"background task already running: {task_id}")
         task = asyncio.create_task(self._run(task_id, awaitable))
@@ -48,9 +51,11 @@ class BackgroundTaskManager:
         return task
 
     async def next_result(self) -> BackgroundResult:
+        """等待下一个后台任务结果。"""
         return await self.results.get()
 
     async def cancel_all(self) -> None:
+        """取消所有仍在运行的后台任务。"""
         tasks = list(self._tasks.values())
         for task in tasks:
             task.cancel()

@@ -40,6 +40,8 @@ CronTurnHandler = Callable[[str, str], Awaitable[str]]
 
 
 class CronJob(BaseModel):
+    """单个定时任务配置和运行状态。"""
+
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -56,6 +58,8 @@ class CronJob(BaseModel):
 
 
 class CronScheduler:
+    """定时任务调度器；tick() 由外部 loop 周期性调用。"""
+
     def __init__(
         self,
         *,
@@ -79,6 +83,7 @@ class CronScheduler:
         run_agent_turn: CronTurnHandler,
         state_path: Path | str | None = None,
     ) -> "CronScheduler":
+        """从 JSON 文件加载 cron job 列表。"""
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         items = raw.get("jobs", raw) if isinstance(raw, dict) else raw
         if not isinstance(items, list):
@@ -163,6 +168,7 @@ class CronScheduler:
         return job
 
     async def tick(self, *, now: float | None = None) -> list[DeliveryEntry]:
+        """运行所有到期 job，并把非空回复加入 delivery queue。"""
         current = time.time() if now is None else now
         delivered: list[DeliveryEntry] = []
         for job in self.jobs:
@@ -282,6 +288,7 @@ class CronScheduler:
 
 
 def _simple_next_cron_run(expression: str, base: datetime) -> float | None:
+    """无 croniter 时的兜底：逐分钟寻找下一次匹配。"""
     cursor = base.replace(second=0, microsecond=0) + timedelta(minutes=1)
     for _ in range(366 * 24 * 60):
         if _simple_cron_matches(expression, cursor):
@@ -291,6 +298,7 @@ def _simple_next_cron_run(expression: str, base: datetime) -> float | None:
 
 
 def _simple_cron_matches(expression: str, when: datetime) -> bool:
+    """检查五段 cron 表达式是否匹配指定 UTC 时间。"""
     fields = expression.split()
     if len(fields) != 5:
         raise ValueError("cron expression must have five fields")
