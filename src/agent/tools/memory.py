@@ -1,3 +1,8 @@
+"""memory_append 工具。
+
+把用户允许持久化的事实写入 MemoryStore。这个工具会跨 session 生效，调用前应由
+模型根据系统提示谨慎选择 memory_type。
+"""
 from __future__ import annotations
 
 from typing import Literal
@@ -10,6 +15,8 @@ from agent.tools.base import Tool
 
 
 class MemoryAppendInput(BaseModel):
+    """memory_append 参数；memory_type 决定后续提示词如何组织这条记忆。"""
+
     model_config = ConfigDict(extra="forbid")
 
     text: str
@@ -27,6 +34,8 @@ class MemoryAppendInput(BaseModel):
 
 
 class MemoryAppendTool(Tool):
+    """持久化记忆写入工具；data 返回写入文件路径和原文。"""
+
     name = "memory_append"
     description = (
         "Append a durable cross-session memory note. "

@@ -1,3 +1,8 @@
+"""read_file 工具。
+
+读取文本文件并返回带行号的片段。data.content 给模型和后续工具看具体内容，
+extra_context 记录 mtime/size/path，供 ToolRegistry 的写入冲突保护使用。
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +14,8 @@ from agent.tools.base import ErrorCode, Tool
 
 
 class ReadFileInput(BaseModel):
+    """read_file 参数，兼容 path/file_path 与 offset/limit 两组别名。"""
+
     model_config = ConfigDict(extra="forbid")
 
     path: str = ""
@@ -20,6 +27,7 @@ class ReadFileInput(BaseModel):
 
     @model_validator(mode="after")
     def normalize_documented_aliases(self) -> "ReadFileInput":
+        """把文档化别名规范化为内部使用的 path/start_line/end_line。"""
         if not self.path and self.file_path:
             self.path = self.file_path
         if not self.path:
@@ -32,6 +40,8 @@ class ReadFileInput(BaseModel):
 
 
 class ReadFileTool(Tool):
+    """只读文件工具；成功读取会把文件元数据写入 envelope.context。"""
+
     name = "read_file"
     description = "Read a text file, optionally by line range."
     input_model = ReadFileInput
@@ -64,4 +74,5 @@ class ReadFileTool(Tool):
         )
 
     def is_concurrency_safe(self, arguments: dict[str, object] | BaseModel) -> bool:
+        """纯读取没有副作用，可以和其他只读工具并发。"""
         return True

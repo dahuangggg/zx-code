@@ -1,3 +1,8 @@
+"""write_file 工具。
+
+创建、覆盖或追加文本文件。这个工具有文件系统副作用，因此默认不声明并发安全；
+ToolRegistry 会在执行前做权限检查和读后写冲突保护。
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +14,8 @@ from agent.tools.base import ErrorCode, Tool
 
 
 class WriteFileInput(BaseModel):
+    """write_file 参数。create_parents 默认开启，便于一次性创建目标目录。"""
+
     model_config = ConfigDict(extra="forbid")
 
     path: str
@@ -18,6 +25,8 @@ class WriteFileInput(BaseModel):
 
 
 class WriteFileTool(Tool):
+    """写文件工具；data 返回落盘路径、字节数和是否追加。"""
+
     name = "write_file"
     description = "Write or append text content to a file."
     input_model = WriteFileInput

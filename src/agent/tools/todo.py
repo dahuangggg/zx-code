@@ -1,3 +1,8 @@
+"""todo 工具组。
+
+这些工具管理当前会话的轻量 todo 列表，适合模型在一次任务内维护短期步骤。
+它和 state/tasks.py 的 DAG task 不同：todo 更简单，不表达依赖关系。
+"""
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
@@ -8,6 +13,8 @@ from agent.tools.base import Tool
 
 
 class TodoCreateInput(BaseModel):
+    """创建 todo 的输入。"""
+
     model_config = ConfigDict(extra="forbid")
 
     title: str
@@ -15,6 +22,8 @@ class TodoCreateInput(BaseModel):
 
 
 class TodoUpdateInput(BaseModel):
+    """更新 todo 的输入；未传字段保持原值。"""
+
     model_config = ConfigDict(extra="forbid")
 
     todo_id: str
@@ -24,16 +33,22 @@ class TodoUpdateInput(BaseModel):
 
 
 class TodoCompleteInput(BaseModel):
+    """完成 todo 的输入。"""
+
     model_config = ConfigDict(extra="forbid")
 
     todo_id: str
 
 
 class TodoListInput(BaseModel):
+    """列出 todo 的无参数输入模型。"""
+
     model_config = ConfigDict(extra="forbid")
 
 
 class TodoCreateTool(Tool):
+    """创建当前 session 的持久 todo。"""
+
     name = "todo_create"
     description = "Create a persistent todo item for the current session."
     input_model = TodoCreateInput
@@ -50,6 +65,8 @@ class TodoCreateTool(Tool):
 
 
 class TodoUpdateTool(Tool):
+    """按 id 更新 todo 标题、状态或备注。"""
+
     name = "todo_update"
     description = "Update a persistent todo item by id."
     input_model = TodoUpdateInput
@@ -71,6 +88,8 @@ class TodoUpdateTool(Tool):
 
 
 class TodoCompleteTool(Tool):
+    """按 id 标记 todo 完成。"""
+
     name = "todo_complete"
     description = "Mark a persistent todo item as completed."
     input_model = TodoCompleteInput
@@ -87,6 +106,8 @@ class TodoCompleteTool(Tool):
 
 
 class TodoListTool(Tool):
+    """列出当前 session 的 todo，data.todos 保留完整结构。"""
+
     name = "todo_list"
     description = "List persistent todo items for the current session."
     input_model = TodoListInput

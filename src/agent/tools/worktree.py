@@ -1,3 +1,8 @@
+"""worktree 工具组。
+
+为编码子任务创建和清理隔离 git worktree。真正的 git 操作封装在
+WorktreeManager，这里只把 lease 信息转成 ToolEnvelope。
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,6 +15,8 @@ from agent.tools.base import Tool
 
 
 class WorktreeCreateInput(BaseModel):
+    """worktree_create 参数；base_ref 默认当前 HEAD。"""
+
     model_config = ConfigDict(extra="forbid")
 
     task_id: str
@@ -17,6 +24,8 @@ class WorktreeCreateInput(BaseModel):
 
 
 class WorktreeCleanupInput(BaseModel):
+    """worktree_cleanup 参数；delete_branch 控制是否同时删分支。"""
+
     model_config = ConfigDict(extra="forbid")
 
     task_id: str
@@ -26,6 +35,8 @@ class WorktreeCleanupInput(BaseModel):
 
 
 class WorktreeCreateTool(Tool):
+    """创建隔离 worktree，并返回 lease 路径和分支。"""
+
     name = "worktree_create"
     description = "Create an isolated git worktree for a focused coding task."
     input_model = WorktreeCreateInput
@@ -40,6 +51,8 @@ class WorktreeCreateTool(Tool):
 
 
 class WorktreeCleanupTool(Tool):
+    """清理隔离 worktree；可选择删除对应分支。"""
+
     name = "worktree_cleanup"
     description = "Remove an isolated git worktree and optionally delete its branch."
     input_model = WorktreeCleanupInput

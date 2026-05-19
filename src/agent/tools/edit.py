@@ -1,3 +1,8 @@
+"""edit_file 工具。
+
+基于精确 old_text/new_text 做文本替换，并在 data.diff 返回 unified diff。
+它有写副作用，执行前由 ToolRegistry 负责权限和读后写冲突检查。
+"""
 from __future__ import annotations
 
 import difflib
@@ -10,6 +15,8 @@ from agent.tools.base import ErrorCode, Tool
 
 
 class EditFileInput(BaseModel):
+    """edit_file 参数；默认只允许 old_text 命中一次，避免误改多处。"""
+
     model_config = ConfigDict(extra="forbid")
 
     path: str
@@ -19,6 +26,8 @@ class EditFileInput(BaseModel):
 
 
 class EditFileTool(Tool):
+    """精确文本替换工具；多处命中时要求调用者显式 replace_all。"""
+
     name = "edit_file"
     description = "Replace text in a file."
     input_model = EditFileInput

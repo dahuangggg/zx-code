@@ -1,3 +1,8 @@
+"""bash 工具。
+
+执行 shell 命令并捕获 stdout/stderr/exit_code。返回 data 保留完整输出，text 只给
+模型一个摘要；超大输出会在 ToolCallExecutor 后续经过 ObservationTruncator。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -10,6 +15,8 @@ from agent.tools.base import ErrorCode, Tool
 
 
 class BashInput(BaseModel):
+    """bash 参数。workdir 为空时使用当前进程 cwd，timeout_s 防止长期挂起。"""
+
     model_config = ConfigDict(extra="forbid")
 
     command: str
@@ -18,6 +25,8 @@ class BashInput(BaseModel):
 
 
 class BashTool(Tool):
+    """运行 shell 命令的工具；因为有外部副作用，默认串行执行。"""
+
     name = "bash"
     description = "Run a shell command and capture stdout, stderr, and exit code."
     input_model = BashInput

@@ -1,3 +1,8 @@
+"""task DAG 工具组。
+
+这些工具管理可持久化的任务 DAG，适合表达“任务 B 被任务 A 阻塞”的长期工作流。
+和 todo 工具相比，task 有依赖解锁语义，完成或取消 blocker 后可能解锁后续任务。
+"""
 from __future__ import annotations
 
 from typing import Literal
@@ -10,6 +15,8 @@ from agent.tools.base import Tool
 
 
 class TaskCreateInput(BaseModel):
+    """创建 DAG task 的输入；blocked_by 存放前置任务 id。"""
+
     model_config = ConfigDict(extra="forbid")
 
     title: str
@@ -18,6 +25,8 @@ class TaskCreateInput(BaseModel):
 
 
 class TaskCompleteInput(BaseModel):
+    """完成 task 的输入；result 用于记录最终产出或结论。"""
+
     model_config = ConfigDict(extra="forbid")
 
     task_id: str
@@ -25,6 +34,8 @@ class TaskCompleteInput(BaseModel):
 
 
 class TaskCancelInput(BaseModel):
+    """取消 task 的输入；result 用于记录失败/取消原因。"""
+
     model_config = ConfigDict(extra="forbid")
 
     task_id: str
@@ -32,6 +43,8 @@ class TaskCancelInput(BaseModel):
 
 
 class TaskUpdateInput(BaseModel):
+    """更新 task 运行状态，仅允许 pending/in_progress。"""
+
     model_config = ConfigDict(extra="forbid")
 
     task_id: str
@@ -39,12 +52,16 @@ class TaskUpdateInput(BaseModel):
 
 
 class TaskListInput(BaseModel):
+    """列出 task 的输入；可选择隐藏 completed。"""
+
     model_config = ConfigDict(extra="forbid")
 
     include_completed: bool = True
 
 
 class TaskCreateTool(Tool):
+    """创建带依赖关系的持久 task。"""
+
     name = "task_create"
     description = "Create a persistent DAG task, optionally blocked by task ids."
     input_model = TaskCreateInput
@@ -65,6 +82,8 @@ class TaskCreateTool(Tool):
 
 
 class TaskCompleteTool(Tool):
+    """完成 task，并在所有 blocker 解决后返回被解锁的 dependents。"""
+
     name = "task_complete"
     description = "Mark a DAG task completed and unlock dependents when all blockers are done."
     input_model = TaskCompleteInput
@@ -83,6 +102,8 @@ class TaskCompleteTool(Tool):
 
 
 class TaskCancelTool(Tool):
+    """取消 task，并按 store 规则处理 dependents 解锁。"""
+
     name = "task_cancel"
     description = "Mark a DAG task as failed/cancelled and unblock dependents whose other blockers are resolved."
     input_model = TaskCancelInput
@@ -99,6 +120,8 @@ class TaskCancelTool(Tool):
 
 
 class TaskUpdateTool(Tool):
+    """更新 task 为 pending 或 in_progress。"""
+
     name = "task_update"
     description = "Update a DAG task status to 'pending' or 'in_progress'."
     input_model = TaskUpdateInput
@@ -115,6 +138,8 @@ class TaskUpdateTool(Tool):
 
 
 class TaskListTool(Tool):
+    """列出持久 task；data.tasks 保留完整 JSON 结构。"""
+
     name = "task_list"
     description = "List persistent DAG tasks."
     input_model = TaskListInput

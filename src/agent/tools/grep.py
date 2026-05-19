@@ -1,3 +1,8 @@
+"""grep 工具。
+
+优先调用 ripgrep，缺失时降级到 grep。data.matches 保存机器可读匹配行，text 给
+模型总结是否命中和是否达到上限。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +17,8 @@ from agent.tools.base import ErrorCode, Tool
 
 
 class GrepInput(BaseModel):
+    """grep 参数；max_results 同时限制搜索命令和返回给模型的行数。"""
+
     model_config = ConfigDict(extra="forbid")
 
     pattern: str
@@ -22,6 +29,8 @@ class GrepInput(BaseModel):
 
 
 class GrepTool(Tool):
+    """只读搜索工具；命中上限时返回 partial envelope。"""
+
     name = "grep"
     description = "Search files with ripgrep and return matching lines."
     input_model = GrepInput
@@ -69,4 +78,5 @@ class GrepTool(Tool):
         )
 
     def is_concurrency_safe(self, arguments: dict[str, object] | BaseModel) -> bool:
+        """搜索只读文件系统，可与其他只读工具并发。"""
         return True

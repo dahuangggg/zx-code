@@ -1,3 +1,10 @@
+"""默认工具注册入口。
+
+build_default_registry() 根据 runtime 里实际提供的 store/runner/indexer 选择性注册
+工具。基础文件和 shell 工具总是可用；todo/memory/skill/task/subagent/team/
+worktree/CodeContext 只有依赖对象存在时才暴露。
+"""
+
 from agent.tools.bash import BashTool
 from agent.tools.code_context import (
     CodeIndexClearTool,
@@ -52,6 +59,11 @@ def build_default_registry(
     code_context_indexer: CodeContextIndexer | None = None,
     debug_log: DebugLog | None = None,
 ) -> ToolRegistry:
+    """构建当前 runtime 使用的 ToolRegistry。
+
+    这里是工具可用性的集中装配点。工具本身只描述 schema 和执行逻辑；是否注册、
+    是否默认激活，以及是否携带权限/debug log，都在这里决定。
+    """
     registry = ToolRegistry(
         permission_manager=permission_manager,
         approval_callback=approval_callback,
