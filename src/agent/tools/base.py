@@ -1,7 +1,6 @@
 """tools.base — abstract base class for all tools."""
 from __future__ import annotations
 
-import json
 import time as _time
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -9,7 +8,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ValidationError
 
-from agent.models import ToolResult
+from agent.models import ToolEnvelope, ToolError, ToolResult
 
 
 class ErrorCode(str, Enum):
@@ -26,21 +25,6 @@ class ErrorCode(str, Enum):
     CIRCUIT_OPEN = "CIRCUIT_OPEN"
 
 
-def build_error_envelope(code: ErrorCode, message: str) -> str:
-    """Standalone helper for non-Tool contexts (registry, circuit breaker)."""
-    return json.dumps(
-        {
-            "status": "error",
-            "data": {},
-            "text": message,
-            "error": {"code": code.value, "message": message},
-            "stats": {"time_ms": 0},
-            "context": {"cwd": "."},
-        },
-        ensure_ascii=False,
-    )
-
-
 def _build_envelope(
     status: str,
     *,
@@ -48,30 +32,62 @@ def _build_envelope(
     text: str,
     extra_context: dict[str, Any] | None,
     stats: dict[str, Any] | None,
-) -> str:
+) -> ToolEnvelope:
     context: dict[str, Any] = {"cwd": "."}
     if extra_context:
         context.update(extra_context)
-    return json.dumps(
-        {
-            "status": status,
-            "data": data,
-            "text": text,
-            "stats": stats or {},
-            "context": context,
-        },
-        ensure_ascii=False,
+    return ToolEnvelope(
+        status=status,
+        data=data,
+        text=text,
+        stats=stats or {},
+        context=context,
     )
 
 
-def _inject_meta(content: str, *, time_ms: int, params_input: dict[str, Any]) -> str:
-    try:
-        env = json.loads(content)
-        env.setdefault("stats", {})["time_ms"] = time_ms
-        env.setdefault("context", {}).setdefault("params_input", params_input)
-        return json.dumps(env, ensure_ascii=False)
-    except Exception:
-        return content
+def _build_error_tool_envelope(
+    code: ErrorCode,
+    message: str,
+    *,
+    stats: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> ToolEnvelope:
+    return ToolEnvelope(
+        status="error",
+        data={},
+        text=message,
+        error=ToolError(code=code.value, message=message),
+        stats=stats or {"time_ms": 0},
+        context={"cwd": "."} | (context or {}),
+    )
+
+
+def build_error_envelope(code: ErrorCode, message: str) -> str:
+    """Standalone helper for non-Tool contexts (registry, circuit breaker)."""
+    return _build_error_tool_envelope(code, message).model_dump_json(exclude_none=True)
+
+
+def _normalize_legacy_result(raw: str | dict[str, Any], *, call_id: str, name: str) -> ToolEnvelope:
+    legacy_content: str | dict[str, Any]
+    legacy_content = raw
+    return ToolResult(
+        call_id=call_id,
+        name=name,
+        content=legacy_content,  # type: ignore[call-arg]
+    ).envelope
+
+
+def _inject_meta(
+    envelope: ToolEnvelope,
+    *,
+    time_ms: int,
+    params_input: dict[str, Any],
+) -> ToolEnvelope:
+    stats = dict(envelope.stats)
+    stats["time_ms"] = time_ms
+    context = {"cwd": "."} | dict(envelope.context)
+    context["params_input"] = params_input
+    return envelope.model_copy(update={"stats": stats, "context": context})
 
 
 class Tool(ABC):
@@ -96,7 +112,7 @@ class Tool(ABC):
         text: str,
         extra_context: dict[str, Any] | None = None,
         stats: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> ToolEnvelope:
         return _build_envelope("success", data=data, text=text, extra_context=extra_context, stats=stats)
 
     def partial(
@@ -106,14 +122,14 @@ class Tool(ABC):
         text: str,
         extra_context: dict[str, Any] | None = None,
         stats: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> ToolEnvelope:
         return _build_envelope("partial", data=data, text=text, extra_context=extra_context, stats=stats)
 
-    def error(self, *, code: ErrorCode, message: str) -> str:
-        return build_error_envelope(code, message)
+    def error(self, *, code: ErrorCode, message: str) -> ToolEnvelope:
+        return _build_error_tool_envelope(code, message)
 
     @abstractmethod
-    async def run(self, arguments: BaseModel) -> str | dict[str, Any]:
+    async def run(self, arguments: BaseModel) -> ToolEnvelope:
         raise NotImplementedError
 
     async def execute(self, arguments: dict[str, Any], call_id: str) -> ToolResult:
@@ -121,36 +137,39 @@ class Tool(ABC):
         try:
             parsed = self.input_model.model_validate(arguments)
         except ValidationError as exc:
-            content = build_error_envelope(
-                ErrorCode.INVALID_PARAM,
-                f"invalid arguments for {self.name}: {exc.errors(include_url=False)}",
+            elapsed_ms = round((_time.monotonic() - t0) * 1000)
+            envelope = _inject_meta(
+                _build_error_tool_envelope(
+                    ErrorCode.INVALID_PARAM,
+                    f"invalid arguments for {self.name}: {exc.errors(include_url=False)}",
+                ),
+                time_ms=elapsed_ms,
+                params_input=arguments,
             )
-            return ToolResult(call_id=call_id, name=self.name, content=content, status="error", is_error=True)
+            return ToolResult(call_id=call_id, name=self.name, envelope=envelope)
         try:
             raw = await self.run(parsed)
-            # Backward compat: tools not yet migrated to envelope API may return dict
-            if isinstance(raw, dict):
-                content = json.dumps(raw, ensure_ascii=False)
+            if isinstance(raw, ToolEnvelope):
+                envelope = raw
             else:
-                content = raw
+                envelope = _normalize_legacy_result(raw, call_id=call_id, name=self.name)
         except Exception as exc:
-            content = build_error_envelope(
-                ErrorCode.INTERNAL_ERROR,
-                f"{type(exc).__name__}: {exc}",
+            elapsed_ms = round((_time.monotonic() - t0) * 1000)
+            envelope = _inject_meta(
+                _build_error_tool_envelope(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"{type(exc).__name__}: {exc}",
+                ),
+                time_ms=elapsed_ms,
+                params_input=arguments,
             )
-            return ToolResult(call_id=call_id, name=self.name, content=content, status="error", is_error=True)
+            return ToolResult(call_id=call_id, name=self.name, envelope=envelope)
         elapsed_ms = round((_time.monotonic() - t0) * 1000)
-        content = _inject_meta(content, time_ms=elapsed_ms, params_input=arguments)
-        try:
-            status = json.loads(content).get("status", "success")
-        except Exception:
-            status = "success"
+        envelope = _inject_meta(envelope, time_ms=elapsed_ms, params_input=arguments)
         return ToolResult(
             call_id=call_id,
             name=self.name,
-            content=content,
-            status=status,
-            is_error=(status == "error"),
+            envelope=envelope,
         )
 
     def is_concurrency_safe(self, arguments: dict[str, Any] | BaseModel) -> bool:

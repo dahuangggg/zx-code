@@ -54,7 +54,7 @@ async def test_plugin_manager_discovers_command_tool(tmp_path: Path) -> None:
     )
 
     assert not result.is_error
-    assert json.loads(result.content) == {"echo": "hello"}
+    assert result.envelope.data["raw"] == {"echo": "hello"}
 
 
 async def test_plugin_tool_uses_existing_permission_gate(tmp_path: Path) -> None:

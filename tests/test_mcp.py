@@ -61,7 +61,7 @@ async def test_mcp_router_discovers_tools_and_executes_via_registry() -> None:
     )
 
     assert not result.is_error
-    assert json.loads(result.content) == {
+    assert result.envelope.data["raw"] == {
         "name": "echo",
         "arguments": {"text": "hello"},
     }
@@ -81,7 +81,7 @@ async def test_mcp_tool_propagates_remote_error_flag() -> None:
     )
 
     assert result.is_error
-    assert json.loads(result.content)["isError"] is True
+    assert result.envelope.data["raw"]["isError"] is True
 
 
 async def test_mcp_tool_uses_existing_permission_gate() -> None:
@@ -129,7 +129,7 @@ async def test_mcp_tool_uses_registry_approval_without_second_denial() -> None:
     )
 
     assert not result.is_error
-    assert json.loads(result.content)["arguments"] == {"text": "hello"}
+    assert result.envelope.data["raw"]["arguments"] == {"text": "hello"}
 
 
 async def test_mcp_router_denies_when_permission_manager_says_deny() -> None:

@@ -17,34 +17,37 @@ class _DummyTool(Tool):
     description = "test"
     input_model = _DummyInput
 
-    async def run(self, arguments: _DummyInput) -> str:
+    async def run(self, arguments: _DummyInput) -> ToolEnvelope:
         return self.success(data={"value": arguments.x}, text=f"Got {arguments.x}.")
 
 
 def test_success_envelope_fields():
     tool = _DummyTool()
-    raw = tool.success(data={"k": 1}, text="OK")
-    env = json.loads(raw)
-    assert env["status"] == "success"
-    assert env["data"] == {"k": 1}
-    assert env["text"] == "OK"
-    assert "stats" in env
-    assert "context" in env
-    assert "error" not in env
+    env = tool.success(data={"k": 1}, text="OK")
+    assert isinstance(env, ToolEnvelope)
+    assert env.status == "success"
+    assert env.data == {"k": 1}
+    assert env.text == "OK"
+    assert env.stats == {}
+    assert env.context["cwd"] == "."
+    assert env.error is None
 
 
 def test_partial_envelope_status():
     tool = _DummyTool()
-    env = json.loads(tool.partial(data={}, text="Partial result."))
-    assert env["status"] == "partial"
+    env = tool.partial(data={}, text="Partial result.")
+    assert isinstance(env, ToolEnvelope)
+    assert env.status == "partial"
 
 
 def test_error_envelope_fields():
     tool = _DummyTool()
-    env = json.loads(tool.error(code=ErrorCode.NOT_FOUND, message="Missing"))
-    assert env["status"] == "error"
-    assert env["error"]["code"] == "NOT_FOUND"
-    assert env["error"]["message"] == "Missing"
+    env = tool.error(code=ErrorCode.NOT_FOUND, message="Missing")
+    assert isinstance(env, ToolEnvelope)
+    assert env.status == "error"
+    assert env.error is not None
+    assert env.error.code == "NOT_FOUND"
+    assert env.error.message == "Missing"
 
 
 def test_build_error_envelope_standalone():
@@ -125,6 +128,32 @@ def test_tool_result_model_copy_normalizes_legacy_status_only_update():
     assert "status" not in copied.__dict__
 
 
+def test_tool_result_wraps_arbitrary_legacy_dict_content_as_raw_data():
+    result = ToolResult(
+        call_id="call-1",
+        name="dummy",
+        content={"foo": "bar", "count": 2},
+    )
+
+    assert result.status == "success"
+    assert result.envelope.data == {"raw": {"foo": "bar", "count": 2}}
+    assert result.envelope.text == json.dumps({"foo": "bar", "count": 2}, ensure_ascii=False)
+
+
+def test_tool_result_wraps_arbitrary_legacy_json_object_content_as_raw_data():
+    raw = json.dumps({"foo": "bar", "count": 2}, ensure_ascii=False)
+
+    result = ToolResult(
+        call_id="call-1",
+        name="dummy",
+        content=raw,
+    )
+
+    assert result.status == "success"
+    assert result.envelope.data == {"raw": {"foo": "bar", "count": 2}}
+    assert result.envelope.text == raw
+
+
 def test_tool_envelope_requires_error_payload_for_error_status():
     with pytest.raises(ValueError, match="error payload"):
         ToolEnvelope(status="error")
@@ -140,8 +169,9 @@ def test_tool_envelope_rejects_error_payload_for_success_status():
 
 def test_extra_context_propagated():
     tool = _DummyTool()
-    env = json.loads(tool.success(data={}, text="ok", extra_context={"file_mtime_ms": 123}))
-    assert env["context"]["file_mtime_ms"] == 123
+    env = tool.success(data={}, text="ok", extra_context={"file_mtime_ms": 123})
+    assert env.context["cwd"] == "."
+    assert env.context["file_mtime_ms"] == 123
 
 
 @pytest.mark.asyncio
@@ -150,10 +180,48 @@ async def test_execute_injects_time_ms_and_params():
     result = await tool.execute({"x": 5}, call_id="c1")
     assert not result.is_error
     assert result.status == "success"
-    env = json.loads(result.content)
-    assert env["stats"]["time_ms"] >= 0
-    assert env["context"]["params_input"] == {"x": 5}
-    assert env["data"]["value"] == 5
+    assert result.envelope.stats["time_ms"] >= 0
+    assert result.envelope.context["cwd"] == "."
+    assert result.envelope.context["params_input"] == {"x": 5}
+    assert result.envelope.data["value"] == 5
+
+
+@pytest.mark.asyncio
+async def test_execute_normalizes_legacy_string_return_to_envelope():
+    class _LegacyStringTool(Tool):
+        name = "legacy_string"
+        description = "test"
+        input_model = _DummyInput
+
+        async def run(self, arguments: _DummyInput) -> ToolEnvelope:
+            return f"legacy {arguments.x}"
+
+    result = await _LegacyStringTool().execute({"x": 8}, call_id="legacy-1")
+
+    assert result.status == "success"
+    assert result.envelope.text == "legacy 8"
+    assert result.envelope.stats["time_ms"] >= 0
+    assert result.envelope.context["cwd"] == "."
+    assert result.envelope.context["params_input"] == {"x": 8}
+
+
+@pytest.mark.asyncio
+async def test_execute_normalizes_legacy_dict_return_to_envelope():
+    class _LegacyDictTool(Tool):
+        name = "legacy_dict"
+        description = "test"
+        input_model = _DummyInput
+
+        async def run(self, arguments: _DummyInput) -> ToolEnvelope:
+            return {"status": "partial", "data": {"value": arguments.x}, "text": "legacy"}
+
+    result = await _LegacyDictTool().execute({"x": 9}, call_id="legacy-2")
+
+    assert result.status == "partial"
+    assert result.envelope.data == {"value": 9}
+    assert result.envelope.text == "legacy"
+    assert result.envelope.stats["time_ms"] >= 0
+    assert result.envelope.context["params_input"] == {"x": 9}
 
 
 @pytest.mark.asyncio
@@ -162,8 +230,11 @@ async def test_execute_returns_invalid_param_on_bad_args():
     result = await tool.execute({"x": "not-an-int"}, call_id="c2")
     assert result.is_error
     assert result.status == "error"
-    env = json.loads(result.content)
-    assert env["error"]["code"] == "INVALID_PARAM"
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "INVALID_PARAM"
+    assert result.envelope.stats["time_ms"] >= 0
+    assert result.envelope.context["cwd"] == "."
+    assert result.envelope.context["params_input"] == {"x": "not-an-int"}
 
 
 @pytest.mark.asyncio
@@ -173,11 +244,14 @@ async def test_execute_returns_internal_error_on_exception():
         description = "test"
         input_model = _DummyInput
 
-        async def run(self, arguments: _DummyInput) -> str:
+        async def run(self, arguments: _DummyInput) -> ToolEnvelope:
             raise RuntimeError("boom")
 
     result = await _BrokenTool().execute({"x": 1}, call_id="c3")
     assert result.is_error
-    env = json.loads(result.content)
-    assert env["error"]["code"] == "INTERNAL_ERROR"
-    assert "boom" in env["error"]["message"]
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "INTERNAL_ERROR"
+    assert "boom" in result.envelope.error.message
+    assert result.envelope.stats["time_ms"] >= 0
+    assert result.envelope.context["cwd"] == "."
+    assert result.envelope.context["params_input"] == {"x": 1}

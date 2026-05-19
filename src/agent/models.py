@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal, Mapping
+from typing import Any, ClassVar, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -118,6 +118,7 @@ class ToolResult(BaseModel):
     """工具执行完毕后的结果，可用 to_message() 转回 tool 角色的 Message。"""
 
     model_config = ConfigDict(extra="forbid")
+    _PROTOCOL_STATUSES: ClassVar[frozenset[str]] = frozenset({"success", "partial", "error"})
 
     call_id: str
     name: str
@@ -147,13 +148,37 @@ class ToolResult(BaseModel):
                 parsed = raw_content
 
             if isinstance(parsed, dict):
-                envelope_data.update(parsed)
+                parsed_status = parsed.get("status")
+                if parsed_status in cls._PROTOCOL_STATUSES:
+                    envelope_data.update(parsed)
+                else:
+                    raw_text = (
+                        raw_content
+                        if isinstance(raw_content, str)
+                        else json.dumps(parsed, ensure_ascii=False)
+                    )
+                    envelope_data.update(
+                        {
+                            "status": status
+                            if status in cls._PROTOCOL_STATUSES
+                            else ("error" if is_error else "success"),
+                            "data": {"raw": parsed},
+                            "text": raw_text,
+                        }
+                    )
             else:
-                envelope_data.update({"text": str(raw_content)})
+                envelope_data.update(
+                    {
+                        "status": status
+                        if status in cls._PROTOCOL_STATUSES
+                        else ("error" if is_error else "success"),
+                        "text": str(raw_content),
+                    }
+                )
         else:
             raw_content = envelope_data.get("text", "")
 
-        if status is not None:
+        if status in cls._PROTOCOL_STATUSES:
             envelope_data["status"] = status
         else:
             envelope_data.setdefault("status", "error" if is_error else "success")
