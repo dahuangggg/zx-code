@@ -54,9 +54,11 @@ class RecoveryBudget:
         }
 
     def can_retry(self, category: str) -> bool:
+        """判断某类恢复策略是否还有预算。"""
         return self.attempts.get(category, 0) < self.max
 
     def record(self, category: str) -> None:
+        """记录一次恢复尝试。"""
         self.attempts[category] = self.attempts.get(category, 0) + 1
 
     def reset_turn(self) -> None:
@@ -212,6 +214,7 @@ class ResilienceRunner:
                 raise ModelInvocationError(f"model turn failed: {exc}") from exc
 
     def _should_continue(self, turn: ModelTurn) -> bool:
+        """判断输出截断是否可以通过追加“继续”消息安全恢复。"""
         # 有 tool_calls 时不续写：工具调用是结构化输出，截断的工具参数无法靠"请继续"安全拼接
         # 要求 turn.text 非空：空文本续写无意义，会浪费预算且可能触发同样的空响应循环
         return (

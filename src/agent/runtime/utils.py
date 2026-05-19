@@ -25,6 +25,7 @@ console = Console()
 
 
 def _configure_readline() -> None:
+    """尽量启用可用的终端行编辑能力；失败时静默降级。"""
     try:
         import readline
     except ImportError:
@@ -47,10 +48,12 @@ def _configure_readline() -> None:
 
 
 def _stream_printer(chunk: str) -> None:
+    """最简单的流式输出 handler：直接把 chunk 写到 Rich console。"""
     console.print(chunk, end="")
 
 
 def _resolve_project_path(project_root: Path, value: str) -> Path:
+    """把配置中的相对路径解析到项目根目录下。"""
     path = Path(value).expanduser()
     if path.is_absolute():
         return path
@@ -58,6 +61,7 @@ def _resolve_project_path(project_root: Path, value: str) -> Path:
 
 
 def _approval_prompt(check: PermissionCheck) -> bool:
+    """CLI 权限审批回调；默认 y/yes 以外都拒绝。"""
     console.print(f"[yellow]Permission required:[/yellow] {check.reason}")
     console.print(f"Tool: {check.tool_name}")
     answer = input("Allow this tool call? [y/N] ").strip().lower()
@@ -65,6 +69,7 @@ def _approval_prompt(check: PermissionCheck) -> bool:
 
 
 def _validate_channel_settings(settings: AgentSettings) -> bool:
+    """运行 channel/watch 模式前检查必要配置是否存在。"""
     if settings.channel.name == "telegram" and not settings.channel.telegram.token:
         console.print("[red]Error:[/red] --telegram-token is required for Telegram")
         return False

@@ -127,6 +127,8 @@ SUMMARY_PROMPT = (
 
 
 class SummaryClient(Protocol):
+    """ContextGuard 调用摘要模型所需的最小接口。"""
+
     async def summarize(self, formatted: str) -> str:
         ...
 
@@ -149,6 +151,12 @@ class ModelSummaryClient:
 
 @dataclass(frozen=True)
 class ContextGuard:
+    """控制发给模型的消息窗口大小。
+
+    ContextGuard 不修改真实 session history；它只返回一个适合本轮 LLM 调用的消息
+    副本。工具输出的大字段截断发生在 ObservationTruncator，这里只处理历史压缩。
+    """
+
     max_tokens: int = 12000
     keep_recent: int = 6
     summary_entry_chars: int = 240

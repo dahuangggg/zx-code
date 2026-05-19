@@ -47,6 +47,7 @@ from agent.state.sessions import SessionStore
 
 
 def _new_cli_session_id() -> str:
+    """生成新的 CLI peer/session id；默认每次启动都是 fresh session。"""
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"cli:{stamp}:{uuid.uuid4().hex[:8]}"
 
@@ -56,6 +57,7 @@ def _prompt_context_name() -> str:
 
 
 def _format_repl_prompt(context_name: str) -> str:
+    """生成带工作区名称的 REPL 提示符。"""
     return (
         "\033[36mzx-code\033[0m "
         "\033[2m[\033[0m"
@@ -123,6 +125,7 @@ def _recent_resume_messages(
     resume_session_id: str,
     limit: int = 6,
 ) -> list[tuple[str, str]]:
+    """读取 resume session 的最近用户/助手消息，用于 REPL 启动预览。"""
     project_root = Path.cwd()
     data_dir = _resolve_project_path(project_root, settings.state.data_dir)
     session_key = _cli_gateway_session_key(settings, resume_session_id)
@@ -172,6 +175,7 @@ async def _run_once(
     print_system_prompt: bool,
     resume_session_id: str | None = None,
 ) -> int:
+    """执行单次 CLI task，并通过 Gateway 复用 channel 路由路径。"""
     if print_system_prompt:
         runtime = _build_runtime(settings, session_id=resume_session_id or _new_cli_session_id())
         console.print(_render_system_prompt(runtime))
@@ -206,6 +210,7 @@ async def _run_channel_once(
     settings: AgentSettings,
     print_system_prompt: bool,
 ) -> int:
+    """从配置的外部 channel 拉取一条消息并处理一次。"""
     runtime = _build_runtime(settings)
 
     if print_system_prompt:
@@ -246,6 +251,7 @@ async def _run_channel_loop(
     settings: AgentSettings,
     print_system_prompt: bool,
 ) -> int:
+    """持续轮询 channel，并在空闲 tick 中调度 heartbeat/cron。"""
     runtime = _build_runtime(settings)
 
     if print_system_prompt:
@@ -321,6 +327,7 @@ async def _run_repl(
     print_system_prompt: bool,
     resume_session_id: str | None = None,
 ) -> int:
+    """交互式 CLI 循环；同一个 session_id 贯穿整个 REPL。"""
     _configure_readline()
     session_id = resume_session_id or _new_cli_session_id()
     resumed = resume_session_id is not None
@@ -404,6 +411,7 @@ def _run_cli(
     watch: bool,
     resume_session_id: str | None = None,
 ) -> int:
+    """根据 CLI 参数选择单次任务、channel 模式或 REPL 模式。"""
     if not task:
         if settings.channel.name != "cli":
             if watch:

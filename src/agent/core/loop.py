@@ -63,6 +63,11 @@ async def run_task(
     progress_handler: Callable[[str, dict[str, Any]], Any] | None = None,
     project_root: Any | None = None,
 ) -> AgentRunResult:
+    """运行一次 agent 任务直到模型给出最终回答或达到轮次上限。
+
+    这是 framework 的核心循环。调用方负责传入模型客户端和工具注册表；本函数负责
+    管理消息历史、上下文压缩、工具执行、session 持久化和运行指标。
+    """
     # 规范化：外部传 None 时用 NullDebugLog，内部代码无需再判断 is not None
     _log = debug_log or DebugLog.null()
     runtime_config = config or RuntimeConfig()

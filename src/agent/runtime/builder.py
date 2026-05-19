@@ -53,6 +53,12 @@ from agent.code_context.indexer import CodeContextIndexer
 
 @dataclass
 class StreamOutput:
+    """流式输出封装。
+
+    handler 传给 provider 接收 chunk；renderer 只在 Markdown 渲染模式下存在，
+    用于在工具提示或任务结束前 flush 未闭合的 Markdown block。
+    """
+
     handler: Callable[[str], Any] | None = None
     renderer: MarkdownStreamRenderer | None = None
 
@@ -62,6 +68,12 @@ class StreamOutput:
 
 
 class CLIProgressReporter:
+    """把 run_task 的 progress 事件翻译成 CLI 可见状态。
+
+    模型输出流式展示时，用户需要看到 thinking/tool start/tool end，否则长任务看起来
+    像卡住。这个类只负责展示，不参与业务控制流。
+    """
+
     def __init__(
         self,
         output_console: Any,
@@ -113,6 +125,7 @@ class CLIProgressReporter:
 
 
 def _summarize_tool_arguments(arguments: Any) -> str:
+    """为 CLI 工具提示挑一个最有信息量的参数做短摘要。"""
     if not isinstance(arguments, dict) or not arguments:
         return ""
     for key in ("command", "path", "file_path", "pattern", "name", "label"):
@@ -123,6 +136,7 @@ def _summarize_tool_arguments(arguments: Any) -> str:
 
 
 def _truncate_inline(text: str, limit: int = 88) -> str:
+    """把终端单行摘要限制在可读宽度内。"""
     single_line = " ".join(text.split())
     if len(single_line) <= limit:
         return single_line
@@ -130,6 +144,7 @@ def _truncate_inline(text: str, limit: int = 88) -> str:
 
 
 def _build_stream_output(settings: AgentSettings) -> StreamOutput:
+    """根据配置选择纯文本流式输出或 Markdown block 渲染。"""
     if not settings.model.stream:
         return StreamOutput()
     if settings.model.render_markdown and settings.model.markdown_streaming:
@@ -139,6 +154,7 @@ def _build_stream_output(settings: AgentSettings) -> StreamOutput:
 
 
 def _build_model_client(settings: AgentSettings, debug_log: DebugLog | None = None) -> Any:
+    """构建主模型客户端；配置多个 profile 时包一层 fallback。"""
     debug_log = debug_log or DebugLog.null()
     profiles = settings.resolved_model_profiles()
     if len(profiles) > 1:
@@ -158,6 +174,7 @@ def _build_summary_model_client(
     primary_model_client: Any,
     debug_log: DebugLog | None = None,
 ) -> Any:
+    """构建上下文压缩用模型；未配置 compact_model 时复用主模型。"""
     if not settings.context.compact_model:
         return primary_model_client
     summary_settings = settings.model_copy(
@@ -180,6 +197,11 @@ def _build_runtime(
     lane_scheduler: LaneScheduler | None = None,
     subagent_depth: int = 0,
 ) -> dict[str, Any]:
+    """按依赖顺序构建一次 agent turn 需要的全部运行时对象。
+
+    返回 dict 是为了让 CLI/channel/subagent 入口共享同一组组件，而不是在多个调用点
+    复制装配逻辑。这里是组合根，业务模块不应反向导入 runner/builder。
+    """
     effective_settings = (
         settings.model_copy(
             update={
@@ -247,6 +269,7 @@ def _build_runtime(
                 member_role: str = member.role,
                 member_system_prompt: str = member.system_prompt,
             ) -> str:
+                """Team 成员实际执行函数：复用主 agent，但关闭 team 递归。"""
                 prompt_parts = [
                     f"You are team agent {member_id}.",
                     member_role,
@@ -309,6 +332,7 @@ def _build_runtime(
             child_session_id: str,
             next_depth: int,
         ) -> str:
+            """Subagent 实际执行函数：复用主 agent，并递增 depth 防止递归失控。"""
             return await _run_agent_text(
                 task,
                 settings=effective_settings.model_copy(
@@ -422,6 +446,7 @@ def _build_runtime(
 
 
 def _refresh_system_prompt(runtime: dict[str, Any]) -> None:
+    """根据当前工具 schema 和状态存储重新生成 system prompt。"""
     config = runtime["config"]
     runtime["config"] = config.model_copy(
         update={
@@ -437,6 +462,7 @@ async def _attach_mcp_tools(
     runtime: dict[str, Any],
     settings: AgentSettings,
 ) -> MCPToolRouter | None:
+    """连接 MCP 服务器，把发现到的外部工具注册进当前 runtime。"""
     if not settings.extensions.mcp_servers:
         return None
 
@@ -471,6 +497,11 @@ async def _run_agent_text(
     lane_scheduler: LaneScheduler | None = None,
     subagent_depth: int = 0,
 ) -> str:
+    """运行一次文本任务并返回最终回答。
+
+    这是 channel、heartbeat、cron、subagent/team 都复用的内部入口。它负责创建 runtime、
+    挂载 MCP、调用 run_task，并在 finally 中关闭 team/MCP/stream 状态。
+    """
     runtime = _build_runtime(
         settings,
         session_id=session_id,

@@ -39,6 +39,11 @@ def _build_gateway(
     emit_cli: bool,
     lane_scheduler: LaneScheduler | None = None,
 ) -> Gateway:
+    """构建 channel/gateway/delivery 基础设施。
+
+    所有 inbound 消息最终都通过 run_agent_turn 进入 _run_agent_text；如果传入
+    LaneScheduler，则主对话会进入 "main" 泳道，避免与 heartbeat/cron 并发抢模型。
+    """
     channel_manager = ChannelManager()
     project_root = Path.cwd()
     data_dir = _resolve_project_path(project_root, settings.state.data_dir)
@@ -92,6 +97,7 @@ def _build_gateway(
         agent_id: str,
         session_id: str,
     ) -> str:
+        """Gateway 调用的 agent turn 适配器。"""
         async def execute() -> str:
             return await _run_agent_text(
                 inbound.text,
@@ -123,6 +129,7 @@ def _build_heartbeat_runner(
     *,
     lane_scheduler: LaneScheduler | None = None,
 ) -> HeartbeatRunner | None:
+    """按配置构建 heartbeat runner；配置不完整时返回 None。"""
     if not settings.scheduling.heartbeat_enabled or gateway.delivery_queue is None:
         return None
     channel = settings.scheduling.heartbeat_channel or settings.channel.name
@@ -131,6 +138,7 @@ def _build_heartbeat_runner(
         return None
 
     async def run_agent_turn(prompt: str, session_id: str) -> str:
+        """Heartbeat 专用 agent turn，关闭 stream 并放入 heartbeat 泳道。"""
         async def execute() -> str:
             return await _run_agent_text(
                 prompt,
@@ -168,6 +176,7 @@ def _build_cron_scheduler(
     *,
     lane_scheduler: LaneScheduler | None = None,
 ) -> CronScheduler | None:
+    """从 cron.json 构建 cron scheduler；没有配置文件时禁用。"""
     if gateway.delivery_queue is None:
         return None
 
@@ -183,6 +192,7 @@ def _build_cron_scheduler(
         return None
 
     async def run_agent_turn(prompt: str, session_id: str) -> str:
+        """Cron 专用 agent turn，关闭 stream 并放入 cron 泳道。"""
         async def execute() -> str:
             return await _run_agent_text(
                 prompt,
