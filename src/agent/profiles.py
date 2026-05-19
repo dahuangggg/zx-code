@@ -32,10 +32,14 @@ from agent.core.recovery import classify_error
 
 
 class AllProfilesExhaustedError(AgentError):
+    """所有模型 profile 都不可用或仍在冷却中。"""
+
     pass
 
 
 class ModelProfile(BaseModel):
+    """单个模型 profile 配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str
@@ -52,12 +56,15 @@ class ModelProfile(BaseModel):
         return kwargs
 
     def resolve_api_key(self) -> str | None:
+        """从 api_key_env 指定的环境变量读取 API key。"""
         if self.api_key_env:
             return os.getenv(self.api_key_env)
         return None
 
 
 class ProfileManager:
+    """维护 profile 冷却时间表。"""
+
     def __init__(
         self,
         profiles: Sequence[ModelProfile],
@@ -71,6 +78,7 @@ class ProfileManager:
         self._cooldowns: dict[str, float] = {}
 
     def available_profiles(self) -> list[ModelProfile]:
+        """返回当前未处于冷却期的 profile。"""
         now = self.clock()
         return [
             profile
@@ -89,6 +97,8 @@ ClientFactory = Callable[[ModelProfile], ModelClient]
 
 
 class FallbackModelClient:
+    """按 profile 顺序尝试模型调用，失败时按错误类型冷却并切换。"""
+
     def __init__(
         self,
         profiles: Sequence[ModelProfile],
@@ -161,6 +171,7 @@ class FallbackModelClient:
 
 
 def _default_client_factory(profile: ModelProfile) -> ModelClient:
+    """默认把 ModelProfile 转成 OpenAIModelClient。"""
     return OpenAIModelClient(
         model=profile.model,
         api_key=profile.resolve_api_key(),

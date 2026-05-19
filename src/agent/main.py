@@ -75,6 +75,7 @@ def _settings_from_cli(
     debug_log: bool,
     debug_log_path: str | None,
 ) -> AgentSettings:
+    """把 Typer 参数转换为 ConfigLoader 可合并的 override dict。"""
     overrides: dict[str, Any] = {
         "model": model,
         "fallback_models": fallback_models,
@@ -136,6 +137,7 @@ def _settings_from_cli(
 
 
 def _build_typer_app() -> Any:
+    """构建 Typer 应用；实际运行模式交给 runtime._run_cli。"""
     app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
     @app.command()
@@ -258,6 +260,7 @@ def _build_typer_app() -> Any:
 
 
 def main() -> int | None:
+    """控制台脚本入口。"""
     app = _build_typer_app()
     app()
     return 0

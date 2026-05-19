@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 
 def to_debug_json(value: Any) -> Any:
-    """Convert SDK/Pydantic objects into JSON-safe debug payloads."""
+    """把 SDK/Pydantic 对象转换为 JSON-safe debug payload。"""
     if isinstance(value, BaseModel):
         return to_debug_json(value.model_dump())
     if isinstance(value, Mapping):
@@ -92,6 +92,7 @@ class DebugLog:
         session_id: str | None = None,
         level: str = "debug",
     ) -> None:
+        """追加一条 JSONL 事件；序列化或写入失败时静默降级。"""
         record = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": level,

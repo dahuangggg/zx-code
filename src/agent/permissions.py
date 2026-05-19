@@ -34,6 +34,8 @@ ApprovalCallback = Callable[["PermissionCheck"], bool | Awaitable[bool]]
 
 
 class PermissionCheck(BaseModel):
+    """权限判断结果。"""
+
     model_config = ConfigDict(extra="forbid")
 
     tool_name: str
@@ -67,12 +69,15 @@ class PermissionRule(BaseModel):
 
 
 async def maybe_await_bool(value: bool | Awaitable[bool]) -> bool:
+    """兼容同步和异步审批回调。"""
     if hasattr(value, "__await__"):
         return bool(await value)
     return bool(value)
 
 
 class PermissionManager:
+    """多层权限决策器。"""
+
     dangerous_bash_patterns = [
         re.compile(pattern, re.IGNORECASE)
         for pattern in (

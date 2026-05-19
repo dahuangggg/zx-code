@@ -45,6 +45,8 @@ Prefer concrete answers over speculation.
 
 
 class PromptSection(BaseModel):
+    """System prompt 中的一个 Markdown section。"""
+
     model_config = ConfigDict(extra="forbid")
 
     title: str
@@ -55,6 +57,8 @@ class PromptSection(BaseModel):
 
 
 class SystemPromptBuilder:
+    """按稳定性顺序组装 system prompt。"""
+
     def __init__(
         self,
         *,
@@ -78,6 +82,7 @@ class SystemPromptBuilder:
         *,
         tool_schemas: list[dict[str, Any]] | None = None,
     ) -> str:
+        """渲染完整 system prompt。"""
         return "\n\n".join(
             section.render()
             for section in self.sections(config, tool_schemas=tool_schemas)
@@ -97,6 +102,7 @@ class SystemPromptBuilder:
         *,
         tool_schemas: list[dict[str, Any]] | None = None,
     ) -> list[PromptSection]:
+        """返回未渲染 section 列表，空内容会被过滤。"""
         runtime_config = config or RuntimeConfig()
         # Order is cache-aware: stable → semi-stable → dynamic.
         # Stable content at the top maximises prompt cache hit rate.

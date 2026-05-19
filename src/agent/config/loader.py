@@ -1,3 +1,8 @@
+"""配置加载器。
+
+ConfigLoader 按 user config → project config → CLI overrides 的顺序深度合并，
+最后交给 AgentSettings 做字段校验和旧扁平字段折叠。
+"""
 from __future__ import annotations
 
 import tomllib
@@ -8,6 +13,7 @@ from agent.config.sections import AgentSettings
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
+    """读取 TOML；兼容顶层配置和 [agent] 包裹两种写法。"""
     if not path.exists():
         return {}
     with path.open("rb") as handle:
@@ -17,6 +23,7 @@ def _read_toml(path: Path) -> dict[str, Any]:
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """递归合并配置 dict，override 覆盖 base。"""
     merged = dict(base)
     for key, value in override.items():
         current = merged.get(key)
@@ -28,7 +35,7 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 class ConfigLoader:
-    """Load AgentSettings from user, project, and CLI config layers."""
+    """从用户、项目和 CLI 三层配置加载 AgentSettings。"""
 
     def __init__(
         self,
@@ -50,6 +57,7 @@ class ConfigLoader:
         )
 
     def load(self, cli_overrides: dict[str, Any] | None = None) -> AgentSettings:
+        """合并配置并返回校验后的 AgentSettings。"""
         raw: dict[str, Any] = {}
         raw = _deep_merge(raw, _read_toml(self.user_config_path))
         raw = _deep_merge(raw, _read_toml(self.project_config_path))

@@ -1,3 +1,8 @@
+"""Agent 配置 section 定义。
+
+本模块把 TOML/CLI 配置拆成模型、上下文、状态、权限、通道、调度、扩展等 section。
+AgentSettings 还兼容历史扁平字段，通过 _FLAT_ALIASES 折叠到新的嵌套结构。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -241,6 +246,8 @@ _FLAT_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 class AgentSettings(BaseModel):
+    """完整 agent 配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     model: ModelSettings = Field(default_factory=ModelSettings)
@@ -261,6 +268,7 @@ class AgentSettings(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _fold_flat_settings(cls, data: Any) -> Any:
+        """把旧版扁平配置字段折叠到新版嵌套 section。"""
         if not isinstance(data, dict):
             return data
         raw = dict(data)
@@ -274,6 +282,7 @@ class AgentSettings(BaseModel):
         return raw
 
     def to_runtime_config(self, *, system_prompt: str = "") -> RuntimeConfig:
+        """提取主循环需要的 RuntimeConfig。"""
         return RuntimeConfig(
             model=self.model.name,
             system_prompt=system_prompt,
@@ -293,6 +302,7 @@ class AgentSettings(BaseModel):
         )
 
     def resolved_model_profiles(self) -> list[ModelProfile]:
+        """展开主模型和 fallback 模型 profile。"""
         profiles = list(self.model.profiles)
         if not profiles:
             profiles.append(
