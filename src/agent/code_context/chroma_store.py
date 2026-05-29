@@ -32,6 +32,15 @@ class ChromaCodeStore:
             kwargs["embedding_function"] = self.embedding_function
         self._collection = self._client.get_or_create_collection(**kwargs)
 
+    @property
+    def embedding_name(self) -> str:
+        if self.embedding_function is None:
+            return "chroma-default"
+        name = getattr(self.embedding_function, "name", None)
+        if callable(name):
+            return str(name())
+        return type(self.embedding_function).__name__
+
     def upsert_chunks(self, chunks: list[CodeChunk]) -> None:
         """把 chunk 内容和 metadata 写入 Chroma。"""
         if not chunks:
@@ -126,6 +135,7 @@ def _to_search_result(document: Any, metadata: dict[str, Any], *, score: float) 
         language=str(metadata.get("language", "text")),
         score=score,
         content=str(document or ""),
+        symbol=str(metadata.get("symbol", "")),
     )
 
 

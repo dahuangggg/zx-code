@@ -1,50 +1,47 @@
-"""CodeContext 索引器。
+"""CodeContext 索引器门面。
 
-CodeContextIndexer 负责完整索引生命周期：扫描文件、计算哈希、增量切块、写入
-Chroma、重建关键词索引、维护 snapshot/status、后台任务和取消信号。它不处理模型
-消息，也不持久化 Memory。
+``CodeContextIndexer`` 保持对外 API 稳定，并把持久化、后台任务协调、索引和搜索
+委托给更聚焦的服务。索引循环属于 pipeline.py，排序搜索属于 search_service.py。
 """
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import os
-import shutil
-import tempfile
-import threading
-import time
-import uuid
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from agent.code_context.chroma_store import ChromaCodeStore
-from agent.code_context.file_rules import iter_code_files, resolve_codebase_path
+from agent.code_context.file_rules import resolve_codebase_path
+from agent.code_context.job_coordinator import (
+    IndexCancelled,
+    IndexJobCoordinator,
+    _IndexFileLock,
+)
 from agent.code_context.models import (
-    CodeChunk,
     CodeClearResult,
     CodeIndexStats,
     CodeIndexStatus,
     CodeSearchResult,
 )
-from agent.code_context.ranker import rrf_fuse
+from agent.code_context.pipeline import (
+    ProgressCallback,
+    _chunk_id,
+    _hash_file,
+    _now,
+    _progress_percentage,
+    codebase_hash,
+)
+from agent.code_context.search_service import (
+    CodeSearchService,
+    _find_overlapping_result,
+    _number_lines,
+)
+from agent.code_context.snapshot_store import CodebaseSnapshotStore
 from agent.code_context.sparse_index import SparseKeywordIndex
-from agent.code_context.splitter import split_file
-
-
-ProgressCallback = Callable[[dict[str, int | str]], None]
-INDEX_LOCK_STALE_SECONDS = 10 * 60
-
-
-class IndexCancelled(RuntimeError):
-    """索引任务收到取消信号时抛出的内部异常。"""
-
-    pass
 
 
 class CodeContextIndexer:
-    """代码库索引和检索的协调器。"""
+    """代码库索引、状态、清理和搜索的稳定门面。"""
 
     def __init__(
         self,
@@ -60,11 +57,35 @@ class CodeContextIndexer:
         self.max_result_chars = max_result_chars
         self.max_total_chars = max_total_chars
         self.max_chunk_chars = max_chunk_chars
+
+        self.snapshot_store = CodebaseSnapshotStore(self.snapshot_dir)
         self.sparse_index = SparseKeywordIndex(self.snapshot_dir / "sparse")
-        self._background_tasks: dict[str, asyncio.Task[None]] = {}
-        self._cancel_events: dict[str, threading.Event] = {}
-        self._codebase_locks: dict[str, threading.RLock] = {}
-        self._state_lock = threading.Lock()
+        self.jobs = IndexJobCoordinator(lock_dir=self.snapshot_dir / "locks")
+        self.pipeline = self._build_pipeline()
+        self.search_service = CodeSearchService(
+            store=self.store,
+            sparse_index=self.sparse_index,
+            snapshot_store=self.snapshot_store,
+            max_result_chars=self.max_result_chars,
+            max_total_chars=self.max_total_chars,
+        )
+
+        # 保留这些属性，兼容仍会检查内部状态的调用方和测试。
+        self._background_tasks = self.jobs.background_tasks
+        self._cancel_events = self.jobs.cancel_events
+        self._codebase_locks = self.jobs.codebase_locks
+        self._state_lock = self.jobs.state_lock
+
+    def _build_pipeline(self):
+        from agent.code_context.pipeline import CodeIndexPipeline
+
+        return CodeIndexPipeline(
+            store=self.store,
+            sparse_index=self.sparse_index,
+            snapshot_store=self.snapshot_store,
+            jobs=self.jobs,
+            max_chunk_chars=self.max_chunk_chars,
+        )
 
     def index_codebase(
         self,
@@ -74,11 +95,11 @@ class CodeContextIndexer:
         custom_extensions: list[str] | set[str] | None = None,
         ignore_patterns: list[str] | set[str] | None = None,
     ) -> CodeIndexStats:
-        """同步全量/增量索引代码库，返回本次索引统计。失败时更新状态文件后重新抛出异常。"""
+        """同步索引代码库并返回索引统计。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
-        self._cancel_event_for(codebase_id).clear()
-        self._write_status(
+        self.jobs.clear_cancel_event(codebase_id)
+        self.snapshot_store.write_status(
             codebase_id,
             {
                 "codebase_id": codebase_id,
@@ -91,14 +112,14 @@ class CodeContextIndexer:
             },
         )
         try:
-            return self._index_codebase(
+            return self.pipeline.index_codebase(
                 root,
                 progress_callback=progress_callback,
                 custom_extensions=custom_extensions,
                 ignore_patterns=ignore_patterns,
             )
         except IndexCancelled:
-            self._write_status(
+            self.snapshot_store.write_status(
                 codebase_id,
                 {
                     "codebase_id": codebase_id,
@@ -110,7 +131,7 @@ class CodeContextIndexer:
             )
             raise
         except Exception as exc:
-            self._write_status(
+            self.snapshot_store.write_status(
                 codebase_id,
                 {
                     "codebase_id": codebase_id,
@@ -130,15 +151,14 @@ class CodeContextIndexer:
         custom_extensions: list[str] | set[str] | None = None,
         ignore_patterns: list[str] | set[str] | None = None,
     ) -> CodeIndexStatus:
-        """在 asyncio Task 中后台运行索引；同一代码库已有进行中的任务时直接返回当前状态（幂等）。"""
+        """在 asyncio task 中启动索引；重复的活动请求会幂等返回当前状态。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
-        existing = self._background_tasks.get(codebase_id)
-        # 任务还在运行中就不重复创建，避免并发写同一个代码库的 snapshot
+        existing = self.jobs.task_for(codebase_id)
         if existing is not None and not existing.done():
             return self.get_status(root)
 
-        self._write_status(
+        self.snapshot_store.write_status(
             codebase_id,
             {
                 "codebase_id": codebase_id,
@@ -153,7 +173,6 @@ class CodeContextIndexer:
 
         async def _run() -> None:
             try:
-                # to_thread 把同步的 index_codebase 放到线程池，不阻塞 event loop
                 await asyncio.to_thread(
                     self.index_codebase,
                     root,
@@ -161,27 +180,27 @@ class CodeContextIndexer:
                     ignore_patterns=ignore_patterns,
                 )
             except Exception:
-                return  # 错误已写入 status 文件，这里静默退出让 task 正常完成
+                return
             finally:
-                self._background_tasks.pop(codebase_id, None)
+                self.jobs.pop_task(codebase_id)
 
         task = asyncio.create_task(_run())
-        self._background_tasks[codebase_id] = task
+        self.jobs.set_task(codebase_id, task)
         return self.get_status(root)
 
     async def wait_background_index(self, path: str | Path | None = None) -> None:
-        """等待某个代码库的后台索引任务完成；没有任务则立即返回。"""
+        """等待指定代码库的后台索引任务；没有任务时直接返回。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
-        task = self._background_tasks.get(codebase_id)
+        task = self.jobs.task_for(codebase_id)
         if task is not None:
             await task
 
     def cancel_index(self, path: str | Path | None = None) -> CodeIndexStatus:
-        """设置取消信号；正在运行的索引会在下一个检查点退出。"""
+        """设置指定代码库的取消信号。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
-        self._cancel_event_for(codebase_id).set()
+        self.jobs.cancel(codebase_id)
         return self.get_status(root)
 
     def search_code(
@@ -191,60 +210,14 @@ class CodeContextIndexer:
         *,
         top_k: int = 5,
     ) -> list[CodeSearchResult]:
-        """混合检索：向量搜索 + 关键词搜索，用 RRF 融合后去重，返回带行号的代码片段。"""
-        root = resolve_codebase_path(path)
-        codebase_id = codebase_hash(root)
-        # 未索引时直接返回空；索引中允许查询 Chroma 中已经写入的 partial chunks。
-        if (
-            not self._snapshot_path(codebase_id).exists()
-            and self._load_status(codebase_id).get("status") != "indexing"
-        ):
-            return []
-        # 超采样：取 top_k 的 4 倍候选，再经去重/截断后得到最终 top_k
-        # 多取是因为 RRF 融合后会有重叠，去重会损失部分候选
-        candidate_limit = max(top_k * 4, 20)
-        vector_results = [
-            result.model_copy(update={"matched_by": ["vector"], "vector_rank": rank})
-            for rank, result in enumerate(
-                self.store.search(codebase_id=codebase_id, query=query, top_k=candidate_limit),
-                start=1,
-            )
-        ]
-        keyword_results = self.sparse_index.search(codebase_id, query, limit=candidate_limit)
-        results = self._dedupe_results(
-            rrf_fuse([vector_results, keyword_results], limit=candidate_limit)
-        )[:top_k]
-        output: list[CodeSearchResult] = []
-        used = 0
-        for result in results:
-            numbered = _number_lines(result.content, start_line=result.start_line)
-            if len(numbered) > self.max_result_chars:
-                numbered = numbered[: self.max_result_chars] + "\n[code search result truncated]"
-            # 超过总字符预算时停止追加，保证注入 prompt 的内容不会过长
-            if used + len(numbered) > self.max_total_chars:
-                break
-            used += len(numbered)
-            output.append(result.model_copy(update={"content": numbered}))
-        return output
-
-    def _dedupe_results(self, results: list[CodeSearchResult]) -> list[CodeSearchResult]:
-        """去除行范围重叠超过 50% 的冗余结果，保留分数更高的那个。"""
-        deduped: list[CodeSearchResult] = []
-        for result in sorted(results, key=lambda item: item.score, reverse=True):
-            overlap_index = _find_overlapping_result(deduped, result)
-            if overlap_index is None:
-                deduped.append(result)
-            elif result.score > deduped[overlap_index].score:
-                # 新结果与已有结果重叠且分数更高，替换
-                deduped[overlap_index] = result
-        return sorted(deduped, key=lambda item: item.score, reverse=True)
+        return self.search_service.search_code(path, query, top_k=top_k)
 
     def get_status(self, path: str | Path | None = None) -> CodeIndexStatus:
-        """读取代码库当前索引状态，优先使用 status 文件，其次使用 snapshot。"""
+        """读取当前索引状态，优先使用 status 文件，其次使用 snapshot。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
-        snapshot = self._load_snapshot(codebase_id)
-        status = self._load_status(codebase_id)
+        snapshot = self.snapshot_store.load_snapshot(codebase_id)
+        status = self.snapshot_store.load_status(codebase_id)
         if status and status.get("status") in {"indexing", "indexfailed", "indexcancelled"}:
             return CodeIndexStatus.model_validate(
                 {
@@ -281,18 +254,14 @@ class CodeContextIndexer:
             phase="indexed",
         )
 
-    def list_indexes(self) -> list[dict[str, Any]]:
-        """列出 snapshot_dir 中已知的所有代码库索引。"""
-        if not self.snapshot_dir.exists():
-            return []
+    def list_codebases(self) -> list[dict[str, Any]]:
+        """列出所有已知代码库索引。"""
         entries: list[dict[str, Any]] = []
-        for path in sorted(self.snapshot_dir.glob("*.json")):
-            if path.name.endswith(".status.json"):
-                continue
+        for path in self.snapshot_store.iter_snapshot_paths():
             snapshot = json.loads(path.read_text(encoding="utf-8"))
             files = snapshot.get("files", {})
             codebase_id = str(snapshot.get("codebase_id", path.stem))
-            status = self._load_status(codebase_id)
+            status = self.snapshot_store.load_status(codebase_id)
             entries.append(
                 {
                     "codebase_id": codebase_id,
@@ -306,12 +275,16 @@ class CodeContextIndexer:
             )
         return entries
 
+    def list_indexes(self) -> list[dict[str, Any]]:
+        """现有工具接口使用的兼容别名。"""
+        return self.list_codebases()
+
     def get_index_info(self, path: str | Path | None = None) -> dict[str, Any]:
         """返回单个代码库的状态、collection 和索引规则元数据。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
         status = self.get_status(root).model_dump()
-        snapshot = self._load_snapshot(codebase_id)
+        snapshot = self.snapshot_store.load_snapshot(codebase_id)
         return {
             **status,
             "collection": str(snapshot.get("collection", self.store.collection_name)) if snapshot else self.store.collection_name,
@@ -320,22 +293,22 @@ class CodeContextIndexer:
             "sparse_index": self.sparse_index.exists(codebase_id),
         }
 
-    def clear_index(self, path: str | Path | None = None) -> CodeClearResult:
-        """清理向量索引、snapshot、status 和关键词索引。"""
+    def clear_codebase(self, path: str | Path | None = None) -> CodeClearResult:
+        """清理向量索引、snapshot/status 文件和稀疏关键词索引。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
         self.cancel_index(root)
-        with self._lock_for(codebase_id):
+        with self.jobs.lock_for(codebase_id):
             deleted = self.store.delete_codebase(codebase_id)
-            snapshot_path = self._snapshot_path(codebase_id)
-            if snapshot_path.exists():
-                snapshot_path.unlink()
-            status_path = self._status_path(codebase_id)
-            if status_path.exists():
-                status_path.unlink()
+            self.snapshot_store.delete_snapshot(codebase_id)
+            self.snapshot_store.delete_status(codebase_id)
             self.sparse_index.delete_codebase(codebase_id)
-            self._cancel_events.pop(codebase_id, None)
+            self.jobs.forget_cancel_event(codebase_id)
             return CodeClearResult(codebase_id=codebase_id, codebase_path=str(root), deleted_chunks=deleted)
+
+    def clear_index(self, path: str | Path | None = None) -> CodeClearResult:
+        """现有工具接口使用的兼容别名。"""
+        return self.clear_codebase(path)
 
     def _index_codebase(
         self,
@@ -345,234 +318,45 @@ class CodeContextIndexer:
         custom_extensions: list[str] | set[str] | None = None,
         ignore_patterns: list[str] | set[str] | None = None,
     ) -> CodeIndexStats:
-        """增量索引核心逻辑：对比 snapshot 中的文件哈希，只重新索引新增/修改的文件。"""
-        codebase_id = codebase_hash(root)
-        with self._lock_for(codebase_id):
-            with self._index_file_lock(codebase_id):
-                return self._index_codebase_locked(
-                    root,
-                    progress_callback=progress_callback,
-                    custom_extensions=custom_extensions,
-                    ignore_patterns=ignore_patterns,
-                )
-
-    def _index_codebase_locked(
-        self,
-        root: Path,
-        *,
-        progress_callback: ProgressCallback | None = None,
-        custom_extensions: list[str] | set[str] | None = None,
-        ignore_patterns: list[str] | set[str] | None = None,
-    ) -> CodeIndexStats:
-        """持有进程内锁和文件锁后的实际索引实现。"""
-        codebase_id = codebase_hash(root)
-        self._check_cancelled(codebase_id)
-        old_snapshot = self._load_snapshot(codebase_id)
-        # old_files: 上次索引的文件状态 {relative_path: {hash, chunks, ids, ...}}
-        old_files: dict[str, Any] = old_snapshot.get("files", {}) if old_snapshot else {}
-
-        current_paths = iter_code_files(
+        return self.pipeline.index_codebase(
             root,
-            custom_extensions=custom_extensions,
-            custom_ignore_patterns=ignore_patterns,
-        )
-        self._check_cancelled(codebase_id)
-        total_files = len(current_paths)
-        self._record_progress(
-            codebase_id,
-            root,
-            phase="hashing files",
-            current=0,
-            total=total_files,
-            percentage=5,
             progress_callback=progress_callback,
-        )
-        current_hashes = {}
-        for file_path in current_paths:
-            self._check_cancelled(codebase_id)
-            current_hashes[file_path.relative_to(root).as_posix()] = _hash_file(file_path)
-
-        removed = sorted(set(old_files) - set(current_hashes))
-        added: list[str] = []
-        modified: list[str] = []
-        skipped = 0
-        next_files: dict[str, Any] = {}
-
-        # 先删除已消失的文件的 chunk，再处理新增/修改，保证 store 不残留孤儿向量
-        for relative_path in removed:
-            self._check_cancelled(codebase_id)
-            self.store.delete_ids(list(old_files.get(relative_path, {}).get("ids", [])))
-
-        for processed, file_path in enumerate(current_paths, start=1):
-            self._check_cancelled(codebase_id)
-            relative_path = file_path.relative_to(root).as_posix()
-            file_hash = current_hashes[relative_path]
-            old_info = old_files.get(relative_path)
-            if old_info and old_info.get("hash") == file_hash:
-                # 文件内容未变（哈希一致），直接复用上次的 chunk 信息，跳过重新切分和入库
-                skipped += 1
-                next_files[relative_path] = old_info
-                self._record_progress(
-                    codebase_id,
-                    root,
-                    phase=f"skipped {relative_path}",
-                    current=processed,
-                    total=total_files,
-                    percentage=_progress_percentage(processed, total_files),
-                    progress_callback=progress_callback,
-                )
-                continue
-
-            if old_info:
-                modified.append(relative_path)
-                self.store.delete_ids(list(old_info.get("ids", [])))
-            else:
-                added.append(relative_path)
-
-            chunks = split_file(file_path, codebase_path=root, max_chars=self.max_chunk_chars)
-            chunk_ids: list[str] = []
-            prepared: list[CodeChunk] = []
-            for index, chunk in enumerate(chunks):
-                # chunk_id 由 codebase_id + 路径 + 位置 + 文件哈希组成，内容变化时 id 自动失效
-                chunk_id = _chunk_id(codebase_id, relative_path, index, file_hash)
-                chunk_ids.append(chunk_id)
-                prepared.append(
-                    chunk.model_copy(
-                        update={
-                            "id": chunk_id,
-                            "codebase_id": codebase_id,
-                            "codebase_path": str(root),
-                            "file_hash": file_hash,
-                            "chunk_index": index,
-                        }
-                    )
-                )
-            self.store.upsert_chunks(prepared)
-            self._check_cancelled(codebase_id)
-            next_files[relative_path] = {
-                "hash": file_hash,
-                "chunks": len(prepared),
-                "language": prepared[0].language if prepared else file_path.suffix.lstrip("."),
-                "ids": chunk_ids,
-            }
-            self._record_progress(
-                codebase_id,
-                root,
-                phase=f"indexed {relative_path}",
-                current=processed,
-                total=total_files,
-                percentage=_progress_percentage(processed, total_files),
-                progress_callback=progress_callback,
-            )
-
-        self._check_cancelled(codebase_id)
-        snapshot = {
-            "codebase_id": codebase_id,
-            "codebase_path": str(root),
-            "collection": self.store.collection_name,
-            "custom_extensions": sorted(custom_extensions or []),
-            "ignore_patterns": sorted(ignore_patterns or []),
-            "files": dict(sorted(next_files.items())),
-            "indexed_at": _now(),
-        }
-        self._write_snapshot(codebase_id, snapshot)
-        self.sparse_index.replace_codebase(codebase_id, self.store.documents_for_codebase(codebase_id))
-        total_chunks = sum(int(info.get("chunks", 0)) for info in next_files.values())
-        self._write_status(
-            codebase_id,
-            {
-                "codebase_id": codebase_id,
-                "codebase_path": str(root),
-                "status": "indexed",
-                "indexed_files": len(next_files),
-                "total_chunks": total_chunks,
-                "indexed_at": snapshot["indexed_at"],
-                "percentage": 100,
-                "current": len(next_files),
-                "total": len(next_files),
-                "phase": "indexed",
-            },
-        )
-        return CodeIndexStats(
-            codebase_id=codebase_id,
-            codebase_path=str(root),
-            indexed_files=len(next_files),
-            total_chunks=total_chunks,
-            added_files=len(added),
-            modified_files=len(modified),
-            removed_files=len(removed),
-            skipped_files=skipped,
+            custom_extensions=custom_extensions,
+            ignore_patterns=ignore_patterns,
         )
 
-    def _lock_for(self, codebase_id: str) -> threading.RLock:
-        """返回进程内 per-codebase 锁，避免同进程并发写同一 snapshot。"""
-        with self._state_lock:
-            lock = self._codebase_locks.get(codebase_id)
-            if lock is None:
-                lock = threading.RLock()
-                self._codebase_locks[codebase_id] = lock
-            return lock
+    def _lock_for(self, codebase_id: str):
+        return self.jobs.lock_for(codebase_id)
 
-    def _cancel_event_for(self, codebase_id: str) -> threading.Event:
-        """返回 per-codebase 取消事件。"""
-        with self._state_lock:
-            event = self._cancel_events.get(codebase_id)
-            if event is None:
-                event = threading.Event()
-                self._cancel_events[codebase_id] = event
-            return event
+    def _cancel_event_for(self, codebase_id: str):
+        return self.jobs.cancel_event_for(codebase_id)
 
     def _check_cancelled(self, codebase_id: str) -> None:
-        """在长循环中检查取消信号。"""
-        event = self._cancel_events.get(codebase_id)
-        if event is not None and event.is_set():
-            raise IndexCancelled()
+        self.jobs.check_cancelled(codebase_id)
 
-    def _index_file_lock(self, codebase_id: str) -> "_IndexFileLock":
-        """返回跨进程文件锁，避免多个进程同时索引同一代码库。"""
-        return _IndexFileLock(self.snapshot_dir / "locks" / f"{codebase_id}.lock")
+    def _index_file_lock(self, codebase_id: str) -> _IndexFileLock:
+        return self.jobs.index_file_lock(codebase_id)
 
     def _snapshot_path(self, codebase_id: str) -> Path:
-        return self.snapshot_dir / f"{codebase_id}.json"
+        return self.snapshot_store.snapshot_path(codebase_id)
 
     def _status_path(self, codebase_id: str) -> Path:
-        return self.snapshot_dir / f"{codebase_id}.status.json"
+        return self.snapshot_store.status_path(codebase_id)
 
     def _load_snapshot(self, codebase_id: str) -> dict[str, Any]:
-        path = self._snapshot_path(codebase_id)
-        if not path.exists():
-            return {}
-        return json.loads(path.read_text(encoding="utf-8"))
+        return self.snapshot_store.load_snapshot(codebase_id)
 
     def _load_status(self, codebase_id: str) -> dict[str, Any]:
-        path = self._status_path(codebase_id)
-        if not path.exists():
-            return {}
-        return json.loads(path.read_text(encoding="utf-8"))
+        return self.snapshot_store.load_status(codebase_id)
 
     def _write_snapshot(self, codebase_id: str, snapshot: dict[str, Any]) -> None:
-        self._write_json(self._snapshot_path(codebase_id), codebase_id, snapshot)
+        self.snapshot_store.write_snapshot(codebase_id, snapshot)
 
     def _write_status(self, codebase_id: str, status: dict[str, Any]) -> None:
-        self._write_json(self._status_path(codebase_id), codebase_id, status)
+        self.snapshot_store.write_status(codebase_id, status)
 
     def _write_json(self, path: Path, codebase_id: str, payload: dict[str, Any]) -> None:
-        """原子写 snapshot/status JSON，避免崩溃留下损坏文件。"""
-        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-        content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        fd, tmp_path = tempfile.mkstemp(dir=self.snapshot_dir, prefix=f".tmp.{codebase_id}.", suffix=".json")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp_path, path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        self.snapshot_store.write_json(path, codebase_id, payload)
 
     def _record_progress(
         self,
@@ -585,120 +369,15 @@ class CodeContextIndexer:
         percentage: int,
         progress_callback: ProgressCallback | None,
     ) -> None:
-        payload = {
-            "codebase_id": codebase_id,
-            "codebase_path": str(root),
-            "status": "indexing",
-            "phase": phase,
-            "percentage": percentage,
-            "current": current,
-            "total": total,
-        }
-        self._write_status(codebase_id, payload)
-        if progress_callback is not None:
-            progress_callback(payload)
+        self.pipeline._record_progress(
+            codebase_id,
+            root,
+            phase=phase,
+            current=current,
+            total=total,
+            percentage=percentage,
+            progress_callback=progress_callback,
+        )
 
-
-def codebase_hash(path: str | Path) -> str:
-    """把绝对代码库路径映射成短 id。"""
-    # 用 MD5 前 12 位作为代码库 ID：不用于安全目的，仅作路径唯一标识，12 位碰撞概率可接受
-    return hashlib.md5(str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
-
-
-def _hash_file(path: Path) -> str:
-    # 1MB 分块读取，防止大文件全量载入内存
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _chunk_id(codebase_id: str, relative_path: str, index: int, file_hash: str) -> str:
-    # 把文件哈希编入 chunk_id：文件内容变化时，同一位置的 chunk_id 也变，旧向量自然失效
-    raw = f"{codebase_id}:{relative_path}:{index}:{file_hash}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
-
-
-def _number_lines(content: str, *, start_line: int) -> str:
-    return "\n".join(
-        f"{line_no}: {line}"
-        for line_no, line in enumerate(content.splitlines(), start=start_line)
-    )
-
-
-def _progress_percentage(current: int, total: int) -> int:
-    if total <= 0:
-        return 100
-    return min(99, 10 + round((current / total) * 89))
-
-
-def _find_overlapping_result(
-    existing: list[CodeSearchResult],
-    candidate: CodeSearchResult,
-) -> int | None:
-    for index, result in enumerate(existing):
-        if result.relative_path != candidate.relative_path:
-            continue
-        overlap_start = max(result.start_line, candidate.start_line)
-        overlap_end = min(result.end_line, candidate.end_line)
-        if overlap_start > overlap_end:
-            continue
-        overlap = overlap_end - overlap_start + 1
-        candidate_size = max(1, candidate.end_line - candidate.start_line + 1)
-        if overlap / candidate_size > 0.5:
-            return index
-    return None
-
-
-class _IndexFileLock:
-    """基于目录创建的跨进程锁；过期锁会被清理后重试。"""
-
-    def __init__(self, path: Path, *, stale_seconds: int = INDEX_LOCK_STALE_SECONDS) -> None:
-        self.path = path
-        self.stale_seconds = stale_seconds
-        self.token = f"{os.getpid()}-{time.time_ns()}-{uuid.uuid4().hex}"
-        self.acquired = False
-
-    def __enter__(self) -> "_IndexFileLock":
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        for _ in range(2):
-            try:
-                self.path.mkdir()
-                (self.path / "owner.json").write_text(
-                    json.dumps(
-                        {
-                            "pid": os.getpid(),
-                            "token": self.token,
-                            "acquired_at": _now(),
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
-                self.acquired = True
-                return self
-            except FileExistsError:
-                if self._is_stale():
-                    shutil.rmtree(self.path, ignore_errors=True)
-                    continue
-                raise RuntimeError(f"codebase is already being indexed: {self.path}") from None
-        raise RuntimeError(f"codebase is already being indexed: {self.path}")
-
-    def __exit__(self, exc_type, exc, traceback) -> None:
-        if self.acquired:
-            shutil.rmtree(self.path, ignore_errors=True)
-            self.acquired = False
-
-    def _is_stale(self) -> bool:
-        try:
-            return time.time() - self.path.stat().st_mtime > self.stale_seconds
-        except OSError:
-            return True
+    def _dedupe_results(self, results: list[CodeSearchResult]) -> list[CodeSearchResult]:
+        return self.search_service.dedupe_results(results)

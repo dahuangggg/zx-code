@@ -1,43 +1,36 @@
-"""Agent configuration package."""
+"""CLI 代理运行时的公共配置导出。
+
+调用方应从本包导入 ``AgentSettings`` 和 ``ConfigLoader``，避免直接依赖内部配置模块。
+"""
 
 from agent.config.loader import ConfigLoader
 from agent.config.sections import (
     AgentSettings,
-    ChannelSettings,
     CodeContextSettings,
     ContextSettings,
     DebugSettings,
-    DeliverySettings,
     ExtensionSettings,
     ModelSettings,
     PermissionSettings,
-    RoutingSettings,
-    SchedulingSettings,
     StateSettings,
     SubagentSettings,
     TeamMemberSettings,
     TeamSettings,
-    TelegramSettings,
     WorktreeSettings,
 )
 
 __all__ = [
     "AgentSettings",
-    "ChannelSettings",
     "CodeContextSettings",
     "ConfigLoader",
     "ContextSettings",
     "DebugSettings",
-    "DeliverySettings",
     "ExtensionSettings",
     "ModelSettings",
     "PermissionSettings",
-    "RoutingSettings",
-    "SchedulingSettings",
     "StateSettings",
     "SubagentSettings",
     "TeamMemberSettings",
     "TeamSettings",
-    "TelegramSettings",
     "WorktreeSettings",
 ]

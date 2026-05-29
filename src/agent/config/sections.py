@@ -1,6 +1,7 @@
 """Agent 配置 section 定义。
 
-本模块把 TOML/CLI 配置拆成模型、上下文、状态、权限、通道、调度、扩展等 section。
+本模块只描述 CLI-only runtime 仍然使用的配置：model、context、state、
+permissions、subagents、teams、worktree、CodeContext、debug、trace 和 extensions。
 AgentSettings 还兼容历史扁平字段，通过 _FLAT_ALIASES 折叠到新的嵌套结构。
 """
 from __future__ import annotations
@@ -10,12 +11,14 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.mcp import MCPServerConfig
-from agent.models import DMScope, RuntimeConfig
+from agent.models import RuntimeConfig
 from agent.permissions import PermissionDecision
 from agent.profiles import ModelProfile
 
 
 class ModelSettings(BaseModel):
+    """模型选择、fallback、推理强度和流式输出配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str = "gpt-5.4"
@@ -30,6 +33,8 @@ class ModelSettings(BaseModel):
 
 
 class ContextSettings(BaseModel):
+    """上下文预算、近期消息保留和工具结果截断配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     max_tokens: int = 128000
@@ -39,6 +44,8 @@ class ContextSettings(BaseModel):
 
 
 class StateSettings(BaseModel):
+    """本地状态目录和 memory/skill/todo/task 持久化开关。"""
+
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = "default"
@@ -53,6 +60,8 @@ class StateSettings(BaseModel):
 
 
 class PermissionSettings(BaseModel):
+    """工具权限默认策略、按工具覆盖和外部规则文件配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     default: PermissionDecision = "allow"
@@ -60,58 +69,9 @@ class PermissionSettings(BaseModel):
     rules_path: str = ""
 
 
-class TelegramSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    token: str = ""
-    offset: int | None = None
-    timeout_s: int = 30
-    allowed_chats: str = ""
-    text_coalesce_s: float = 1.0
-    media_group_coalesce_s: float = 0.5
-
-
-class ChannelSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = "cli"
-    account_id: str = "local"
-    telegram: TelegramSettings = Field(default_factory=TelegramSettings)
-
-
-class RoutingSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    agent_id: str = "default"
-    default_agent_id: str = "default"
-    force_agent_id: str = ""
-    dm_scope: DMScope = "per-account-channel-peer"
-
-
-class DeliverySettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    max_attempts: int = 5
-    base_delay_s: float = 1.0
-    max_delay_s: float = 300.0
-    jitter_s: float = 1.0
-    daemon_interval_s: float = 1.0
-
-
-class SchedulingSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    heartbeat_enabled: bool = False
-    heartbeat_interval_s: float = 300.0
-    heartbeat_min_idle_s: float = 30.0
-    heartbeat_channel: str = ""
-    heartbeat_to: str = ""
-    heartbeat_prompt: str = "Heartbeat check. Reply HEARTBEAT_OK if no user-facing update is needed."
-    heartbeat_sentinel: str = "HEARTBEAT_OK"
-    cron_jobs_path: str = ""
-
-
 class SubagentSettings(BaseModel):
+    """子代理开关和最大嵌套深度。"""
+
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
@@ -119,6 +79,8 @@ class SubagentSettings(BaseModel):
 
 
 class TeamMemberSettings(BaseModel):
+    """团队成员声明，用于构建可路由的 agent team。"""
+
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -127,6 +89,8 @@ class TeamMemberSettings(BaseModel):
 
 
 class TeamSettings(BaseModel):
+    """agent team 的启用状态、消息日志和成员列表配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
@@ -137,6 +101,8 @@ class TeamSettings(BaseModel):
 
 
 class WorktreeSettings(BaseModel):
+    """子代理 worktree 隔离开关和 worktree 根目录。"""
+
     model_config = ConfigDict(extra="forbid")
 
     isolation_enabled: bool = False
@@ -144,18 +110,25 @@ class WorktreeSettings(BaseModel):
 
 
 class CodeContextSettings(BaseModel):
+    """CodeContext 索引、快照和检索结果预算配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
     path: str = ".zx-code/cache/code-context/chroma"
     snapshot_dir: str = ".zx-code/cache/code-context/snapshots"
     collection: str = "agent_code_context"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_api_key_env: str = "OPENAI_API_KEY"
+    embedding_base_url: str = ""
     top_k: int = Field(default=5, ge=1, le=20)
     max_result_chars: int = Field(default=4000, ge=500)
     max_total_chars: int = Field(default=12000, ge=1000)
 
 
 class DebugSettings(BaseModel):
+    """可选 debug JSONL 日志配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     log_enabled: bool = False
@@ -163,6 +136,8 @@ class DebugSettings(BaseModel):
 
 
 class TraceSettings(BaseModel):
+    """审计 trace、脱敏和 HTML 报告配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
@@ -173,6 +148,8 @@ class TraceSettings(BaseModel):
 
 
 class ExtensionSettings(BaseModel):
+    """hooks、MCP servers 和 plugin directories 扩展配置。"""
+
     model_config = ConfigDict(extra="forbid")
 
     hooks_path: str = ""
@@ -206,31 +183,6 @@ _FLAT_ALIASES: dict[str, tuple[str, ...]] = {
     "permission_default": ("permissions", "default"),
     "permission_tools": ("permissions", "tools"),
     "permission_rules_path": ("permissions", "rules_path"),
-    "channel": ("channel", "name"),
-    "account_id": ("channel", "account_id"),
-    "telegram_token": ("channel", "telegram", "token"),
-    "telegram_offset": ("channel", "telegram", "offset"),
-    "telegram_timeout_s": ("channel", "telegram", "timeout_s"),
-    "telegram_allowed_chats": ("channel", "telegram", "allowed_chats"),
-    "telegram_text_coalesce_s": ("channel", "telegram", "text_coalesce_s"),
-    "telegram_media_group_coalesce_s": ("channel", "telegram", "media_group_coalesce_s"),
-    "agent_id": ("routing", "agent_id"),
-    "default_agent_id": ("routing", "default_agent_id"),
-    "force_agent_id": ("routing", "force_agent_id"),
-    "dm_scope": ("routing", "dm_scope"),
-    "delivery_max_attempts": ("delivery", "max_attempts"),
-    "delivery_base_delay_s": ("delivery", "base_delay_s"),
-    "delivery_max_delay_s": ("delivery", "max_delay_s"),
-    "delivery_jitter_s": ("delivery", "jitter_s"),
-    "delivery_daemon_interval_s": ("delivery", "daemon_interval_s"),
-    "heartbeat_enabled": ("scheduling", "heartbeat_enabled"),
-    "heartbeat_interval_s": ("scheduling", "heartbeat_interval_s"),
-    "heartbeat_min_idle_s": ("scheduling", "heartbeat_min_idle_s"),
-    "heartbeat_channel": ("scheduling", "heartbeat_channel"),
-    "heartbeat_to": ("scheduling", "heartbeat_to"),
-    "heartbeat_prompt": ("scheduling", "heartbeat_prompt"),
-    "heartbeat_sentinel": ("scheduling", "heartbeat_sentinel"),
-    "cron_jobs_path": ("scheduling", "cron_jobs_path"),
     "enable_subagents": ("subagents", "enabled"),
     "subagent_max_depth": ("subagents", "max_depth"),
     "enable_teams": ("teams", "enabled"),
@@ -244,6 +196,9 @@ _FLAT_ALIASES: dict[str, tuple[str, ...]] = {
     "code_context_path": ("code_context", "path"),
     "code_context_snapshot_dir": ("code_context", "snapshot_dir"),
     "code_context_collection": ("code_context", "collection"),
+    "code_context_embedding_model": ("code_context", "embedding_model"),
+    "code_context_embedding_api_key_env": ("code_context", "embedding_api_key_env"),
+    "code_context_embedding_base_url": ("code_context", "embedding_base_url"),
     "code_context_top_k": ("code_context", "top_k"),
     "code_context_max_result_chars": ("code_context", "max_result_chars"),
     "code_context_max_total_chars": ("code_context", "max_total_chars"),
@@ -269,10 +224,6 @@ class AgentSettings(BaseModel):
     context: ContextSettings = Field(default_factory=ContextSettings)
     state: StateSettings = Field(default_factory=StateSettings)
     permissions: PermissionSettings = Field(default_factory=PermissionSettings)
-    channel: ChannelSettings = Field(default_factory=ChannelSettings)
-    routing: RoutingSettings = Field(default_factory=RoutingSettings)
-    delivery: DeliverySettings = Field(default_factory=DeliverySettings)
-    scheduling: SchedulingSettings = Field(default_factory=SchedulingSettings)
     subagents: SubagentSettings = Field(default_factory=SubagentSettings)
     teams: TeamSettings = Field(default_factory=TeamSettings)
     worktree: WorktreeSettings = Field(default_factory=WorktreeSettings)
@@ -284,17 +235,15 @@ class AgentSettings(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _fold_flat_settings(cls, data: Any) -> Any:
-        """把旧版扁平配置字段折叠到新版嵌套 section。"""
+        """把兼容的扁平配置字段折叠到当前嵌套 section。"""
         if not isinstance(data, dict):
             return data
         raw = dict(data)
         for old_key, path in _FLAT_ALIASES.items():
             if old_key in raw:
-                if old_key in {"model", "channel"} and isinstance(raw[old_key], dict):
+                if old_key == "model" and isinstance(raw[old_key], dict):
                     continue
                 _set_nested(raw, path, raw.pop(old_key))
-        if "telegram" in raw:
-            _set_nested(raw, ("channel", "telegram"), raw.pop("telegram"))
         return raw
 
     def to_runtime_config(self, *, system_prompt: str = "") -> RuntimeConfig:

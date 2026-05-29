@@ -30,11 +30,11 @@ def test_cli_session_id_remains_resume_alias(monkeypatch) -> None:
 
     monkeypatch.setattr("agent.main._run_cli", fake_run_cli)
 
-    result = CliRunner().invoke(_build_typer_app(), ["--session-id", "legacy", "continue"])
+    result = CliRunner().invoke(_build_typer_app(), ["--session-id", "resume-me", "continue"])
 
     assert result.exit_code == 0
     assert seen["task"] == "continue"
-    assert seen["resume_session_id"] == "legacy"
+    assert seen["resume_session_id"] == "resume-me"
 
 
 def test_cli_trace_options_override_settings(monkeypatch) -> None:

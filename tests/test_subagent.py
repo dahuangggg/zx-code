@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from agent.scheduling.lanes import LaneScheduler
+from agent.core.concurrency import LaneScheduler
 from agent.agents.subagent import SubagentRecursionError, SubagentRunner
 from agent.tools import build_default_registry
 
@@ -93,11 +93,11 @@ async def test_subagent_tool_executes_runner() -> None:
 
     result = await registry.execute(
         "subagent_run",
-        {"task": "summarize gateway", "label": "reader"},
+        {"task": "summarize runtime", "label": "reader"},
         call_id="sub-1",
     )
 
     payload = json.loads(result.content)
     assert not result.is_error
-    assert payload["data"]["final_text"] == "done: summarize gateway"
+    assert payload["data"]["final_text"] == "done: summarize runtime"
     assert payload["data"]["session_id"].startswith("parent:subagent:reader:")

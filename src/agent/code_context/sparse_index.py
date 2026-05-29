@@ -8,12 +8,12 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from agent.code_context.models import CodeSearchResult
+from agent.code_context.tokenization import path_tokens, tokenize_code_text
 
 
 class SparseKeywordIndex:
@@ -27,10 +27,7 @@ class SparseKeywordIndex:
         entries: list[dict[str, Any]] = []
         df: dict[str, int] = {}
         for document in documents:
-            terms = _tokenize(document.content)
-            term_counts: dict[str, int] = {}
-            for term in terms:
-                term_counts[term] = term_counts.get(term, 0) + 1
+            term_counts = _weighted_term_counts(document)
             for term in term_counts:
                 df[term] = df.get(term, 0) + 1
             entries.append(
@@ -39,9 +36,10 @@ class SparseKeywordIndex:
                     "start_line": document.start_line,
                     "end_line": document.end_line,
                     "language": document.language,
+                    "symbol": document.symbol,
                     "content": document.content,
                     "term_counts": term_counts,
-                    "length": len(terms),
+                    "length": sum(term_counts.values()),
                 }
             )
 
@@ -110,6 +108,7 @@ class SparseKeywordIndex:
                         language=str(raw_document.get("language", "text")),
                         score=round(score, 4),
                         content=str(raw_document.get("content", "")),
+                        symbol=str(raw_document.get("symbol", "")),
                         matched_by=["keyword"],
                     ),
                 )
@@ -151,4 +150,21 @@ class SparseKeywordIndex:
 
 def _tokenize(text: str) -> list[str]:
     """关键词索引用的简单 token 化，偏向代码标识符和英文单词。"""
-    return re.findall(r"[a-z0-9_]+", text.lower())
+    return tokenize_code_text(text)
+
+
+def _weighted_term_counts(document: CodeSearchResult) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    _add_terms(counts, _tokenize(document.content), weight=1)
+    _add_terms(counts, path_tokens(document.relative_path), weight=3)
+    stem = Path(document.relative_path).stem
+    _add_terms(counts, _tokenize(stem), weight=4)
+    if document.symbol:
+        _add_terms(counts, _tokenize(document.symbol), weight=5)
+    _add_terms(counts, _tokenize(document.language), weight=1)
+    return counts
+
+
+def _add_terms(counts: dict[str, int], terms: list[str], *, weight: int) -> None:
+    for term in terms:
+        counts[term] = counts.get(term, 0) + weight

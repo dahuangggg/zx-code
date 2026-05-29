@@ -6,7 +6,6 @@
 用途：
   - agent 重启后可从上次中断的位置继续（``rebuild_messages()``）
   - 子代理使用独立 session_id，其历史与父代理完全隔离
-  - 心跳、cron 各自有固定格式的 session_id，历史独立追踪
 
 ``safe_session_id()`` 将 session_id 中的非文件名字符替换为下划线，
 确保文件路径合法。

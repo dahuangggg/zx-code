@@ -120,7 +120,7 @@ class ToolRegistry:
         else:
             self._circuit_breaker.record_success(name)
 
-        # read_file 成功后把 mtime 缓存起来，后续 edit/write 可以做乐观锁检查。
+        # 读取文件成功后把 mtime 缓存起来，后续编辑/写入可以做乐观锁检查。
         self._maybe_cache_read(result)
 
         self._debug("tool.registry.executed", {"tool_name": name, "call_id": call_id, "status": result.status})

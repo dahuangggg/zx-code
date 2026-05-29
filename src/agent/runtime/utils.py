@@ -6,7 +6,6 @@
   _stream_printer    — LLM 流式输出的回调函数
   _resolve_project_path — 将相对路径解析为相对于项目根的绝对路径
   _approval_prompt   — ask 权限的 CLI 审批提示（y/N）
-  _validate_channel_settings — 频道配置合法性检查（token 是否提供等）
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from pathlib import Path
 
 from rich.console import Console
 
-from agent.config import AgentSettings
 from agent.permissions import PermissionCheck
 
 console = Console()
@@ -66,14 +64,3 @@ def _approval_prompt(check: PermissionCheck) -> bool:
     console.print(f"Tool: {check.tool_name}")
     answer = input("Allow this tool call? [y/N] ").strip().lower()
     return answer in {"y", "yes"}
-
-
-def _validate_channel_settings(settings: AgentSettings) -> bool:
-    """运行 channel/watch 模式前检查必要配置是否存在。"""
-    if settings.channel.name == "telegram" and not settings.channel.telegram.token:
-        console.print("[red]Error:[/red] --telegram-token is required for Telegram")
-        return False
-    if settings.scheduling.heartbeat_enabled and not settings.scheduling.heartbeat_to:
-        console.print("[red]Error:[/red] --heartbeat-to is required when heartbeat is enabled")
-        return False
-    return True

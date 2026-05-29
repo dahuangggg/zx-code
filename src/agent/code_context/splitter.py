@@ -69,6 +69,27 @@ def _split_python(
         return []
     lines = text.splitlines()
     chunks: list[CodeChunk] = []
+    body_nodes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+    ]
+    if body_nodes:
+        preamble_end = min(getattr(node, "lineno", 1) for node in body_nodes) - 1
+        preamble_lines = lines[:preamble_end]
+        while preamble_lines and not preamble_lines[-1].strip():
+            preamble_lines.pop()
+        if any(line.strip() for line in preamble_lines):
+            chunks.append(
+                CodeChunk(
+                    relative_path=relative_path,
+                    language=language,
+                    start_line=1,
+                    end_line=len(preamble_lines),
+                    content="\n".join(preamble_lines),
+                    symbol=Path(relative_path).stem,
+                )
+            )
     for node in tree.body:
         if not isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             continue

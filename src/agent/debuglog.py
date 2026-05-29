@@ -1,4 +1,4 @@
-"""debuglog — optional JSONL trace logging for full agent runs.
+"""debuglog — 完整 agent 运行的可选 JSONL 调试日志。
 
 两个实现：
   DebugLog   — 真实实现，写 JSONL 文件，每次 event() 追加一行
@@ -60,13 +60,12 @@ def to_debug_json(value: Any) -> Any:
 
 
 class DebugLog:
-    """Append-only JSONL debug event writer.
+    """只追加写入的 JSONL 调试事件记录器。
 
-    Logging is best-effort: failures to serialize or write must not break an
-    agent run. File handle is opened lazily on first write and kept open for
-    the lifetime of the instance to avoid repeated open/close syscalls.
+    日志是 best-effort：序列化或写入失败不能中断 agent 运行。文件句柄在首次写入时
+    懒打开，并在实例生命周期内保持打开，避免反复 open/close。
 
-    Use ``DebugLog.null()`` to get a no-op instance when logging is disabled.
+    禁用日志时使用 ``DebugLog.null()`` 获取空实现。
     """
 
     def __init__(
@@ -81,7 +80,7 @@ class DebugLog:
 
     @classmethod
     def null(cls) -> "DebugLog":
-        """Return a no-op DebugLog. event() and close() are both no-ops."""
+        """返回空实现 DebugLog；event() 和 close() 都不做任何事。"""
         return _NullDebugLog()
 
     def event(
@@ -105,11 +104,11 @@ class DebugLog:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             handle.flush()
         except Exception:
-            # best-effort: 写失败不中断 Agent 运行
+        # 尽力记录：写失败不中断 Agent 运行。
             return
 
     def close(self) -> None:
-        """Flush and close the underlying file handle."""
+        """刷新并关闭底层文件句柄。"""
         if self._handle is not None:
             try:
                 self._handle.close()
@@ -118,7 +117,7 @@ class DebugLog:
             self._handle = None
 
     def _get_handle(self) -> IO[str]:
-        """Open and cache the file handle on first write."""
+        """首次写入时打开并缓存文件句柄。"""
         if self._handle is None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._handle = self.path.open("a", encoding="utf-8")
@@ -126,10 +125,10 @@ class DebugLog:
 
 
 class _NullDebugLog(DebugLog):
-    """No-op DebugLog used when debug logging is disabled."""
+    """禁用 debug 日志时使用的空实现。"""
 
     def __init__(self) -> None:
-        # 不调用父类 __init__，不需要 path / handle
+        # 不调用父类 __init__，不需要路径或文件句柄。
         pass
 
     def event(

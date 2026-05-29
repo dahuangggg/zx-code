@@ -148,7 +148,7 @@ async def run_task(
                     await result
         except Exception as exc:
             # stream_handler 用于展示/进度回调，报错不应中断 LLM 调用本身
-            logger.warning("stream_handler raised during chunk delivery: %s", exc)
+            logger.warning("stream_handler raised during chunk output: %s", exc)
             _log.event(
                 "stream_handler.error",
                 {"error": str(exc), "turn": state.turn_count},
@@ -212,7 +212,7 @@ async def _run_task_loop(
         state.turn_count += 1
         # continuation/compaction 预算是轮次内概念，每轮重置；backoff 跨轮累计不重置
         recovery_budget.reset_turn()
-        # prepare 只裁剪/压缩"发给模型的"消息副本，不修改 state.messages 的真实历史
+        # 上下文准备只裁剪/压缩“发给模型的”消息副本，不修改真实消息历史。
         model_messages = (
             await context_guard.prepare(state.messages)
             if context_guard is not None

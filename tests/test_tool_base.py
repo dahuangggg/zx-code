@@ -83,8 +83,8 @@ def test_tool_result_serializes_envelope_as_tool_message_content():
     assert result.is_error is False
 
 
-def test_tool_result_model_copy_normalizes_legacy_content_and_status_update():
-    """保护旧截断路径：model_copy(update=content/status) 不能生成影子字段。"""
+def test_tool_result_model_copy_normalizes_compat_content_and_status_update():
+    """保护兼容截断路径：model_copy(update=content/status) 不能生成影子字段。"""
     result = ToolResult(
         call_id="call-1",
         name="dummy",
@@ -115,7 +115,7 @@ def test_tool_result_model_copy_normalizes_legacy_content_and_status_update():
     assert "is_error" not in copied.__dict__
 
 
-def test_tool_result_model_copy_normalizes_legacy_status_only_update():
+def test_tool_result_model_copy_normalizes_compat_status_only_update():
     result = ToolResult(
         call_id="call-1",
         name="dummy",
@@ -129,7 +129,7 @@ def test_tool_result_model_copy_normalizes_legacy_status_only_update():
     assert "status" not in copied.__dict__
 
 
-def test_tool_result_wraps_arbitrary_legacy_dict_content_as_raw_data():
+def test_tool_result_wraps_arbitrary_compat_dict_content_as_raw_data():
     """保护插件/MCP 兼容路径：任意 dict 不是 ToolEnvelope 协议时必须包进 data.raw。"""
     result = ToolResult(
         call_id="call-1",
@@ -142,7 +142,7 @@ def test_tool_result_wraps_arbitrary_legacy_dict_content_as_raw_data():
     assert result.envelope.text == json.dumps({"foo": "bar", "count": 2}, ensure_ascii=False)
 
 
-def test_tool_result_wraps_arbitrary_legacy_json_object_content_as_raw_data():
+def test_tool_result_wraps_arbitrary_compat_json_object_content_as_raw_data():
     raw = json.dumps({"foo": "bar", "count": 2}, ensure_ascii=False)
 
     result = ToolResult(
@@ -189,39 +189,39 @@ async def test_execute_injects_time_ms_and_params():
 
 
 @pytest.mark.asyncio
-async def test_execute_normalizes_legacy_string_return_to_envelope():
-    class _LegacyStringTool(Tool):
-        name = "legacy_string"
+async def test_execute_normalizes_compat_string_return_to_envelope():
+    class _CompatStringTool(Tool):
+        name = "compat_string"
         description = "test"
         input_model = _DummyInput
 
         async def run(self, arguments: _DummyInput) -> ToolEnvelope:
-            return f"legacy {arguments.x}"
+            return f"compat {arguments.x}"
 
-    result = await _LegacyStringTool().execute({"x": 8}, call_id="legacy-1")
+    result = await _CompatStringTool().execute({"x": 8}, call_id="compat-1")
 
     assert result.status == "success"
-    assert result.envelope.text == "legacy 8"
+    assert result.envelope.text == "compat 8"
     assert result.envelope.stats["time_ms"] >= 0
     assert result.envelope.context["cwd"] == "."
     assert result.envelope.context["params_input"] == {"x": 8}
 
 
 @pytest.mark.asyncio
-async def test_execute_normalizes_legacy_dict_return_to_envelope():
-    class _LegacyDictTool(Tool):
-        name = "legacy_dict"
+async def test_execute_normalizes_compat_dict_return_to_envelope():
+    class _CompatDictTool(Tool):
+        name = "compat_dict"
         description = "test"
         input_model = _DummyInput
 
         async def run(self, arguments: _DummyInput) -> ToolEnvelope:
-            return {"status": "partial", "data": {"value": arguments.x}, "text": "legacy"}
+            return {"status": "partial", "data": {"value": arguments.x}, "text": "compat"}
 
-    result = await _LegacyDictTool().execute({"x": 9}, call_id="legacy-2")
+    result = await _CompatDictTool().execute({"x": 9}, call_id="compat-2")
 
     assert result.status == "partial"
     assert result.envelope.data == {"value": 9}
-    assert result.envelope.text == "legacy"
+    assert result.envelope.text == "compat"
     assert result.envelope.stats["time_ms"] >= 0
     assert result.envelope.context["params_input"] == {"x": 9}
 

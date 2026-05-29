@@ -108,8 +108,8 @@ class ToolCallExecutor:
                 session_id=self.session_id,
             )
             if hook_result.denied:
-                # hook deny 是执行链外部拒绝，不经过具体 Tool.run()，因此这里直接
-                # 构造 error envelope，仍然保持 ToolResult 的 call_id/name 配对。
+                # hook 拒绝来自执行链外部，不经过具体工具实现，因此这里直接
+                # 构造错误 envelope，仍然保持 ToolResult 的调用 id/name 配对。
                 await flush_safe_batch()
                 await self._emit_progress(
                     "tool.start",

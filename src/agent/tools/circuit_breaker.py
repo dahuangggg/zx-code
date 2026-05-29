@@ -1,4 +1,4 @@
-"""tools.circuit_breaker — session-scoped per-tool failure breaker."""
+"""tools.circuit_breaker — session 级按工具隔离的失败熔断器。"""
 from __future__ import annotations
 
 import time

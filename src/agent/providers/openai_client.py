@@ -64,8 +64,8 @@ _CLIENT_KWARGS = {"base_url", "organization", "timeout", "max_retries", "default
 class OpenAIModelClient:
     """基于 openai Python SDK 的 ModelClient 实现。
 
-    当前请求形状是 Chat Completions 风格：messages + tools + optional stream。
-    这个类的边界是 SDK 适配层：外部只看 ModelTurn，raw response 只写入 debug trace。
+    当前请求形状是 Chat Completions 风格：messages + tools + 可选 stream。
+    这个类的边界是 SDK 适配层：外部只看 ModelTurn，原始响应只写入 debug trace。
     """
 
     def __init__(
@@ -278,8 +278,8 @@ class OpenAIModelClient:
                 "usage": usage,
             },
         )
-        # Normalize accumulated tool calls; skip entries with no name or empty arguments
-        # (some API proxies emit ghost tool call slots with name but no arguments)
+        # 规范化累积的工具调用；跳过没有 name 或参数为空的条目。
+        # 某些 API proxy 会发出只有 name、没有 arguments 的空 tool call 槽位。
         tool_calls: list[ToolCall] = []
         for idx in sorted(raw_tool_calls):
             entry = raw_tool_calls[idx]

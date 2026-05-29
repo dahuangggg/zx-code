@@ -1,21 +1,10 @@
-"""scheduling.lanes — 优先级泳道调度器。
+"""嵌套 CLI agent 工作使用的最小协作式调度器。
 
-``LaneScheduler`` 解决的问题：多个异步调用（主对话、子代理、cron、心跳）
-同时需要调用 LLM 时，应该按优先级有序执行，而不是随机并发。
-
-工作原理：
-  - 每个任务提交到 asyncio.PriorityQueue，按优先级数字排序（数字越小越优先）
-  - 后台单一 worker 协程依序取出任务并 await 执行
-  - 当前任务执行期间新到的高优先级任务会等待，不会抢占
-
-泳道优先级（LANE_PRIORITIES）：
-  main=0 > subagent=10 > cron=20 > heartbeat=30
-
-``ContextVar`` 防止泳道内部任务被再次入队（直接内联执行，避免死锁）。
+调度器保留单 worker 和优先级队列，用于 main/subagent 泳道。它只表达 CLI 协作执行
+顺序，不表达定时后台任务或传输层输出路由。
 """
 
 from __future__ import annotations
-
 
 import asyncio
 import time
@@ -28,13 +17,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 
-LaneName = Literal["main", "subagent", "cron", "heartbeat"]
+LaneName = Literal["main", "subagent"]
 
 LANE_PRIORITIES: dict[str, int] = {
     "main": 0,
     "subagent": 10,
-    "cron": 20,
-    "heartbeat": 30,
 }
 
 _current_scheduler: ContextVar["LaneScheduler | None"] = ContextVar(
@@ -44,7 +31,7 @@ _current_scheduler: ContextVar["LaneScheduler | None"] = ContextVar(
 
 
 class LaneRunRecord(BaseModel):
-    """一次 lane job 的运行指标。"""
+    """调度任务结束后记录的执行历史条目。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -75,11 +62,7 @@ class _QueuedLaneJob:
 
 
 class LaneScheduler:
-    """Cooperative priority scheduler for agent turns.
-
-    Lower priority numbers run first. Running jobs are not preempted; a newly
-    arrived high-priority job waits until the current LLM/tool turn finishes.
-    """
+    """CLI 子代理执行使用的单 worker 优先级调度器。"""
 
     def __init__(self, *, autostart: bool = True) -> None:
         self.autostart = autostart
@@ -95,7 +78,6 @@ class LaneScheduler:
         *,
         job_id: str | None = None,
     ) -> asyncio.Future[Any]:
-        """提交任务并返回 future；不会等待执行完成。"""
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Any] = loop.create_future()
         priority = LANE_PRIORITIES.get(lane, 100)
@@ -125,7 +107,6 @@ class LaneScheduler:
         *,
         job_id: str | None = None,
     ) -> Any:
-        """提交任务并等待结果；在同一 scheduler 内递归调用时内联执行。"""
         if _current_scheduler.get() is self:
             loop = asyncio.get_running_loop()
             future: asyncio.Future[Any] = loop.create_future()
@@ -142,12 +123,10 @@ class LaneScheduler:
         return await self.submit(lane, run, job_id=job_id)
 
     def start(self) -> None:
-        """启动后台 worker。"""
         if self._worker_task is None or self._worker_task.done():
             self._worker_task = asyncio.create_task(self._worker())
 
     async def close(self) -> None:
-        """停止后台 worker。"""
         if self._worker_task is None:
             return
         self._worker_task.cancel()

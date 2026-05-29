@@ -1,24 +1,7 @@
-"""state.memory_search — 混合记忆搜索管道（g06）。
+"""本地 memory record 的混合搜索管线。
 
-五阶段搜索管道，增强 s09 MemoryStore 的检索能力：
-
-  1. TF-IDF 关键词通道 — 精确词汇匹配（文件名、编号、专有名词）
-  2. 哈希投影向量通道 — 语义相似匹配（零外部依赖占位，可替换为真实 embedding）
-  3. 加权融合 — 向量 0.7 + 关键词 0.3，合并双通道结果
-  4. 时间衰减 — 从路径中提取 YYYY-MM-DD，近期记忆得分更高
-  5. MMR 重排序 — 最大边际相关度，保证结果多样性
-
-使用方式：
-
-    searcher = HybridMemorySearch()
-    chunks = load_memory_chunks(memory_dir)
-    results = searcher.search("用户角色和偏好", chunks, top_k=3)
-    # [{"path": "user_role.md", "score": 0.82, "snippet": "..."}]
-
-升级路径：将 ``_embed()`` 替换为真实 embedding API 调用，其余管道不变：
-
-    response = openai.embeddings.create(input=text, model="text-embedding-3-small")
-    return response.data[0].embedding
+搜索组合词法 TF-IDF、轻量 hash 投影向量分数、时间权重和 MMR 重排。embedding 占位实现
+是本地且确定性的，因此 memory search 不需要网络调用也能工作。
 """
 
 from __future__ import annotations
@@ -29,10 +12,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-# ---------------------------------------------------------------------------
-# 内存片段加载
-# ---------------------------------------------------------------------------
 
 def load_memory_chunks(memory_dir: Path | str) -> list[dict[str, Any]]:
     """从记忆目录加载所有 .md 文件，返回 chunk 列表。
@@ -54,14 +33,8 @@ def load_memory_chunks(memory_dir: Path | str) -> list[dict[str, Any]]:
     return chunks
 
 
-# ---------------------------------------------------------------------------
-# HybridMemorySearch
-# ---------------------------------------------------------------------------
-
 class HybridMemorySearch:
     """五阶段混合记忆搜索管道：TF-IDF + 向量 + 合并 + 时间衰减 + MMR。"""
-
-    # ── 1. TF-IDF 关键词通道 ──────────────────────────────────────────────
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:

@@ -82,10 +82,10 @@ async def test_plugin_tool_accepts_protocol_envelope_stdout(tmp_path: Path) -> N
 
 
 async def test_plugin_tool_wraps_plain_stdout_as_success_envelope(monkeypatch, tmp_path: Path) -> None:
-    def fail_legacy_coercion(*_args, **_kwargs):
+    def fail_compat_coercion(*_args, **_kwargs):
         raise AssertionError("plugin stdout must construct ToolResult(envelope=...)")
 
-    monkeypatch.setattr(ToolResult, "_coerce_legacy_result_data", fail_legacy_coercion)
+    monkeypatch.setattr(ToolResult, "_coerce_compat_result_data", fail_compat_coercion)
 
     script = tmp_path / "plain.py"
     script.write_text("print('plain output')\n", encoding="utf-8")

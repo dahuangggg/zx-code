@@ -88,10 +88,10 @@ async def test_mcp_tool_propagates_remote_error_flag() -> None:
 
 
 async def test_mcp_tool_wraps_string_output_as_success_text(monkeypatch) -> None:
-    def fail_legacy_coercion(*_args, **_kwargs):
+    def fail_compat_coercion(*_args, **_kwargs):
         raise AssertionError("MCP output must construct ToolResult(envelope=...)")
 
-    monkeypatch.setattr(ToolResult, "_coerce_legacy_result_data", fail_legacy_coercion)
+    monkeypatch.setattr(ToolResult, "_coerce_compat_result_data", fail_compat_coercion)
 
     class _StringMCPClient(_FakeMCPClient):
         async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:

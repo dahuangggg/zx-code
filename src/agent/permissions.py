@@ -1,19 +1,7 @@
-"""permissions — 多层规则引擎权限系统（s07）。
+"""工具执行的权限策略引擎。
 
-``PermissionManager.decide()`` 按优先级依次评估三层规则：
-
-  1. 每工具策略（``tool_policies`` 配置项，优先级最高）
-  2. 文件规则（``.zx-code/permissions.toml`` 的 [[rules]] 数组，fnmatch 匹配）
-     - 规则类型：deny → allow → ask（deny 最先检查）
-  3. 内置安全模式（兜底，无需配置）
-     - bash：正则匹配危险命令（rm -rf、sudo、dd 等）
-     - write_file/edit_file：符号链接检查、敏感路径检查、工作目录越界检查
-     - memory_append：默认需审批
-
-结果为三态：
-  allow — 直接执行
-  deny  — 返回错误 ToolResult
-  ask   — 调用 ApprovalCallback（CLI 模式下弹出 y/N 提示）
+``PermissionManager.decide`` 组合按工具配置的策略、可选文件规则和内置安全检查。
+它返回 ``allow``、``deny`` 或 ``ask``，让 registry 执行和 CLI 审批保持分离。
 """
 
 from __future__ import annotations
@@ -45,7 +33,7 @@ class PermissionCheck(BaseModel):
 
 
 class PermissionRule(BaseModel):
-    """A single fnmatch-based permission rule loaded from a rules file."""
+    """从规则文件加载的单条 fnmatch 权限规则。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -138,7 +126,7 @@ class PermissionManager:
         default_decision: PermissionDecision = "allow",
         working_dir: str | Path | None = None,
     ) -> "PermissionManager":
-        """Load rules from a TOML file with a [[rules]] array."""
+        """从包含 [[rules]] 数组的 TOML 文件加载规则。"""
         rules_path = Path(path)
         rules: list[PermissionRule] = []
         if rules_path.exists():
@@ -154,7 +142,7 @@ class PermissionManager:
         )
 
     def decide(self, tool_name: str, arguments: dict[str, Any]) -> PermissionCheck:
-        # 1. Per-tool policy overrides (from config permission_tools table)
+        # 1. 按工具配置的策略覆盖（来自 config permission_tools 表）
         configured = self.tool_policies.get(tool_name)
         if configured:
             return PermissionCheck(
@@ -164,7 +152,7 @@ class PermissionManager:
                 reason=f"configured policy for {tool_name}: {configured}",
             )
 
-        # 2. File-based rules: deny → allow → ask
+        # 2. 文件规则：deny → allow → ask
         for rule in self._deny_rules:
             if rule.matches(tool_name, arguments):
                 return PermissionCheck(
@@ -190,7 +178,7 @@ class PermissionManager:
                     reason=f"matched ask rule: tool={rule.tool!r} path={rule.path!r} command={rule.command!r}",
                 )
 
-        # 3. Built-in safety patterns (fallback when no file rules match)
+        # 3. 内置安全模式（没有文件规则命中时兜底）
         if tool_name == "bash":
             command = str(arguments.get("command", ""))
             for pattern in self.dangerous_bash_patterns:

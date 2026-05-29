@@ -25,11 +25,14 @@ def test_python_splitter_prefers_class_and_function_chunks(tmp_path: Path) -> No
 
     chunks = split_file(path, codebase_path=tmp_path, max_chars=500, overlap_lines=0)
 
-    assert [chunk.symbol for chunk in chunks] == ["Service", "load"]
-    assert chunks[0].start_line == 3
-    assert chunks[0].end_line == 5
-    assert chunks[1].start_line == 7
-    assert chunks[1].end_line == 8
+    assert [chunk.symbol for chunk in chunks] == ["sample", "Service", "load"]
+    assert chunks[0].start_line == 1
+    assert chunks[0].end_line == 1
+    assert chunks[0].content == "import os"
+    assert chunks[1].start_line == 3
+    assert chunks[1].end_line == 5
+    assert chunks[2].start_line == 7
+    assert chunks[2].end_line == 8
 
 
 def test_line_splitter_preserves_line_ranges_and_overlap(tmp_path: Path) -> None:

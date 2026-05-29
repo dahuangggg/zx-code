@@ -1,4 +1,4 @@
-"""Sanitize trace payloads before writing audit files."""
+"""写入审计文件前清理 trace payload。"""
 from __future__ import annotations
 
 import re
@@ -17,7 +17,7 @@ SENSITIVE_KEYS = {
 
 
 class TraceSanitizer:
-    """Recursively redact common credentials while preserving replay ids."""
+    """递归遮蔽常见凭据，同时保留回放所需 id。"""
 
     def sanitize(self, value: Any) -> Any:
         if isinstance(value, Mapping):
@@ -51,4 +51,3 @@ class TraceSanitizer:
         value = re.sub(r"sk-[A-Za-z0-9_-]+", "sk-***", value)
         value = re.sub(r"Bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer ***", value)
         return value
-

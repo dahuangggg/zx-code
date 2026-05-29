@@ -25,10 +25,6 @@ session_id = "from-user"
 model = "gpt-project"
 reasoning_effort = "medium"
 session_id = "from-project"
-channel = "telegram"
-account_id = "bot-a"
-dm_scope = "per-channel-peer"
-telegram_allowed_chats = "123,456"
 plugin_dirs = [".zx-code/plugins"]
 enable_worktree_isolation = true
 worktree_dir = ".zx-code/state/worktrees"
@@ -58,10 +54,6 @@ bash = "deny"
     assert settings.model.reasoning_effort == "medium"
     assert settings.model.max_iterations == 3
     assert settings.state.session_id == "from-cli"
-    assert settings.channel.name == "telegram"
-    assert settings.channel.account_id == "bot-a"
-    assert settings.routing.dm_scope == "per-channel-peer"
-    assert settings.channel.telegram.allowed_chats == "123,456"
     assert settings.extensions.plugin_dirs == [".zx-code/plugins"]
     assert settings.worktree.isolation_enabled is True
     assert settings.worktree.dir == ".zx-code/state/worktrees"
@@ -205,77 +197,3 @@ def test_default_runtime_paths_use_zx_code_home(tmp_path: Path) -> None:
     assert runtime.trace_sanitize is True
     assert runtime.trace_html is False
     assert runtime.trace_html_include_raw_response is False
-
-
-def test_config_loader_reads_nested_channel_settings(tmp_path: Path) -> None:
-    project_dir = tmp_path / "project"
-    project_config = project_dir / ".zx-code" / "config.toml"
-    project_config.parent.mkdir(parents=True)
-    project_config.write_text(
-        """
-[agent]
-channel = "telegram"
-
-[agent.telegram]
-token = "tg-token"
-allowed_chats = "123,456"
-text_coalesce_s = 2.0
-""".strip(),
-        encoding="utf-8",
-    )
-
-    settings = ConfigLoader(project_dir=project_dir).load()
-
-    assert settings.channel.telegram.token == "tg-token"
-    assert settings.channel.telegram.allowed_chats == "123,456"
-    assert settings.channel.telegram.text_coalesce_s == 2.0
-
-
-def test_config_loader_keeps_legacy_flat_channel_settings(tmp_path: Path) -> None:
-    project_dir = tmp_path / "project"
-    project_config = project_dir / ".zx-code" / "config.toml"
-    project_config.parent.mkdir(parents=True)
-    project_config.write_text(
-        """
-[agent]
-telegram_token = "tg-token"
-telegram_allowed_chats = "123,456"
-""".strip(),
-        encoding="utf-8",
-    )
-
-    settings = ConfigLoader(project_dir=project_dir).load()
-
-    assert settings.channel.telegram.token == "tg-token"
-    assert settings.channel.telegram.allowed_chats == "123,456"
-
-
-def test_config_loader_deep_merges_nested_channel_settings(tmp_path: Path) -> None:
-    user_config = tmp_path / "user.toml"
-    project_dir = tmp_path / "project"
-    project_config = project_dir / ".zx-code" / "config.toml"
-    project_config.parent.mkdir(parents=True)
-    user_config.write_text(
-        """
-[agent.telegram]
-token = "from-user"
-timeout_s = 20
-""".strip(),
-        encoding="utf-8",
-    )
-    project_config.write_text(
-        """
-[agent.telegram]
-allowed_chats = "123"
-""".strip(),
-        encoding="utf-8",
-    )
-
-    settings = ConfigLoader(
-        project_dir=project_dir,
-        user_config_path=user_config,
-    ).load()
-
-    assert settings.channel.telegram.token == "from-user"
-    assert settings.channel.telegram.timeout_s == 20
-    assert settings.channel.telegram.allowed_chats == "123"

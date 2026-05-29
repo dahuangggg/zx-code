@@ -1,15 +1,7 @@
-"""core.context — 上下文窗口管理与历史压缩（s06）。
+"""上下文窗口预算和对话历史压缩。
 
-ContextGuard 在每次 LLM 调用前被调用（``prepare()``），执行历史压缩（Compact）：
-   总 token 超过 ``max_tokens`` 时触发：
-   - 保留最近 ``keep_recent`` 条消息的原文（近场保留）
-   - 对更早的消息生成摘要（远程压缩），策略优先级：
-       a. LLM 摘要（``compact_model`` 指定的廉价模型，如 gpt-5.4）
-       b. 机械摘要兜底（LLM 调用失败时降级）
-   - 摘要作为一条 system 消息插入，替换旧历史
-
-Token 计数使用 ``tiktoken``（通过 openai SDK 间接依赖），
-不可用时降级为 ``len(text) // 3 + 1`` 的估算。
+``ContextGuard.prepare`` 构建模型可见的对话历史副本。它会保留近期消息，在超预算时
+摘要更早的协议安全消息组，并保持持久化 session 历史不变。
 """
 from __future__ import annotations
 
@@ -27,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 @functools.lru_cache(maxsize=2048)
 def _count_tokens(text: str, model: str) -> int:
-    """Count tokens using tiktoken if available, else estimate from chars.
+    """优先使用 tiktoken 计数；不可用时按字符数估算。
 
     结果按 (text, model) 缓存：同一条消息在多轮 prepare() 中只计算一次，
     对话越长收益越大（每轮只有新增消息需要计算）。
@@ -58,7 +50,7 @@ def _total_tokens(messages: list[Message], model: str) -> int:
     return sum(_message_tokens(message, model) for message in messages)
 
 
-# Legacy char-based helpers for tool result truncation (which operates on chars, not tokens).
+# 工具结果截断按输出大小控制，而不是按模型 token 预算控制，因此保留字符级 helper。
 def _message_size(message: Message) -> int:
     """单条消息按字符计算长度，供按字符截断的逻辑使用（与 token 计数解耦）。"""
     return len(message.content) + sum(len(str(call.arguments)) for call in message.tool_calls)
@@ -84,11 +76,10 @@ def _format_for_summary(messages: list[Message], *, max_chars_per_entry: int = 3
 
 
 def _message_groups(messages: list[Message]) -> list[tuple[list[Message], bool]]:
-    """Group messages along tool-call protocol boundaries.
+    """按工具调用协议边界对消息分组。
 
-    The boolean marks whether the group is safe to keep verbatim in the recent
-    window. Orphan tool messages and incomplete assistant tool-call groups are
-    summarized instead of sent back to the model as invalid protocol messages.
+    返回的布尔值表示该组是否可在近期窗口中原样保留。孤儿 tool 消息和不完整的
+    assistant tool-call 组会进入摘要，而不是作为非法协议消息发回模型。
     """
     # 工具调用协议要求 assistant(tool_calls) 后必须跟齐对应 tool 结果，
     # 切窗口时不能把这对消息切开，否则模型会因协议不完整报错
@@ -119,10 +110,9 @@ def _message_groups(messages: list[Message]) -> list[tuple[list[Message], bool]]
 
 
 SUMMARY_PROMPT = (
-    "Compress the following conversation into a concise summary. "
-    "Preserve: file paths, key decisions, errors encountered, pending tasks, "
-    "and any important context the assistant will need to continue the conversation. "
-    "Do NOT include pleasantries or filler. Be factual and dense.\n\n"
+    "请把下面的对话压缩成简明摘要。"
+    "保留：文件路径、关键决策、遇到的错误、待办任务，以及 assistant 继续对话所需的重要上下文。"
+    "不要包含寒暄或填充内容，保持事实准确且信息密集。\n\n"
 )
 
 
@@ -135,7 +125,7 @@ class SummaryClient(Protocol):
 
 @dataclass(frozen=True)
 class ModelSummaryClient:
-    """Summarize compacted history through the configured model adapter."""
+    """通过配置的模型适配器摘要被压缩的历史。"""
 
     model_client: ModelClient
 
@@ -167,8 +157,8 @@ class ContextGuard:
 
     async def prepare(self, messages: list[Message]) -> list[Message]:
         """主入口：在每次 LLM 调用前对消息列表做预算控制，返回可直接送模型的副本。"""
-        # Tool output truncation is centralized in ObservationTruncator at tool
-        # execution time. ContextGuard only decides whether history needs compacting.
+        # 工具输出截断集中在工具执行阶段的 ObservationTruncator。
+        # ContextGuard 只判断历史是否需要压缩。
         if _total_tokens(messages, self.model) <= self.max_tokens:
             return messages
         return await self.compact_history(messages)

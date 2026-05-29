@@ -1,16 +1,7 @@
-"""hooks — 进程隔离的钩子系统（s08）。
+"""工具生命周期事件的子进程 hook runner。
 
-用户可在 ``.zx-code/hooks.toml`` 中注册任意外部脚本，
-agent 在特定事件点（pre_tool_use / post_tool_use）调用它们。
-
-通信协议：
-  - 输入：JSON payload 写入脚本的 stdin
-  - 输出：脚本将 JSON 响应写入 stdout
-  - ``{"decision": "deny", "reason": "..."}`` — 拒绝本次工具调用（仅 pre_tool_use 有效）
-  - 无输出或空 JSON — 允许继续
-
-脚本语言不限（bash / python / node 均可），进程崩溃不影响主进程。
-超时默认 10 秒，超时后视为允许继续（静默失败）。
+Hook 通过 TOML 配置，并作为外部命令运行。它们通过 stdin/stdout 传递 JSON，
+可以拒绝 ``pre_tool_use`` 事件，其余情况下与核心运行时保持进程隔离。
 """
 
 from __future__ import annotations
@@ -38,13 +29,13 @@ class HookResult:
 
 
 class HookRunner:
-    """Run user-defined hooks via subprocess + JSON protocol.
+    """通过子进程和 JSON 协议运行用户定义的 hook。
 
-    Hook scripts receive a JSON payload on stdin and may write a JSON response
-    to stdout.  A response with ``{"decision": "deny"}`` blocks the action for
-    ``pre_tool_use`` events; all other events are fire-and-forget.
+    Hook 脚本从 stdin 接收 JSON payload，并可向 stdout 写 JSON 响应。对于
+    ``pre_tool_use`` 事件，``{"decision": "deny"}`` 会阻止本次动作；其他事件按
+    fire-and-forget 处理。
 
-    Config file format (.zx-code/hooks.toml):
+    配置文件格式（.zx-code/hooks.toml）：
 
         [[pre_tool_use]]
         command = "python .zx-code/hooks/security.py"
@@ -71,10 +62,10 @@ class HookRunner:
         return cls({})
 
     async def run(self, event: str, payload: dict[str, Any]) -> HookResult:
-        """Run all hooks registered for *event*.
+        """运行指定事件注册的所有 hook。
 
-        Returns a ``HookResult`` with ``denied=True`` if any hook returned
-        ``{"decision": "deny"}``; otherwise returns an allowing result.
+        如果任意 hook 返回 ``{"decision": "deny"}``，则返回 ``denied=True`` 的
+        ``HookResult``；否则返回允许结果。
         """
         for hook in self._hooks.get(event, []):
             command = hook.get("command", "").strip()
