@@ -1,17 +1,7 @@
-"""state.memory — 跨会话记忆存储（s09）。
+"""跨 session 事实的文件存储。
 
-记忆文件格式：YAML frontmatter + Markdown 正文，使用 ``python-frontmatter`` 解析。
-每条记忆存为独立的 .md 文件，索引维护在 MEMORY.md。
-
-记忆类型（frontmatter 中的 type 字段）：
-  user      — 用户角色、偏好、背景知识
-  feedback  — 用户对 agent 行为的反馈（正向/负向）
-  project   — 当前项目的背景、决策、里程碑
-  reference — 外部资源的指针（Linear 项目、Grafana 面板等）
-
-System prompt 注入：
-  ``render_for_prompt()`` 加载 MEMORY.md 索引（前 200 行），
-  agent 通过 ``load_skill`` 工具按需加载完整记忆正文。
+memory record 是带 frontmatter 的 Markdown 文件，``MEMORY.md`` 作为面向 prompt 的索引。
+system prompt 只渲染紧凑索引，完整记录按需加载。
 """
 
 from __future__ import annotations

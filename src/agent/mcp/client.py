@@ -75,7 +75,7 @@ class StdioMCPClient:
         self._session = None
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # 内部辅助方法
     # ------------------------------------------------------------------
 
     async def _list_tools(self) -> list[MCPToolDefinition]:

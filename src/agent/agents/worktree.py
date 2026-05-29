@@ -1,14 +1,7 @@
-"""agents.worktree — Git worktree 隔离（s18）。
+"""agent 任务的 Git worktree 隔离。
 
-``WorktreeManager`` 为每个子代理任务创建一个独立的 Git worktree，
-实现文件系统级别的隔离，防止并发代理互相覆盖文件。
-
-工作流程：
-  1. ``create()`` — git worktree add，在指定目录创建独立的工作副本，切到新分支
-  2. 子代理在该 worktree 路径下操作文件
-  3. ``cleanup()`` — git worktree remove，清除工作副本（可选保留分支供合并）
-
-前提条件：项目必须是 git 仓库（非 git 目录会抛出异常）。
+``WorktreeManager`` 为任务创建独立 Git worktree 和分支，并在调用方完成后清理
+文件系统租约。本模块只封装 Git worktree 操作，合并策略由外层决定。
 """
 
 from __future__ import annotations

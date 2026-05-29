@@ -13,6 +13,15 @@ from agent.models import ToolEnvelope
 from agent.tools.base import Tool
 
 
+TOOL_DISPLAY_NAMES = {
+    "read_file": "Read",
+    "write_file": "Write",
+    "edit_file": "Edit",
+    "grep": "Grep",
+    "glob": "Glob",
+}
+
+
 class ToolSearchInput(BaseModel):
     """tool_search 参数；names 精确激活，query 做简单文本匹配。"""
 
@@ -24,7 +33,7 @@ class ToolSearchInput(BaseModel):
     )
     names: list[str] = Field(
         default_factory=list,
-        description="Exact tool names to activate, if known.",
+        description="Exact tool names or display names to activate, if known.",
     )
     limit: int = Field(default=5, ge=1, le=20)
 
@@ -63,11 +72,17 @@ class ToolSearchTool(Tool):
             for schema in schemas
             if self._tool_name(schema) and self._tool_name(schema) != self.name
         }
+        by_alias = {
+            display_name.casefold(): name
+            for name, display_name in TOOL_DISPLAY_NAMES.items()
+            if name in by_name
+        }
 
         ordered: list[dict[str, Any]] = []
         for name in arguments.names:
-            schema = by_name.get(name)
-            if schema is not None:
+            resolved_name = by_alias.get(name.casefold(), name)
+            schema = by_name.get(resolved_name)
+            if schema is not None and schema not in ordered:
                 ordered.append(schema)
 
         query_terms = [
@@ -103,6 +118,7 @@ class ToolSearchTool(Tool):
         return " ".join(
             [
                 str(function.get("name", "")),
+                TOOL_DISPLAY_NAMES.get(str(function.get("name", "")), ""),
                 str(function.get("description", "")),
                 arg_names,
             ]

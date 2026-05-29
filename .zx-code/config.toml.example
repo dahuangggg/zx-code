@@ -58,41 +58,6 @@ rules_path = ""
 # bash = "ask"
 # edit = "allow"
 
-[agent.channel]
-name = "cli"
-account_id = "local"
-
-[agent.channel.telegram]
-token = ""
-offset = 0
-timeout_s = 30
-allowed_chats = ""
-text_coalesce_s = 1.0
-media_group_coalesce_s = 0.5
-
-[agent.routing]
-agent_id = "default"
-default_agent_id = "default"
-force_agent_id = ""
-dm_scope = "per-account-channel-peer"
-
-[agent.delivery]
-max_attempts = 5
-base_delay_s = 1.0
-max_delay_s = 300.0
-jitter_s = 1.0
-daemon_interval_s = 1.0
-
-[agent.scheduling]
-heartbeat_enabled = false
-heartbeat_interval_s = 300.0
-heartbeat_min_idle_s = 30.0
-heartbeat_channel = ""
-heartbeat_to = ""
-heartbeat_prompt = "Heartbeat check. Reply HEARTBEAT_OK if no user-facing update is needed."
-heartbeat_sentinel = "HEARTBEAT_OK"
-cron_jobs_path = ""
-
 [agent.subagents]
 enabled = true
 max_depth = 1
@@ -106,6 +71,9 @@ enabled = false
 path = ".zx-code/cache/code-context/chroma"
 snapshot_dir = ".zx-code/cache/code-context/snapshots"
 collection = "agent_code_context"
+embedding_model = "text-embedding-3-small"
+embedding_api_key_env = "OPENAI_API_KEY"
+embedding_base_url = ""
 top_k = 5
 max_result_chars = 4000
 max_total_chars = 12000

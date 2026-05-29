@@ -66,6 +66,7 @@ def test_read_and_grep_tools_are_concurrency_safe() -> None:
     registry = build_default_registry()
     assert registry.get("read_file").is_concurrency_safe({}) is True
     assert registry.get("grep").is_concurrency_safe({}) is True
+    assert registry.get("glob").is_concurrency_safe({}) is True
     assert registry.get("write_file").is_concurrency_safe({}) is False
 
 
@@ -73,7 +74,15 @@ def test_read_and_grep_tools_are_concurrency_safe() -> None:
 async def test_tool_search_returns_schema_and_activates_matches() -> None:
     registry = build_default_registry()
 
-    assert [schema["function"]["name"] for schema in registry.active_schemas()] == ["tool_search"]
+    assert [schema["function"]["name"] for schema in registry.active_schemas()] == [
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "grep",
+        "glob",
+        "tool_search",
+    ]
 
     result = await registry.execute(
         "tool_search",
@@ -85,6 +94,21 @@ async def test_tool_search_returns_schema_and_activates_matches() -> None:
     assert "read_file" in data["activated"]
     assert any(tool["name"] == "read_file" for tool in data["tools"])
     assert "read_file" in [schema["function"]["name"] for schema in registry.active_schemas()]
+
+
+@pytest.mark.asyncio
+async def test_tool_search_accepts_display_names() -> None:
+    registry = build_default_registry()
+
+    result = await registry.execute(
+        "tool_search",
+        {"query": "find files", "names": ["Glob"], "limit": 1},
+        call_id="search-glob",
+    )
+    assert not result.is_error
+    data = json.loads(result.content)["data"]
+    assert data["activated"] == ["glob"]
+    assert data["tools"][0]["name"] == "glob"
 
 
 @pytest.mark.asyncio
@@ -100,6 +124,23 @@ async def test_grep_returns_matches(tmp_path: Path) -> None:
     )
     data = json.loads(result.content)["data"]
     assert any("agent" in line for line in data["matches"])
+
+
+@pytest.mark.asyncio
+async def test_glob_returns_matching_files(tmp_path: Path) -> None:
+    registry = build_default_registry()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('agent')\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# docs\n", encoding="utf-8")
+
+    result = await registry.execute(
+        "glob",
+        {"pattern": "**/*.py", "path": str(tmp_path)},
+        call_id="glob-1",
+    )
+    data = json.loads(result.content)["data"]
+    assert data["matches"] == [str(tmp_path / "src" / "app.py")]
+    assert data["truncated"] is False
 
 
 @pytest.mark.asyncio
@@ -130,11 +171,11 @@ async def test_validation_errors_return_error_status(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_registry_unknown_tool_error_does_not_use_legacy_content(monkeypatch) -> None:
-    def fail_legacy_coercion(*_args, **_kwargs):
+async def test_registry_unknown_tool_error_does_not_use_compat_content(monkeypatch) -> None:
+    def fail_compat_coercion(*_args, **_kwargs):
         raise AssertionError("registry errors must construct ToolResult(envelope=...)")
 
-    monkeypatch.setattr(ToolResult, "_coerce_legacy_result_data", fail_legacy_coercion)
+    monkeypatch.setattr(ToolResult, "_coerce_compat_result_data", fail_compat_coercion)
 
     result = await ToolRegistry().execute("missing_tool", {}, call_id="missing-1")
 

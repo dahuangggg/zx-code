@@ -1,9 +1,7 @@
-"""s15-s17: Agent Teams — MessageBus + TeamMember + Team.
+"""进程内 agent team 协调。
 
-Design: asyncio.Queue for runtime routing, JSONL file for persistence.
-- MessageBus handles routing and request-response matching via asyncio.Future.
-- TeamMember wraps any async agent callable and processes inbound messages.
-- Team orchestrates members and exposes dispatch / broadcast helpers.
+``MessageBus`` 通过 asyncio 队列路由 request、response 和 broadcast。
+可选 JSONL 持久化让 team 通信可检查，同时避免核心 agent loop 理解 team 语义。
 """
 from __future__ import annotations
 
@@ -21,8 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 TeamMessageType = Literal["request", "response", "broadcast"]
 
-# (task, session_id) -> reply text — same signature as SubagentRunner internals
 AgentRunFn = Callable[[str, str], Awaitable[str]]
+"""在隔离 session 中运行 team 成员任务的可调用签名。"""
 
 
 def _now() -> str:
@@ -46,26 +44,22 @@ class TeamMessage(BaseModel):
 
 class MessageBus:
     """
-    In-process message bus for agent teams.
+    agent team 的进程内消息总线。
 
-    Routing rules:
-    - ``to_agent == "*"``  → broadcast to every subscriber except the sender.
-    - ``to_agent == <id>`` → unicast to that subscriber's queue.
-    - Responses (``reply_to`` set) bypass queues and resolve a Future directly,
-      so request() callers are never blocked by unrelated messages.
+    路由规则：
+    - ``to_agent == "*"``：广播给除发送者外的所有订阅者。
+    - ``to_agent == <id>``：单播到该成员队列。
+    - 设置了 ``reply_to`` 的响应会绕过队列，直接完成等待中的 Future，
+      避免 request() 调用方被无关消息阻塞。
 
-    Persistence: every published message is appended as one JSON line to
-    ``log_path`` (if provided). The file is fsync'd on each write for safety.
+    持久化：如果配置了 ``log_path``，每条发布消息都会追加为一行 JSON；
+    每次写入后都会 fsync，降低进程崩溃造成日志损坏的概率。
     """
 
     def __init__(self, log_path: Path | str | None = None) -> None:
         self._queues: dict[str, asyncio.Queue[TeamMessage]] = {}
         self._pending: dict[str, asyncio.Future[TeamMessage]] = {}
         self._log_path = Path(log_path) if log_path else None
-
-    # ------------------------------------------------------------------
-    # Subscription management
-    # ------------------------------------------------------------------
 
     def subscribe(self, agent_id: str) -> asyncio.Queue[TeamMessage]:
         if agent_id not in self._queues:
@@ -75,13 +69,9 @@ class MessageBus:
     def unsubscribe(self, agent_id: str) -> None:
         self._queues.pop(agent_id, None)
 
-    # ------------------------------------------------------------------
-    # Publish / request / respond
-    # ------------------------------------------------------------------
-
     async def publish(self, message: TeamMessage) -> None:
-        """Route *message* and append to the JSONL log."""
-        # Responses short-circuit to a waiting Future, not a queue.
+        """路由消息，并追加到 JSONL 日志。"""
+        # 响应消息直接完成等待中的 Future，不再进入普通队列。
         if message.reply_to is not None:
             future = self._pending.pop(message.reply_to, None)
             if future is not None and not future.done():
@@ -106,9 +96,9 @@ class MessageBus:
         *,
         timeout_s: float = 30.0,
     ) -> TeamMessage:
-        """Send a request to *to_agent* and wait for its response.
+        """向目标成员发送请求并等待响应。
 
-        Raises ``TimeoutError`` if no response arrives within *timeout_s*.
+        如果在 ``timeout_s`` 内没有响应，则抛出 ``TimeoutError``。
         """
         msg = TeamMessage(
             from_agent=from_agent,
@@ -137,7 +127,7 @@ class MessageBus:
         *,
         from_agent: str,
     ) -> None:
-        """Publish a response to *original*."""
+        """针对原始请求发布响应。"""
         response = TeamMessage(
             from_agent=from_agent,
             to_agent=original.from_agent,
@@ -148,7 +138,7 @@ class MessageBus:
         await self.publish(response)
 
     async def broadcast(self, content: str, *, from_agent: str) -> None:
-        """Publish a broadcast message to all subscribers except *from_agent*."""
+        """向除发送者外的所有成员发布广播消息。"""
         msg = TeamMessage(
             from_agent=from_agent,
             to_agent="*",
@@ -157,12 +147,8 @@ class MessageBus:
         )
         await self.publish(msg)
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
-
     def load_history(self) -> list[TeamMessage]:
-        """Return all messages persisted to the JSONL log."""
+        """读取 JSONL 日志中持久化的全部消息。"""
         if self._log_path is None or not self._log_path.exists():
             return []
         messages: list[TeamMessage] = []
@@ -193,11 +179,10 @@ class TeamMemberInfo:
 
 class TeamMember:
     """
-    A single team participant.
+    单个 team 参与者。
 
-    Subscribes to the bus and runs an agent callable for every inbound
-    ``request`` or ``broadcast`` it receives. Responses are sent back
-    automatically for ``request`` messages.
+    成员订阅消息总线，并对收到的每个 ``request`` 或 ``broadcast`` 执行注入的
+    agent callable。对于 ``request`` 消息，成员会自动回传响应。
     """
 
     def __init__(
@@ -216,7 +201,7 @@ class TeamMember:
         self._stop = asyncio.Event()
 
     async def listen(self) -> None:
-        """Process messages until ``stop()`` is called."""
+        """持续处理消息，直到调用 ``stop()``。"""
         while not self._stop.is_set():
             try:
                 message = await asyncio.wait_for(self._inbox.get(), timeout=1.0)
@@ -244,9 +229,9 @@ class TeamMember:
 
 class Team:
     """
-    Orchestrates a group of TeamMembers sharing a MessageBus.
+    协调共享同一个 MessageBus 的 TeamMember 集合。
 
-    Typical usage::
+    典型用法::
 
         team = Team(log_path=".team/messages.jsonl")
         team.add_member("researcher", run_researcher)
@@ -276,7 +261,7 @@ class Team:
         *,
         role: str = "",
     ) -> TeamMember:
-        """Register a new member. Must be called before ``start()``."""
+        """注册新成员；必须在 ``start()`` 之前调用。"""
         member = TeamMember(
             agent_id=agent_id,
             bus=self.bus,
@@ -288,14 +273,14 @@ class Team:
         return member
 
     def members_summary(self) -> list[dict[str, str]]:
-        """Return member metadata suitable for prompts and tools."""
+        """返回适合 prompt 和工具展示的成员元数据。"""
         return [
             {"agent_id": info.agent_id, "role": info.role}
             for info in self._member_info.values()
         ]
 
     def start(self) -> None:
-        """Launch all member ``listen()`` loops as asyncio background tasks."""
+        """以 asyncio 后台任务启动所有成员的 ``listen()`` 循环。"""
         for agent_id, member in self._members.items():
             existing = self._tasks.get(agent_id)
             if existing is None or existing.done():
@@ -305,7 +290,7 @@ class Team:
                 )
 
     def ensure_started(self) -> None:
-        """Start member loops if they are not already running."""
+        """如果成员循环尚未运行，则启动它们。"""
         self.start()
 
     async def dispatch(
@@ -316,7 +301,7 @@ class Team:
         from_agent: str = "coordinator",
         timeout_s: float = 30.0,
     ) -> str:
-        """Send a request to *to_agent* and return its reply text."""
+        """向目标成员发送请求，并返回其回复文本。"""
         response = await self.bus.request(
             from_agent, to_agent, content, timeout_s=timeout_s
         )
@@ -328,11 +313,11 @@ class Team:
         *,
         from_agent: str = "coordinator",
     ) -> None:
-        """Broadcast *content* to all members."""
+        """向所有成员广播内容。"""
         await self.bus.broadcast(content, from_agent=from_agent)
 
     async def shutdown(self) -> None:
-        """Signal all members to stop and wait for their tasks to finish."""
+        """通知所有成员停止，并等待它们的任务结束。"""
         for member in self._members.values():
             member.stop()
         tasks = list(self._tasks.values())

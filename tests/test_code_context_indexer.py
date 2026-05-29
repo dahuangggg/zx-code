@@ -61,6 +61,22 @@ def _slow_indexer(tmp_path: Path) -> CodeContextIndexer:
     )
 
 
+def test_indexer_preserves_public_facade_methods(tmp_path: Path) -> None:
+    indexer = _indexer(tmp_path)
+
+    for method_name in [
+        "index_codebase",
+        "start_background_index",
+        "wait_background_index",
+        "cancel_index",
+        "search_code",
+        "get_status",
+        "list_codebases",
+        "clear_codebase",
+    ]:
+        assert callable(getattr(indexer, method_name))
+
+
 def test_indexer_indexes_searches_and_reports_status(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -102,6 +118,25 @@ def test_indexer_updates_modified_and_removed_files(tmp_path: Path) -> None:
     assert second.removed_files == 1
     assert "old.py" not in [result.relative_path for result in indexer.search_code(repo, "old context")]
     assert indexer.search_code(repo, "auth request")[0].relative_path == "service.py"
+
+
+def test_indexer_rebuilds_when_embedding_function_changes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "service.py").write_text("def auth_request():\n    return 'auth'\n", encoding="utf-8")
+
+    indexer = _indexer(tmp_path)
+    first = indexer.index_codebase(repo)
+    snapshot_path = tmp_path / "snapshots" / f"{codebase_hash(repo)}.json"
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    snapshot["embedding_function"] = "stale:embedding"
+    snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    second = indexer.index_codebase(repo)
+
+    assert first.added_files == 1
+    assert second.skipped_files == 0
+    assert second.added_files == 1
 
 
 def test_indexer_clear_removes_local_index_and_snapshot(tmp_path: Path) -> None:
@@ -228,7 +263,7 @@ def test_indexer_uses_request_file_rules(tmp_path: Path) -> None:
     assert [result.relative_path for result in results] == ["component.vue"]
 
 
-def test_hybrid_search_keyword_channel_can_promote_exact_identifier(tmp_path: Path) -> None:
+def test_hybrid_search_keyword_path_can_promote_exact_identifier(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "generic.py").write_text(
@@ -248,7 +283,58 @@ def test_hybrid_search_keyword_channel_can_promote_exact_identifier(tmp_path: Pa
     assert results[0].relative_path == "payment.py"
 
 
-def test_keyword_channel_uses_persistent_sparse_index_at_query_time(tmp_path: Path) -> None:
+def test_hybrid_search_uses_path_tokens_for_code_locations(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "src" / "agent" / "core").mkdir(parents=True)
+    (repo / "src" / "agent" / "model_types").mkdir(parents=True)
+    (repo / "src" / "agent" / "core" / "loop.py").write_text(
+        "def run_task():\n    return 'start runtime'\n",
+        encoding="utf-8",
+    )
+    (repo / "src" / "agent" / "model_types" / "runtime.py").write_text(
+        "def runtime_model():\n    return 'agent entrypoint model model model'\n",
+        encoding="utf-8",
+    )
+
+    indexer = _indexer(tmp_path)
+    indexer.index_codebase(repo)
+
+    results = indexer.search_code(repo, "agent loop entrypoint", top_k=3)
+
+    assert results[0].relative_path == "src/agent/core/loop.py"
+
+
+def test_hybrid_search_uses_symbol_tokens_for_split_python_classes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    body = "\n".join(f"        step_{index} = {index}" for index in range(80))
+    (repo / "executor.py").write_text(
+        "\n".join(
+            [
+                "class ToolCallExecutor:",
+                "    def execute_many(self):",
+                body,
+                "        return step_79",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (repo / "notes.py").write_text(
+        "def execute_many_notes():\n    return 'execute many generic notes'\n",
+        encoding="utf-8",
+    )
+
+    indexer = _indexer(tmp_path)
+    indexer.index_codebase(repo)
+
+    results = indexer.search_code(repo, "ToolCallExecutor step_79", top_k=3)
+
+    assert results[0].relative_path == "executor.py"
+    assert results[0].symbol == "ToolCallExecutor"
+
+
+def test_keyword_path_uses_persistent_sparse_index_at_query_time(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "payment.py").write_text(

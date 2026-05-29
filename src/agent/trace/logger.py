@@ -1,4 +1,4 @@
-"""JSONL trace logger with stable audit/replay event shape."""
+"""使用稳定审计/回放事件结构的 JSONL trace 日志器。"""
 from __future__ import annotations
 
 import json
@@ -17,13 +17,13 @@ TRACE_SCHEMA_VERSION = "trace.v1"
 
 
 def new_run_id() -> str:
-    """Generate a readable run id for one agent invocation."""
+    """为一次 agent 调用生成可读运行 id。"""
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"run-{stamp}-{uuid.uuid4().hex[:8]}"
 
 
 class TraceLogger:
-    """Stable JSONL audit logger, separate from best-effort DebugLog."""
+    """稳定 JSONL 审计日志器，和 best-effort DebugLog 分离。"""
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ class TraceLogger:
         *,
         step: int = 0,
     ) -> None:
-        """Append one JSONL event if tracing is enabled."""
+        """如果 trace 已启用，则追加一条 JSONL 事件。"""
         if not self.enabled or self._closed:
             return
         raw_payload = to_debug_json(payload or {})
@@ -86,7 +86,7 @@ class TraceLogger:
                 return
 
     def finalize(self, summary: Mapping[str, Any] | None = None) -> None:
-        """Write terminal events and optional HTML exactly once."""
+        """只写入一次终止事件和可选 HTML。"""
         if self._closed:
             return
         if summary is not None:

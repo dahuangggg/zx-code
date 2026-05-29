@@ -1,13 +1,7 @@
-"""state.skills — 两层技能加载（s05）。
+"""文件形式的 skill 索引和加载器。
 
-技能文件格式：YAML frontmatter（含 name/description）+ Markdown 正文。
-存放于 ``skills/`` 目录（或 workspace/skills/），每个技能一个 .md 文件。
-
-两层加载策略（节省 token）：
-  第一层：``render_index()`` 生成技能名+描述的简短索引，注入 system prompt
-  第二层：agent 调用 ``load_skill`` 工具传入技能名，获取完整 Markdown 正文
-
-路径安全：``load()`` 验证解析后的路径在 ``skill_root`` 内，防止路径穿越攻击。
+prompt 只接收紧凑的 name/description 索引。完整 Markdown skill 文件会在路径校验后，
+通过 ``load_skill`` 工具按需加载。
 """
 
 from __future__ import annotations
@@ -42,10 +36,10 @@ class SkillDocument(BaseModel):
 
 
 class SkillStore:
-    """File-backed skill loader.
+    """基于文件的 skill 加载器。
 
-    The prompt receives only the compact index. Full markdown is loaded through
-    the load_skill tool so rarely used skills do not permanently consume tokens.
+    prompt 只接收紧凑索引。完整 Markdown 通过 load_skill 工具加载，避免低频 skill
+    长期占用 token。
     """
 
     def __init__(self, root: str | Path) -> None:

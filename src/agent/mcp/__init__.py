@@ -1,11 +1,7 @@
-"""agent.mcp — MCP（Model Context Protocol）协议客户端（s19）。
+"""MCP client 和 router 的公共导出。
 
-使用 Anthropic 官方 ``mcp`` Python SDK，通过 stdio 传输层连接外部 MCP 服务器。
-
-  client.py — ``StdioMCPClient``：懒初始化的 stdio MCP 客户端，list_tools / call_tool
-  router.py — ``MCPToolRouter``：管理多个 MCP 服务器，将其工具注册为统一的 ``MCPProxyTool``
-
-工具命名约定：``mcp__<server_name>__<tool_name>``
+本包导出 stdio MCP client，以及把远端 MCP 工具适配成本地 ``Tool`` 实例的 router。
+适配后的工具名格式为 ``mcp__<server>__<tool>``。
 """
 from agent.mcp.client import MCPServerConfig, MCPToolDefinition, StdioMCPClient
 from agent.mcp.router import MCPProxyTool, MCPToolRouter

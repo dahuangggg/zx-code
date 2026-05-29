@@ -1,4 +1,4 @@
-"""Render trace JSONL events into a small standalone HTML report."""
+"""将 trace JSONL 事件渲染成小型独立 HTML 报告。"""
 from __future__ import annotations
 
 import html
@@ -9,7 +9,7 @@ from typing import Any
 
 
 def write_trace_html(path: Path, events: Sequence[dict[str, Any]]) -> None:
-    """Write an escaped, dependency-free HTML view of trace events."""
+    """写入转义后的、无外部依赖的 trace HTML 视图。"""
     rows: list[str] = []
     for event in events:
         payload = json.dumps(event.get("payload", {}), ensure_ascii=False, indent=2)
@@ -32,4 +32,3 @@ def write_trace_html(path: Path, events: Sequence[dict[str, Any]]) -> None:
         + "\n".join(rows),
         encoding="utf-8",
     )
-

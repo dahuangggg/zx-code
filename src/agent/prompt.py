@@ -1,21 +1,8 @@
-"""prompt — 管线式 System Prompt 构建器（s10）。
+"""CLI 代理运行时的 system prompt 构建器。
 
-``SystemPromptBuilder`` 将 system prompt 分解为多个独立 section，
-每个 section 是一个标题 + 内容的 Markdown 片段：
-
-  Identity          — 读取 workspace/IDENTITY.md + SOUL.md（稳定，缓存友好）
-  Operating Rules   — 内置默认行为准则（稳定）
-  Tools             — 工具列表索引（稳定，工具不变则不变）
-  Project           — 项目根路径（稳定）
-  Project Instructions — CLAUDE.md 内容（稳定）
-  Skills            — 技能名称索引（稳定）
-  Memory            — MEMORY.md 索引（半稳定）
-  Runtime           — 日期/session_id/模型等（每次会话变化）
-  Tasks             — 任务状态（随任务变化）
-  Todos             — Todo 列表（每轮都变，放最后）
-
-排列顺序遵循"稳定内容在前"原则，最大化 prompt cache 命中率。
-空 section 自动跳过，不出现在最终 prompt 中。
+``SystemPromptBuilder`` 按从稳定到动态的顺序渲染独立 Markdown section：
+identity 和 operating rules 在前，其次是工具发现、项目指令、skills、memory、
+runtime 数据、tasks 和 todos。空 section 会被跳过，避免可选 store 泄漏实现细节。
 """
 
 from __future__ import annotations
@@ -33,6 +20,14 @@ from agent.models import RuntimeConfig
 from agent.state.skills import SkillStore
 from agent.state.tasks import TaskStore
 from agent.state.todo import TodoManager
+
+TOOL_DISPLAY_NAMES = {
+    "read_file": "Read",
+    "write_file": "Write",
+    "edit_file": "Edit",
+    "grep": "Grep",
+    "glob": "Glob",
+}
 
 
 DEFAULT_SYSTEM_PROMPT = """You are a local coding agent.
@@ -104,9 +99,9 @@ class SystemPromptBuilder:
     ) -> list[PromptSection]:
         """返回未渲染 section 列表，空内容会被过滤。"""
         runtime_config = config or RuntimeConfig()
-        # Order is cache-aware: stable → semi-stable → dynamic.
-        # Stable content at the top maximises prompt cache hit rate.
-        # Todos go last because they change most frequently (every iteration).
+        # 各段落按缓存友好顺序排列：稳定 → 半稳定 → 动态。
+        # 稳定内容放前面，提高提示词缓存命中率。
+        # 待办列表每轮都可能变化，因此放在最后。
         sections = [
             PromptSection(title="Identity", content=self._identity_block()),       # stable
             PromptSection(title="Operating Rules", content=DEFAULT_SYSTEM_PROMPT), # stable
@@ -143,28 +138,34 @@ class SystemPromptBuilder:
                 "Use tools for repository inspection, file edits, validation, and runtime "
                 "state management. Prefer narrow reads, validate before writing, and report "
                 "tool failures clearly.\n\n"
+                "Initial active tools are tool_search plus the basic file tools: "
+                "bash, Read, Write, Edit, Grep, and Glob. The actual callable tool names "
+                "are shown in parentheses in the tool index; use those exact callable "
+                "names when invoking tools.\n\n"
                 "Prefer wrapped agent tools over raw shell commands when they can express "
-                "the task. read_file, write_file, edit_file, and grep go through the "
-                "agent's normal permission, validation, logging, and error-handling path, "
-                "so use them for ordinary file inspection, file edits, and repository "
+                "the task. Read, Write, Edit, Grep, and Glob go through the agent's normal "
+                "permission, validation, logging, and error-handling path, so use them for "
+                "ordinary file discovery, file inspection, file edits, and repository "
                 "search. Use bash mainly for command execution that cannot be represented "
                 "by a narrower wrapped tool, such as running tests, builds, scripts, git "
                 "inspection, or environment checks.\n\n"
-                "Use tool_search when the tool you need is not currently available in the "
-                "active tool list, or when you are unsure which tool fits the task. Search "
-                "by intent, capability, or exact tool name. After tool_search returns and "
-                "activates matching schemas, call the activated tool directly in the next "
-                "model turn.\n\n"
+                "Use tool_search when you need a non-file capability that is not currently "
+                "available in the active tool list, such as state, memory, skill, task, "
+                "subagent, team, worktree, CodeContext, MCP, or plugin tools. Search by "
+                "intent, capability, display name, or exact tool name. After tool_search "
+                "returns and activates matching schemas, call the activated tool directly "
+                "in the next model turn.\n\n"
                 "When code_search is available and a task requires understanding an "
                 "unfamiliar codebase, architecture boundaries, ownership, or natural-language "
-                "code locations, prefer code_search before broad grep/read_file exploration. "
-                "Use read_file after code_search when you need exact surrounding lines or "
+                "code locations, prefer code_search before broad Grep/Read exploration. "
+                "Use Read after code_search when you need exact surrounding lines or "
                 "when preparing edits.\n\n"
                 "Tool choice guidelines:\n"
-                "- Use read_file for exact file contents from a known path, especially narrow line ranges.\n"
-                "- Use grep for targeted text, symbol, filename, or pattern search across files.\n"
-                "- Use edit_file for targeted replacements in existing files.\n"
-                "- Use write_file for creating a new file or replacing/appending larger text content.\n"
+                "- Use Glob for finding files by path pattern before reading them.\n"
+                "- Use Read for exact file contents from a known path, especially narrow line ranges.\n"
+                "- Use Grep for targeted text, symbol, filename, or pattern search across files.\n"
+                "- Use Edit for targeted replacements in existing files.\n"
+                "- Use Write for creating a new file or replacing/appending larger text content.\n"
                 "- Use bash for tests, builds, scripts, git commands, package commands, or checks that require process execution.\n"
                 "- Use todo tools for short-lived session work tracking.\n"
                 "- Use task tools for persistent DAG-style task tracking with blockers.\n"
@@ -186,8 +187,10 @@ class SystemPromptBuilder:
             if not name:
                 continue
             description = str(function.get("description", "")).strip()
+            display = TOOL_DISPLAY_NAMES.get(name)
+            label = f"{display} ({name})" if display else name
             suffix = f" {description}" if description else ""
-            lines.append(f"- {name}:{suffix}".rstrip())
+            lines.append(f"- {label}:{suffix}".rstrip())
         return "\n".join(lines)
 
     def _memory_block(self) -> str:

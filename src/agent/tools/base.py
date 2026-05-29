@@ -75,18 +75,18 @@ def _build_error_tool_envelope(
 
 
 def build_error_envelope(code: ErrorCode, message: str) -> str:
-    """为仍需要字符串错误载荷的非 Tool 上下文保留的兼容 helper。"""
+    """为仍需要字符串错误载荷的非 Tool 上下文保留的兼容辅助函数。"""
     return _build_error_tool_envelope(code, message).model_dump_json(exclude_none=True)
 
 
-def _normalize_legacy_result(raw: str | dict[str, Any], *, call_id: str, name: str) -> ToolEnvelope:
-    """把旧工具返回的 str/dict 交给 ToolResult 兼容层规范化。"""
-    legacy_content: str | dict[str, Any]
-    legacy_content = raw
+def _normalize_compat_result(raw: str | dict[str, Any], *, call_id: str, name: str) -> ToolEnvelope:
+    """把兼容的 str/dict 工具返回值规范化为 ToolEnvelope。"""
+    compat_content: str | dict[str, Any]
+    compat_content = raw
     return ToolResult(
         call_id=call_id,
         name=name,
-        content=legacy_content,  # type: ignore[call-arg]
+        content=compat_content,  # type: ignore[call-arg]
     ).envelope
 
 
@@ -183,7 +183,7 @@ class Tool(ABC):
             if isinstance(raw, ToolEnvelope):
                 envelope = raw
             else:
-                envelope = _normalize_legacy_result(raw, call_id=call_id, name=self.name)
+                envelope = _normalize_compat_result(raw, call_id=call_id, name=self.name)
         except Exception as exc:
             elapsed_ms = round((_time.monotonic() - t0) * 1000)
             envelope = _inject_meta(

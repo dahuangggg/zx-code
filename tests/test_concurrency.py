@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from agent.scheduling.lanes import LaneScheduler
+from agent.core.concurrency import LaneScheduler
 
 
 async def test_lane_scheduler_runs_high_priority_jobs_first_when_waiting() -> None:
@@ -13,17 +13,15 @@ async def test_lane_scheduler_runs_high_priority_jobs_first_when_waiting() -> No
         order.append(name)
         return name
 
-    heartbeat = scheduler.submit("heartbeat", lambda: record("heartbeat"))
-    cron = scheduler.submit("cron", lambda: record("cron"))
+    subagent = scheduler.submit("subagent", lambda: record("subagent"))
     main = scheduler.submit("main", lambda: record("main"))
 
     scheduler.start()
 
     assert await main == "main"
-    assert await cron == "cron"
-    assert await heartbeat == "heartbeat"
-    assert order == ["main", "cron", "heartbeat"]
-    assert [record.lane for record in scheduler.history] == ["main", "cron", "heartbeat"]
+    assert await subagent == "subagent"
+    assert order == ["main", "subagent"]
+    assert [record.lane for record in scheduler.history] == ["main", "subagent"]
 
     await scheduler.close()
 
@@ -34,29 +32,29 @@ async def test_lane_scheduler_does_not_preempt_running_lower_priority_job() -> N
     release = asyncio.Event()
     order: list[str] = []
 
-    async def heartbeat_job() -> str:
-        order.append("heartbeat-start")
+    async def subagent_job() -> str:
+        order.append("subagent-start")
         started.set()
         await release.wait()
-        order.append("heartbeat-end")
-        return "heartbeat"
+        order.append("subagent-end")
+        return "subagent"
 
     async def main_job() -> str:
         order.append("main")
         return "main"
 
-    heartbeat = scheduler.submit("heartbeat", heartbeat_job)
+    subagent = scheduler.submit("subagent", subagent_job)
     await started.wait()
     main = scheduler.submit("main", main_job)
     await asyncio.sleep(0)
 
-    assert order == ["heartbeat-start"]
+    assert order == ["subagent-start"]
 
     release.set()
 
-    assert await heartbeat == "heartbeat"
+    assert await subagent == "subagent"
     assert await main == "main"
-    assert order == ["heartbeat-start", "heartbeat-end", "main"]
+    assert order == ["subagent-start", "subagent-end", "main"]
 
     await scheduler.close()
 

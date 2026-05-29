@@ -6,9 +6,9 @@ keyword_search() 提供内存 BM25 风格检索；rrf_fuse() 用 Reciprocal Rank
 from __future__ import annotations
 
 import math
-import re
 
 from agent.code_context.models import CodeSearchResult
+from agent.code_context.tokenization import tokenize_code_text
 
 
 def keyword_search(
@@ -60,16 +60,18 @@ def rrf_fuse(
     *,
     limit: int,
     k: int = 60,
+    weights: list[float] | None = None,
 ) -> list[CodeSearchResult]:
     """用 RRF 融合多个已排序结果列表，并合并同一代码范围的命中来源。"""
     by_key: dict[tuple[str, int, int], CodeSearchResult] = {}
     scores: dict[tuple[str, int, int], float] = {}
-    for ranked in ranked_lists:
+    for index, ranked in enumerate(ranked_lists):
+        weight = weights[index] if weights and index < len(weights) else 1.0
         for rank, result in enumerate(ranked, start=1):
             key = _result_key(result)
             existing = by_key.get(key)
             by_key[key] = result if existing is None else _merge_results(existing, result)
-            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
+            scores[key] = scores.get(key, 0.0) + weight / (k + rank)
     ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     return [
         by_key[key].model_copy(update={"score": round(score, 4)})
@@ -85,9 +87,9 @@ def _result_key(result: CodeSearchResult) -> tuple[str, int, int]:
 def _merge_results(left: CodeSearchResult, right: CodeSearchResult) -> CodeSearchResult:
     """合并向量/关键词重复命中的元数据，保留最好的 rank。"""
     matched_by = [*left.matched_by]
-    for channel in right.matched_by:
-        if channel not in matched_by:
-            matched_by.append(channel)
+    for source in right.matched_by:
+        if source not in matched_by:
+            matched_by.append(source)
     return left.model_copy(
         update={
             "matched_by": matched_by,
@@ -107,4 +109,4 @@ def _merge_results(left: CodeSearchResult, right: CodeSearchResult) -> CodeSearc
 
 def _tokenize(text: str) -> list[str]:
     """排序阶段使用的轻量 token 化。"""
-    return re.findall(r"[a-z0-9_]+", text.lower())
+    return tokenize_code_text(text)

@@ -1,6 +1,6 @@
 # zx-code
 
-`zx-code` 是一个用 Python 实现的本地 Coding Agent 运行时实验仓库。它不是只包一层模型 API 的 CLI，而是在逐步拆出一个可持久化、可扩展、可接多通道、可接工具和子代理的 Agent Runtime。
+`zx-code` 是一个用 Python 实现的本地 Coding Agent 运行时实验仓库。当前分支刻意收缩为 CLI-only runtime：先把核心 Agent loop、工具系统、状态持久化、上下文恢复和子代理执行打稳，再重新设计多通道、投递和主动调度能力。
 
 ## 快速开始
 
@@ -15,7 +15,7 @@
 uv sync --dev
 ```
 
-配置模型 key。模型调用直接使用 OpenAI Python SDK：
+配置模型 key：
 
 ```bash
 export OPENAI_API_KEY="your-openai-key"
@@ -42,6 +42,7 @@ uv run agent --max-turns 8 "分析 src/agent/core/loop.py"
 uv run agent --resume demo-session "继续上次任务"
 uv run agent --print-system-prompt
 uv run agent --debug-log --debug-log-path .zx-code/logs/debug.jsonl "调试一次运行"
+uv run agent --trace --trace-html "记录一次结构化 trace"
 ```
 
 运行测试：
@@ -50,31 +51,21 @@ uv run agent --debug-log --debug-log-path .zx-code/logs/debug.jsonl "调试一�
 uv run pytest -q
 ```
 
-## 一句话架构
-
-当前运行链路可以压缩成这一条：
+## 当前架构
 
 ```text
-CLI / Channel
-  -> Gateway
-  -> LaneScheduler
-  -> runtime builder
+CLI
+  -> runtime runner
+  -> typed runtime builder
   -> core ReAct loop
   -> OpenAI model client
   -> ToolRegistry
-  -> SessionStore / DeliveryQueue
+  -> SessionStore
 ```
-
-更完整的结构如下：
 
 ```mermaid
 flowchart TD
-    User["User / Channel Message"] --> Channel["CLIChannel / TelegramChannel"]
-    Channel --> Gateway["Gateway"]
-    Gateway --> Binding["BindingTable + session key"]
-    Binding --> Lane["LaneScheduler"]
-    Lane --> Runtime["runtime.builder"]
-
+    CLI["CLI task / REPL input"] --> Runtime["runtime.builder"]
     Runtime --> Prompt["SystemPromptBuilder"]
     Runtime --> Context["ContextGuard"]
     Runtime --> Model["OpenAIModelClient / FallbackModelClient"]
@@ -99,528 +90,42 @@ flowchart TD
     Permission --> CodeContext["CodeContext tools"]
 
     Loop --> Reply["final answer"]
-    Reply --> Delivery["DeliveryQueue / DeliveryRunner"]
-    Delivery --> Channel
 ```
 
-## 核心能力
+## 核心模块
 
-### Agent Loop
+- `src/agent/main.py`：Typer CLI 参数入口。
+- `src/agent/runtime/runner.py`：单次任务和 REPL 两种 CLI 运行模式。
+- `src/agent/runtime/builder.py`：组合根，装配模型、工具、状态、prompt、trace、MCP 和插件。
+- `src/agent/runtime/types.py`：typed `AgentRuntime`、状态 bundle 和服务 bundle。
+- `src/agent/core/loop.py`：ReAct 主循环。
+- `src/agent/core/tool_executor.py`：执行模型请求的 tool calls。
+- `src/agent/core/context.py`：上下文预算、裁剪和 compact。
+- `src/agent/core/recovery.py`：模型调用超时、限流、溢出和 fallback 恢复。
+- `src/agent/core/concurrency.py`：CLI 子代理使用的最小协作式调度器。
+- `src/agent/model_types/`：消息、工具协议、运行时结果和指标模型；`agent.models` 保持兼容 re-export。
+- `src/agent/tools/`：内置工具、工具注册表和 tool pack 分组；默认注入 `tool_search` 与 `Read/Write/Edit/Grep/Glob` 基础文件工具。
+- `src/agent/state/`：memory、todo、task DAG、skills、session 持久化。
+- `src/agent/trace/`：结构化 trace 和可选 HTML 输出。
+- `src/agent/code_context/`：代码索引与检索，`CodeContextIndexer` 作为门面，内部拆分 snapshot、job、pipeline、search service。
 
-核心文件是 [`src/agent/core/loop.py`](src/agent/core/loop.py)。
+## 已移除范围
 
-主循环做的事情：
+这个分支移除了旧的多通道运行时：
 
-1. 从 `SessionStore` 恢复历史消息。
-2. 追加本轮用户输入。
-3. 通过 `ContextGuard` 准备发给模型的消息副本，必要时裁剪或 compact。
-4. 通过 `ResilienceRunner` 调用模型，处理 timeout、rate limit、overflow 等恢复路径。
-5. 如果模型没有 tool call，返回最终回答。
-6. 如果模型有 tool call，交给 `ToolCallExecutor` 执行。
-7. tool result 写回消息历史，再进入下一轮模型调用。
+- `channels/`
+- `scheduling/`
+- Telegram 长轮询适配器
+- Gateway / BindingTable / DMScope session key
+- DeliveryQueue / DeliveryRunner / DeliveryDaemon
+- Heartbeat / Cron
+- `--channel`、`--watch`、`--telegram-*`、`--heartbeat-*`、`--cron-*` CLI 参数和配置
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant G as Gateway
-    participant L as run_task
-    participant C as ContextGuard
-    participant M as ModelClient
-    participant T as ToolRegistry
-    participant S as SessionStore
-
-    U->>G: inbound text
-    G->>L: task + session id
-    L->>S: rebuild_messages()
-    L->>S: append user message
-    loop until final answer
-        L->>C: prepare(messages)
-        L->>M: run_turn(messages, active tools)
-        alt no tool calls
-            M-->>L: final text
-        else tool calls
-            M-->>L: tool calls
-            L->>T: execute_many()
-            T-->>L: tool results
-            L->>S: append assistant/tool messages
-        end
-    end
-    L-->>G: final answer
-```
-
-### Tool System
-
-核心文件：
-
-- [`src/agent/tools/registry.py`](src/agent/tools/registry.py)
-- [`src/agent/core/tool_executor.py`](src/agent/core/tool_executor.py)
-- [`src/agent/permissions.py`](src/agent/permissions.py)
-- [`src/agent/tools/tool_search.py`](src/agent/tools/tool_search.py)
-
-`ToolRegistry` 负责注册工具、暴露 schema、执行工具和接入权限系统。工具输入用 Pydantic model 校验，工具输出统一包装成 `ToolResult`。
-
-当前工具 schema 采用按需激活策略：
-
-- prompt 里保留真实工具索引，用于让模型知道有哪些能力。
-- 第一轮默认只把 `tool_search` schema 发给模型。
-- 模型通过 `tool_search` 搜索工具后，匹配到的工具 schema 会在后续 turn 里激活。
-- `active_schemas()` 始终保留 `tool_search`，并返回本轮允许发送给模型的工具集合。
-
-这让系统 prompt 可以保持短一些，同时避免每轮都把所有工具参数 schema 塞给模型。
-
-内置工具按运行时依赖动态注册：
-
-- 基础文件和命令工具：`bash`、`read_file`、`write_file`、`edit_file`、`grep`
-- 状态工具：`todo_*`、`memory_append`、`task_*`、`load_skill`
-- 子代理工具：`subagent_run`
-- worktree 工具：`worktree_create`、`worktree_cleanup`
-- CodeContext 工具：`code_index`、`code_search`、`code_index_status`、`code_index_clear`
-- 扩展工具：MCP 工具和 plugin 工具
-
-### Prompt, Memory, Todo, Task, Skill
-
-核心文件：
-
-- [`src/agent/prompt.py`](src/agent/prompt.py)
-- [`src/agent/state/memory.py`](src/agent/state/memory.py)
-- [`src/agent/state/todo.py`](src/agent/state/todo.py)
-- [`src/agent/state/tasks.py`](src/agent/state/tasks.py)
-- [`src/agent/state/skills.py`](src/agent/state/skills.py)
-
-`SystemPromptBuilder` 是 prompt 的组合点。它会把运行时信息、工具索引、memory、todo、task、skill index 组合进 system prompt。
-
-设计上要区分几类状态：
-
-- `SessionStore`：完整对话历史，用于恢复上下文。
-- `MemoryStore`：长期记忆，默认路径 `.zx-code/state/memory/MEMORY.md`。
-- `TodoManager`：当前 session 的轻量待办状态。
-- `TaskStore`：持久化 DAG 任务系统，支持 `blocked_by` 和依赖解锁。
-- `SkillStore`：只在 prompt 注入技能索引，完整技能正文通过 `load_skill` 按需读取。
-
-### Context 和 Recovery
-
-核心文件：
-
-- [`src/agent/core/context.py`](src/agent/core/context.py)
-- [`src/agent/core/recovery.py`](src/agent/core/recovery.py)
-- [`src/agent/errors.py`](src/agent/errors.py)
-
-`ContextGuard` 只处理“发给模型的消息副本”，不直接改真实 session 历史。它的边界是上下文预算、tool result 截断、最近消息保留和 compact。
-
-`ResilienceRunner` 负责单次模型 turn 的失败恢复：
-
-- 模型调用 timeout
-- rate limit backoff
-- overflow 后 compact 再试
-- 截断输出后的 continuation
-- 可恢复错误交给 fallback profile
-
-### Multi-channel Runtime
-
-核心文件：
-
-- [`src/agent/channels/base.py`](src/agent/channels/base.py)
-- [`src/agent/channels/gateway.py`](src/agent/channels/gateway.py)
-- [`src/agent/channels/cli.py`](src/agent/channels/cli.py)
-- [`src/agent/channels/telegram.py`](src/agent/channels/telegram.py)
-- [`src/agent/channels/delivery.py`](src/agent/channels/delivery.py)
-
-外部入口都会被归一化成 `InboundMessage`。`Gateway` 再根据 channel、account、peer、guild 和 `DMScope` 生成 session key，并把任务交给同一条 Agent loop。
-
-```mermaid
-flowchart LR
-    CLI["CLI text"] --> Inbound["InboundMessage"]
-    TG["Telegram update"] --> Inbound
-    Inbound --> Gateway["Gateway"]
-    Gateway --> SessionKey["build_session_key()"]
-    SessionKey --> Agent["run_agent_turn()"]
-    Agent --> Queue["DeliveryQueue"]
-    Queue --> Runner["DeliveryRunner"]
-    Runner --> Out["CLI / Telegram reply"]
-```
-
-出站消息不直接发送，而是先进入 `DeliveryQueue`：
-
-- `.zx-code/state/delivery/queued/`
-- `.zx-code/state/delivery/sent/`
-- `.zx-code/state/delivery/failed/`
-
-`DeliveryRunner` 负责发送、重试、指数退避和失败归档。`--watch` 模式下会启动 `DeliveryDaemon` 持续 drain 队列。
-
-### Scheduling, Cron, Heartbeat, Subagent
-
-核心文件：
-
-- [`src/agent/scheduling/lanes.py`](src/agent/scheduling/lanes.py)
-- [`src/agent/scheduling/background.py`](src/agent/scheduling/background.py)
-- [`src/agent/scheduling/heartbeat.py`](src/agent/scheduling/heartbeat.py)
-- [`src/agent/scheduling/cron.py`](src/agent/scheduling/cron.py)
-- [`src/agent/agents/subagent.py`](src/agent/agents/subagent.py)
-- [`src/agent/agents/team.py`](src/agent/agents/team.py)
-- [`src/agent/tools/team.py`](src/agent/tools/team.py)
-
-`LaneScheduler` 是协作式优先级调度层，当前优先级是：
+CLI session 规则也简化为：
 
 ```text
-main > subagent > cron > heartbeat
+new run: cli:<timestamp>:<random>
+resume:  用户传入的 session_id 原样使用
 ```
 
-它解决的问题是：同一个运行时里，用户消息、子代理、定时任务、心跳任务不能完全无序地抢模型和工具资源。
-
-`SubagentRunner` 支持主 Agent 通过 `subagent_run` 把聚焦任务交给子代理执行。子代理使用独立 session，并受递归深度限制。开启 worktree isolation 后，子代理可以配合 `WorktreeManager` 在独立 git worktree 中工作。
-
-`Team` 支持主 Agent 通过 `team_list`、`team_dispatch`、`team_broadcast` 和持久队友协作。Team 在 runtime composition root 中装配，队友使用独立 session，消息写入 `.zx-code/logs/team/messages.jsonl`，主 Agent 仍负责拆分任务、判断结果和最终汇总。
-
-### MCP, Plugin, Hooks
-
-核心文件：
-
-- [`src/agent/mcp/client.py`](src/agent/mcp/client.py)
-- [`src/agent/mcp/router.py`](src/agent/mcp/router.py)
-- [`src/agent/plugins.py`](src/agent/plugins.py)
-- [`src/agent/hooks.py`](src/agent/hooks.py)
-
-扩展点分三类：
-
-- MCP：通过官方 `mcp` Python SDK 接 stdio server，发现出的工具注册成 `mcp__server__tool`。
-- Plugin：从 `plugin.json` 发现命令型插件工具，注册成 `plugin__plugin__tool`。
-- Hooks：支持 `pre_tool_use` 和 `post_tool_use`，可在工具执行前后做策略检查或日志记录。
-
-所有扩展工具最终都进入 `ToolRegistry`，因此复用同一套 schema、权限、执行、debug log 和 tool result 机制。
-
-### CodeContext
-
-核心文件：
-
-- [`src/agent/code_context/indexer.py`](src/agent/code_context/indexer.py)
-- [`src/agent/code_context/chroma_store.py`](src/agent/code_context/chroma_store.py)
-- [`src/agent/code_context/sparse_index.py`](src/agent/code_context/sparse_index.py)
-- [`src/agent/code_context/splitter.py`](src/agent/code_context/splitter.py)
-- [`src/agent/code_context/ranker.py`](src/agent/code_context/ranker.py)
-- [`src/agent/tools/code_context.py`](src/agent/tools/code_context.py)
-
-CodeContext 是代码库语义上下文层，默认关闭。开启后会注册 `code_index`、`code_search`、`code_index_status`、`code_index_list`、`code_index_info`、`code_index_clear`。
-
-实现要点：
-
-- ChromaDB `PersistentClient` 持久化到 `.zx-code/cache/code-context/chroma`
-- collection 内通过 `codebase_id` / `codebase_path` metadata 隔离多个仓库
-- Python 文件使用 AST-aware chunking，其他常见代码/文档文件使用 line-based chunking
-- 读取 `.gitignore` / `.contextignore`
-- 支持 `custom_extensions` / `ignore_patterns`，并读取 `.cursorignore` 等 `.xxxignore`
-- 忽略 `.env`、`.git`、`node_modules`、`.zx-code` 等敏感或低价值路径
-- 使用文件级 `sha256` snapshot 支持 added / modified / removed 增量索引
-- 后台索引支持 partial search、进程内 cancel、文件系统级 index lock
-- `code_search` 使用 Chroma vector search、持久化 sparse BM25-like 关键词通道和 RRF 融合
-- 搜索结果包含 `matched_by`、`vector_rank`、`keyword_rank`，便于解释召回来源
-
-## 配置
-
-配置优先级从低到高：
-
-1. 用户级：`~/.zx-code/config.toml`
-2. 项目级：`.zx-code/config.toml`
-3. CLI 参数
-
-TOML 可以直接写顶级字段，也可以放到 `[agent]` section。推荐用 `[agent]`。
-
-最小配置示例：
-
-```toml
-[agent]
-model = "gpt-5.4-mini"
-fallback_models = "gpt-5.5"
-reasoning_effort = "" # 可填 "low"、"medium"、"high"，具体取决于模型
-max_iterations = 30
-context_max_tokens = 128000
-data_dir = ".zx-code/state"
-memory_path = ".zx-code/state/memory/MEMORY.md"
-```
-
-临时开启支持模型的推理强度：
-
-```bash
-uv run agent --reasoning-effort medium "分析这个改动的风险"
-```
-
-如果使用 `model_profiles`，可以为不同 profile 单独配置：
-
-```toml
-[[agent.model_profiles]]
-name = "primary"
-model = "gpt-5.4-mini"
-api_key_env = "OPENAI_API_KEY"
-reasoning_effort = "medium"
-
-[[agent.model_profiles]]
-name = "backup"
-model = "gpt-5.5"
-api_key_env = "OPENAI_API_KEY"
-reasoning_effort = "high"
-```
-
-不支持 `reasoning_effort` 的模型会按 OpenAI SDK/API 的返回行为处理；更特殊的请求参数仍可放进 `extra_kwargs` 透传。
-
-常用功能开关：
-
-```toml
-[agent]
-enable_memory = true
-enable_skills = true
-skills_dir = "skills"
-enable_todos = true
-enable_tasks = true
-tasks_dir = ".zx-code/state/tasks"
-enable_subagents = true
-subagent_max_depth = 1
-enable_worktree_isolation = false
-worktree_dir = ".zx-code/state/worktrees"
-
-[agent.teams]
-enabled = true
-timeout_s = 30
-log_path = ".zx-code/logs/team/messages.jsonl"
-
-[[agent.teams.members]]
-id = "researcher"
-role = "Reads code and summarizes findings."
-
-[[agent.teams.members]]
-id = "reviewer"
-role = "Reviews plans and catches risks before final answers."
-```
-
-CodeContext：
-
-```toml
-[agent]
-code_context_enabled = true
-code_context_path = ".zx-code/cache/code-context/chroma"
-code_context_snapshot_dir = ".zx-code/cache/code-context/snapshots"
-code_context_collection = "agent_code_context"
-code_context_max_result_chars = 4000
-code_context_max_total_chars = 12000
-```
-
-权限配置可以放在 `.zx-code/permissions.toml`：
-
-```toml
-default = "allow"
-
-[tools]
-bash = "ask"
-write_file = "ask"
-edit_file = "ask"
-
-[[rules]]
-tool = "bash"
-decision = "deny"
-pattern = "rm -rf"
-```
-
-具体字段以 [`src/agent/config.py`](src/agent/config.py) 和 [`src/agent/permissions.py`](src/agent/permissions.py) 为准。
-
-## CLI 模式
-
-一次性任务：
-
-```bash
-uv run agent "帮我看 src/agent/core/loop.py"
-```
-
-指定 session：
-
-```bash
-uv run agent --resume demo "继续分析"
-```
-
-进入 REPL：
-
-```bash
-uv run agent
-```
-
-REPL 支持：
-
-- `/help`：查看命令
-- `/session`：查看当前 session id
-- `/clear`：清屏并重绘状态面板
-- `exit` / `quit`：退出
-
-退出时会打印恢复命令：
-
-```bash
-uv run agent --resume <session-id>
-```
-
-## Telegram
-
-Telegram 通道使用 Bot API 的 `getUpdates` 拉取消息，用 `sendMessage` 回复。
-
-配置：
-
-```bash
-export TELEGRAM_BOT_TOKEN="your-telegram-bot-token"
-```
-
-拉取一条消息并回复：
-
-```bash
-uv run agent \
-  --channel telegram \
-  --telegram-token "$TELEGRAM_BOT_TOKEN" \
-  --account-id main-telegram-bot \
-  --dm-scope per-account-channel-peer
-```
-
-持续监听：
-
-```bash
-uv run agent \
-  --channel telegram \
-  --watch \
-  --telegram-token "$TELEGRAM_BOT_TOKEN" \
-  --account-id main-telegram-bot \
-  --dm-scope per-account-channel-peer
-```
-
-常用调试：
-
-```bash
-uv run agent \
-  --channel telegram \
-  --telegram-token "$TELEGRAM_BOT_TOKEN" \
-  --telegram-allowed-chats "123456789,-1001234567890" \
-  --print-system-prompt
-```
-
-Telegram offset 持久化在：
-
-```text
-.zx-code/state/channels/telegram/offset-<account_id>.txt
-```
-
-如果之前配置过 webhook，可以先清掉：
-
-```bash
-curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
-```
-
-## Cron 和 Heartbeat
-
-Heartbeat 用于在 watch 模式下主动检查是否需要给用户发更新：
-
-```bash
-uv run agent \
-  --channel telegram \
-  --watch \
-  --heartbeat \
-  --heartbeat-interval 300 \
-  --heartbeat-min-idle 30 \
-  --heartbeat-channel telegram \
-  --heartbeat-to "<chat-id>" \
-  --heartbeat-prompt "检查是否有需要主动同步的任务进展"
-```
-
-Cron job 从文件加载：
-
-```bash
-uv run agent --watch --cron-jobs .zx-code/cron.json
-```
-
-Cron 状态持久化到：
-
-```text
-.zx-code/state/cron-state.json
-```
-
-## Debug Log
-
-开启：
-
-```bash
-uv run agent --debug-log --debug-log-path .zx-code/logs/debug.jsonl "分析一次工具调用"
-```
-
-常见事件：
-
-- `runtime.built`
-- `run.system_prompt`
-- `run.user_message`
-- `run.model_input`
-- `model.request`
-- `model.response.raw`
-- `model.response.normalized`
-- `tool.start`
-- `tool.end`
-
-敏感字段如 `api_key`、`token`、`secret` 会脱敏。
-
-## 项目结构
-
-```text
-src/agent/
-  main.py                  # Typer CLI 入口
-  config.py                # AgentSettings + 三层配置加载
-  models.py                # Message / ToolCall / ToolResult / RuntimeConfig
-  prompt.py                # SystemPromptBuilder
-  providers/               # OpenAI SDK 模型客户端
-  core/                    # ReAct loop、上下文、恢复、工具执行
-  tools/                   # 内置工具和 ToolRegistry
-  state/                   # session / memory / todo / task / skill
-  channels/                # CLI / Telegram / Gateway / Delivery
-  scheduling/              # lanes / background / heartbeat / cron
-  agents/                  # subagent / team / worktree
-  mcp/                     # stdio MCP client 和工具路由
-  code_context/            # 代码库索引和搜索
-  runtime/                 # runtime 装配与运行模式
-  plugins.py               # plugin.json 命令型插件加载
-  hooks.py                 # tool hook
-tests/                     # 单元测试和集成式回归测试
-interview/                 # 面试讲解材料
-docs/                      # 设计和阶段文档
-```
-
-## 阅读顺序
-
-如果是第一次看这个仓库，建议按这个顺序：
-
-1. [`src/agent/main.py`](src/agent/main.py)：CLI 参数如何进入配置。
-2. [`src/agent/runtime/runner.py`](src/agent/runtime/runner.py)：一次性任务、REPL、channel watch 怎么分流。
-3. [`src/agent/runtime/builder.py`](src/agent/runtime/builder.py)：运行时对象如何装配。
-4. [`src/agent/channels/gateway.py`](src/agent/channels/gateway.py)：多通道如何统一成 session。
-5. [`src/agent/core/loop.py`](src/agent/core/loop.py)：Agent ReAct loop。
-6. [`src/agent/tools/registry.py`](src/agent/tools/registry.py)：工具注册、schema、执行和权限入口。
-7. [`src/agent/core/context.py`](src/agent/core/context.py)：上下文预算和 compact 边界。
-8. [`src/agent/core/recovery.py`](src/agent/core/recovery.py)：模型失败恢复。
-9. [`src/agent/prompt.py`](src/agent/prompt.py)：prompt 如何组合 memory、todo、skill、task、tool index。
-10. [`src/agent/code_context/indexer.py`](src/agent/code_context/indexer.py)：CodeContext 如何索引代码库。
-
-面试材料从 [`interview/README.md`](interview/README.md) 开始。
-
-## 当前边界
-
-这个项目已经覆盖了一个本地 Agent Runtime 的主要骨架，但仍有一些明确边界：
-
-- CLI 当前主要是文本入口，不是完整多模态输入链路。
-- CodeContext 默认关闭，需要配置开启。
-- Subagent 是本地运行时内的子任务执行，不是分布式 agent cluster。
-- Worktree isolation 需要显式开启。
-- MCP 和 plugin 是工具扩展机制，不等于完整 marketplace 或远程 sandbox。
-- Agent Teams 是本地进程内协作：主 Agent 通过 team 工具调度持久队友，但不是分布式 agent cluster。
-
-## 开发约定
-
-常用验证：
-
-```bash
-uv run pytest -q
-```
-
-针对性验证：
-
-```bash
-uv run pytest -q tests/test_loop.py tests/test_tools.py
-uv run pytest -q tests/test_gateway.py tests/test_delivery.py
-uv run pytest -q tests/test_code_context_indexer.py tests/test_code_context_tools.py
-```
+后续重新添加多通道时，应以当前 CLI-only runtime 为核心重新设计入口，而不是恢复旧的 gateway 结构。

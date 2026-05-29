@@ -6,8 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.channels import InboundMessage
-from agent.channels.gateway import build_session_key
 from agent.config import AgentSettings
 from agent.models import Message
 from agent.mcp import MCPServerConfig
@@ -21,6 +19,7 @@ from agent.runtime.builder import (
 )
 from agent.runtime.markdown_stream import MarkdownStreamRenderer
 from agent.runtime.runner import _run_once, _run_repl
+from agent.runtime.types import AgentRuntime
 from agent.runtime.utils import _configure_readline
 from agent.state.sessions import SessionStore
 
@@ -58,6 +57,31 @@ def test_configure_readline_ignores_backend_errors(monkeypatch) -> None:
     assert len(calls) == 4
 
 
+def test_build_runtime_returns_typed_agent_runtime(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    runtime = _build_runtime(AgentSettings(enable_memory=False, enable_todos=False))
+
+    assert isinstance(runtime, AgentRuntime)
+    assert runtime.settings is not None
+    assert runtime.tool_registry is not None
+    assert runtime.system_prompt
+    assert runtime.session_store is not None
+
+
+def test_build_runtime_omits_optional_state_when_disabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    runtime = _build_runtime(
+        AgentSettings(enable_memory=False, enable_todos=False, enable_tasks=False)
+    )
+
+    assert runtime.state.memory_store is None
+    assert runtime.state.todo_manager is None
+    assert runtime.state.task_store is None
+    assert runtime.extensions.team is None
+
+
 def test_build_runtime_registers_subagent_tool_by_default(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
 
@@ -65,7 +89,7 @@ def test_build_runtime_registers_subagent_tool_by_default(monkeypatch, tmp_path)
         AgentSettings(enable_memory=False, enable_todos=False),
     )
 
-    assert runtime["tool_registry"].get("subagent_run") is not None
+    assert runtime.tool_registry.get("subagent_run") is not None
 
 
 def test_build_runtime_registers_team_tools_when_enabled(monkeypatch, tmp_path) -> None:
@@ -87,10 +111,11 @@ def test_build_runtime_registers_team_tools_when_enabled(monkeypatch, tmp_path) 
         ),
     )
 
-    assert runtime["tool_registry"].get("team_list") is not None
-    assert runtime["tool_registry"].get("team_dispatch") is not None
-    assert runtime["tool_registry"].get("team_broadcast") is not None
-    assert runtime["team"].members_summary() == [
+    assert runtime.tool_registry.get("team_list") is not None
+    assert runtime.tool_registry.get("team_dispatch") is not None
+    assert runtime.tool_registry.get("team_broadcast") is not None
+    assert runtime.extensions.team is not None
+    assert runtime.extensions.team.members_summary() == [
         {"agent_id": "researcher", "role": "Reads code and summarizes findings."}
     ]
 
@@ -157,19 +182,12 @@ async def test_repl_resume_prints_recent_session_messages(monkeypatch, tmp_path,
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
     settings = AgentSettings(enable_memory=False, enable_todos=False)
-    session_key = build_session_key(
-        agent_id=settings.routing.default_agent_id,
-        channel="cli",
-        account_id=settings.channel.account_id,
-        peer_id="demo",
-        dm_scope=settings.routing.dm_scope,
-    )
     store = SessionStore(tmp_path / settings.state.data_dir / "sessions")
-    store.append_message(session_key, Message.user("old question"))
-    store.append_message(session_key, Message.assistant("old answer"))
-    store.append_message(session_key, Message.tool("call-1", "bash", "tool output"))
-    store.append_message(session_key, Message.user("recent question"))
-    store.append_message(session_key, Message.assistant("recent answer"))
+    store.append_message("demo", Message.user("old question"))
+    store.append_message("demo", Message.assistant("old answer"))
+    store.append_message("demo", Message.tool("call-1", "bash", "tool output"))
+    store.append_message("demo", Message.user("recent question"))
+    store.append_message("demo", Message.assistant("recent answer"))
 
     exit_code = await _run_repl(
         settings=settings,
@@ -187,53 +205,49 @@ async def test_repl_resume_prints_recent_session_messages(monkeypatch, tmp_path,
 
 @pytest.mark.asyncio
 async def test_run_once_uses_fresh_cli_session_when_not_resuming(monkeypatch) -> None:
-    seen_peer_ids: list[str] = []
+    seen_session_ids: list[str | None] = []
     generated = iter(["cli:one", "cli:two"])
 
-    class FakeGateway:
-        async def handle_inbound(
-            self,
-            inbound: InboundMessage,
-            *,
-            force_agent_id: str | None = None,
-        ) -> None:
-            seen_peer_ids.append(inbound.peer_id)
-
     class FakeLaneScheduler:
+        async def run(self, lane, run, *, job_id=None):
+            return await run()
+
         async def close(self) -> None:
             return None
 
+    async def fake_run_agent_text(task: str, *, settings, session_id=None, lane_scheduler=None, subagent_depth=0) -> str:
+        seen_session_ids.append(session_id)
+        return "ok"
+
     monkeypatch.setattr("agent.runtime.runner._new_cli_session_id", lambda: next(generated))
     monkeypatch.setattr("agent.runtime.runner.LaneScheduler", FakeLaneScheduler)
-    monkeypatch.setattr("agent.runtime.runner._build_gateway", lambda *args, **kwargs: FakeGateway())
+    monkeypatch.setattr("agent.runtime.runner._run_agent_text", fake_run_agent_text)
 
     settings = AgentSettings(session_id="configured", enable_memory=False, enable_todos=False)
 
     assert await _run_once("first", settings=settings, print_system_prompt=False) == 0
     assert await _run_once("second", settings=settings, print_system_prompt=False) == 0
 
-    assert seen_peer_ids == ["cli:one", "cli:two"]
+    assert seen_session_ids == ["cli:one", "cli:two"]
 
 
 @pytest.mark.asyncio
 async def test_run_once_uses_resume_session_when_provided(monkeypatch) -> None:
-    seen_peer_ids: list[str] = []
-
-    class FakeGateway:
-        async def handle_inbound(
-            self,
-            inbound: InboundMessage,
-            *,
-            force_agent_id: str | None = None,
-        ) -> None:
-            seen_peer_ids.append(inbound.peer_id)
+    seen_session_ids: list[str | None] = []
 
     class FakeLaneScheduler:
+        async def run(self, lane, run, *, job_id=None):
+            return await run()
+
         async def close(self) -> None:
             return None
 
+    async def fake_run_agent_text(task: str, *, settings, session_id=None, lane_scheduler=None, subagent_depth=0) -> str:
+        seen_session_ids.append(session_id)
+        return "ok"
+
     monkeypatch.setattr("agent.runtime.runner.LaneScheduler", FakeLaneScheduler)
-    monkeypatch.setattr("agent.runtime.runner._build_gateway", lambda *args, **kwargs: FakeGateway())
+    monkeypatch.setattr("agent.runtime.runner._run_agent_text", fake_run_agent_text)
 
     settings = AgentSettings(session_id="configured", enable_memory=False, enable_todos=False)
 
@@ -247,7 +261,7 @@ async def test_run_once_uses_resume_session_when_provided(monkeypatch) -> None:
         == 0
     )
 
-    assert seen_peer_ids == ["demo"]
+    assert seen_session_ids == ["demo"]
 
 
 def test_build_runtime_omits_subagent_tool_at_max_depth(monkeypatch, tmp_path) -> None:
@@ -258,7 +272,7 @@ def test_build_runtime_omits_subagent_tool_at_max_depth(monkeypatch, tmp_path) -
         subagent_depth=1,
     )
 
-    assert runtime["tool_registry"].get("subagent_run") is None
+    assert runtime.tool_registry.get("subagent_run") is None
 
 
 def test_build_runtime_uses_fallback_client_for_multiple_profiles(monkeypatch, tmp_path) -> None:
@@ -275,7 +289,7 @@ def test_build_runtime_uses_fallback_client_for_multiple_profiles(monkeypatch, t
         ),
     )
 
-    assert isinstance(runtime["model_client"], FallbackModelClient)
+    assert isinstance(runtime.services.model_client, FallbackModelClient)
 
 
 def test_build_runtime_injects_context_summary_client(monkeypatch, tmp_path) -> None:
@@ -291,8 +305,9 @@ def test_build_runtime_injects_context_summary_client(monkeypatch, tmp_path) -> 
         ),
     )
 
-    summary_client = runtime["context_guard"].summary_client
+    summary_client = runtime.services.context_guard.summary_client
     assert summary_client is not None
+    assert summary_client is runtime.services.summary_model_client
     assert isinstance(summary_client.model_client, OpenAIModelClient)
     assert summary_client.model_client.model == "gpt-summary"
 
@@ -310,7 +325,7 @@ def test_build_runtime_creates_trace_logger_when_enabled(monkeypatch, tmp_path) 
         ),
     )
 
-    trace_logger = runtime["trace_logger"]
+    trace_logger = runtime.services.trace_logger
     assert trace_logger.enabled is True
     assert trace_logger.session_id == "default"
     assert trace_logger.trace_dir == tmp_path / ".zx-code" / "logs" / "traces"
@@ -324,7 +339,7 @@ def test_build_runtime_uses_disabled_trace_logger_by_default(monkeypatch, tmp_pa
         AgentSettings(enable_memory=False, enable_todos=False),
     )
 
-    trace_logger = runtime["trace_logger"]
+    trace_logger = runtime.services.trace_logger
     assert trace_logger.enabled is False
     assert not (tmp_path / ".zx-code" / "logs" / "traces").exists()
 
@@ -402,14 +417,15 @@ def test_cli_progress_reporter_stops_thinking_and_prints_tools() -> None:
     reporter.handle("model.chunk", {"turn": 1, "chunk": "hello"})
     reporter.handle(
         "tool.start",
-        {"tool_name": "bash", "arguments": {"command": "ls -la"}},
+        {"tool_name": "read_file", "arguments": {"path": "src/agent/prompt.py"}},
     )
-    reporter.handle("tool.end", {"tool_name": "bash", "is_error": False})
+    reporter.handle("tool.end", {"tool_name": "read_file", "is_error": False})
 
     assert fake_console.statuses[0].started is True
     assert fake_console.statuses[0].stopped is True
     assert any("thinking" in item and "dots" in item for item in fake_console.prints)
-    assert any("bash" in item and "ls -la" in item for item in fake_console.prints)
+    assert any("Read" in item and "src/agent/prompt.py" in item for item in fake_console.prints)
+    assert not any("read_file" in item for item in fake_console.prints)
     assert any("done" in item for item in fake_console.prints)
     assert flushed == [True]
 
@@ -442,8 +458,8 @@ def test_build_runtime_registers_plugin_tools(monkeypatch, tmp_path) -> None:
         ),
     )
 
-    assert runtime["tool_registry"].get("plugin__demo__echo") is not None
-    assert "plugin__demo__echo" in runtime["config"].system_prompt
+    assert runtime.tool_registry.get("plugin__demo__echo") is not None
+    assert "plugin__demo__echo" in runtime.system_prompt
 
 
 def test_build_runtime_registers_worktree_tools_when_enabled(monkeypatch, tmp_path) -> None:
@@ -457,8 +473,31 @@ def test_build_runtime_registers_worktree_tools_when_enabled(monkeypatch, tmp_pa
         ),
     )
 
-    assert runtime["tool_registry"].get("worktree_create") is not None
-    assert runtime["tool_registry"].get("worktree_cleanup") is not None
+    assert runtime.tool_registry.get("worktree_create") is not None
+    assert runtime.tool_registry.get("worktree_cleanup") is not None
+
+
+def test_build_runtime_uses_explicit_code_context_embedding(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    runtime = _build_runtime(
+        AgentSettings(
+            enable_memory=False,
+            enable_todos=False,
+            code_context={
+                "enabled": True,
+                "path": ".zx-code/cache/code-context/chroma",
+                "snapshot_dir": ".zx-code/cache/code-context/snapshots",
+                "embedding_model": "text-embedding-3-small",
+                "embedding_api_key_env": "OPENAI_API_KEY",
+            },
+        )
+    )
+
+    indexer = runtime.extensions.code_context_indexer
+    assert indexer is not None
+    assert indexer.store.embedding_function is not None
+    assert indexer.store.embedding_function.name() == "openai:text-embedding-3-small"
 
 
 async def test_attach_mcp_tools_registers_discovered_tools(monkeypatch, tmp_path) -> None:
@@ -501,10 +540,10 @@ for line in sys.stdin:
         )
     )
 
-    router = await _attach_mcp_tools(runtime, runtime["settings"])
+    router = await _attach_mcp_tools(runtime, runtime.settings)
 
     try:
-        result = await runtime["tool_registry"].execute(
+        result = await runtime.tool_registry.execute(
             "mcp__fake__echo",
             {"text": "hello"},
             call_id="mcp-main",
@@ -515,4 +554,4 @@ for line in sys.stdin:
 
     assert not result.is_error
     assert "hello" in result.content
-    assert "mcp__fake__echo" in runtime["config"].system_prompt
+    assert "mcp__fake__echo" in runtime.system_prompt

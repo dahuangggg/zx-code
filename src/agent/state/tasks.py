@@ -1,16 +1,7 @@
-"""state.tasks — 文件持久化的 DAG 任务编排（s12）。
+"""基于文件的 DAG task 存储。
 
-``TaskStore`` 实现类似 Claude Code TodoWrite 的任务系统，但额外支持依赖关系：
-
-每个任务存为独立 JSON 文件（.zx-code/state/tasks/<id>.json），包含：
-  - id / title / status（pending / in_progress / completed / cancelled）
-  - blocked_by：依赖的上游任务 id 列表
-
-DAG 语义：
-  - ``complete()`` 完成任务时，自动扫描并解锁（unblock）所有依赖它的下游任务
-  - ``list_ready()`` 返回所有依赖已满足、可立即开始的任务
-
-持久化：原子写入（tempfile → fsync → rename），防止进程崩溃损坏文件。
+每个 task 都是一个包含依赖元数据的 JSON 文件。当前置任务完成时，``TaskStore`` 会解锁
+依赖它的任务，并通过原子写保证项目计划可跨进程重启存活。
 """
 
 from __future__ import annotations
@@ -31,7 +22,7 @@ TaskStatus = Literal["pending", "blocked", "in_progress", "completed", "failed"]
 
 
 def _now() -> str:
-    # 统一用 UTC ISO 8601，便于多时区环境下比较和排序
+    """返回可排序的 UTC 时间戳。"""
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
@@ -40,7 +31,6 @@ class TaskRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # hex[:8] 取 32 位十六进制前 8 位，碰撞概率极低且 id 简短易读
     id: str = Field(default_factory=lambda: f"task-{uuid4().hex[:8]}")
     title: str
     description: str = ""
@@ -52,10 +42,10 @@ class TaskRecord(BaseModel):
 
 
 class TaskStore:
-    """JSON-file DAG task store.
+    """基于 JSON 文件的 DAG task 存储。
 
-    Each task is one file so task state survives compaction, process restarts,
-    and child-agent handoffs while remaining easy to inspect by hand.
+    每个 task 一个文件，因此任务状态能跨上下文压缩、进程重启和子代理交接保留，
+    同时仍方便人工查看。
     """
 
     def __init__(self, root: str | Path) -> None:

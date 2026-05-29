@@ -1,15 +1,7 @@
-"""agents.subagent — 子代理运行器（s04）。
+"""子代理运行器，负责隔离的嵌套 agent 执行。
 
-``SubagentRunner`` 在独立的消息历史（空 messages 列表）中运行嵌套 agent，
-核心设计思路：上下文隔离 + 共享工具注册表。
-
-关键特性：
-  depth 限制   — subagent_max_depth 防止递归子代理无限嵌套（默认 1 层）
-  session_id   — 子代理使用 "<parent>:subagent:<label>:<uuid>" 格式，历史独立存储
-  LaneScheduler— 如提供，子代理通过 "subagent" 泳道排队，不与主对话抢占 LLM
-
-``spawn_background()`` 将子代理包装为 asyncio.create_task，
-立即返回 Queue，主循环可 await queue.get() 异步获取结果。
+``SubagentRunner`` 为每个嵌套任务创建独立 session_id，同时复用父运行时的工具注册表。
+``LaneScheduler`` 可用于串行化子代理工作，让本模块只关注嵌套 agent 执行。
 """
 
 from __future__ import annotations
@@ -22,7 +14,7 @@ from collections.abc import Awaitable, Callable
 
 from pydantic import BaseModel, ConfigDict
 
-from agent.scheduling.lanes import LaneScheduler
+from agent.core.concurrency import LaneScheduler
 
 
 SubagentTurnHandler = Callable[[str, str, int], Awaitable[str]]

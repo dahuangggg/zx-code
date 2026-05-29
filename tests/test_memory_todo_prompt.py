@@ -89,11 +89,13 @@ def test_system_prompt_builder_includes_runtime_metadata_and_real_tool_index(
     assert "Platform:" in prompt
     assert "Python:" in prompt
     assert "Available tools:" in prompt
-    assert "- read_file:" in prompt
-    assert "- write_file:" in prompt
+    assert "- Read (read_file):" in prompt
+    assert "- Write (write_file):" in prompt
+    assert "- Glob (glob):" in prompt
     assert "arguments:" not in prompt
     assert "Prefer wrapped agent tools over raw shell commands" in prompt
-    assert "Use tool_search when the tool you need is not currently available" in prompt
+    assert "Initial active tools are tool_search plus the basic file tools" in prompt
+    assert "Use tool_search when you need a non-file capability" in prompt
     assert "When code_search is available" in prompt
 
 

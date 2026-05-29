@@ -137,10 +137,18 @@ async def test_loop_sends_tool_search_then_activates_matching_tool_schema(
     )
 
     assert result.final_text == "The file starts with hello."
-    assert client.tool_batches[0] == ["tool_search"]
+    assert client.tool_batches[0] == [
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "grep",
+        "glob",
+        "tool_search",
+    ]
     assert "tool_search" in client.tool_batches[1]
     assert "read_file" in client.tool_batches[1]
-    assert "write_file" not in client.tool_batches[1]
+    assert "glob" in client.tool_batches[1]
 
 
 @pytest.mark.asyncio
