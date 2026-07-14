@@ -9,7 +9,7 @@ import asyncio
 import functools
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 from agent.models import Message
 from agent.providers.base import ModelClient
@@ -38,16 +38,24 @@ def _count_tokens(text: str, model: str) -> int:
     return len(text) // 3 + 1
 
 
-def _message_tokens(message: Message, model: str) -> int:
+def _message_tokens(
+    message: Message,
+    model: str,
+    token_counter: Callable[[str, str], int] = _count_tokens,
+) -> int:
     """估算单条消息的 token 数（content + tool_calls 参数合计）。"""
     # 把 tool_calls 的参数也算进去，否则带大量工具调用的 assistant 消息会被严重低估
     text = message.content + "".join(str(call.arguments) for call in message.tool_calls)
-    return _count_tokens(text, model)
+    return token_counter(text, model)
 
 
-def _total_tokens(messages: list[Message], model: str) -> int:
+def _total_tokens(
+    messages: list[Message],
+    model: str,
+    token_counter: Callable[[str, str], int] = _count_tokens,
+) -> int:
     """估算整段对话历史的总 token 数，用于判断是否超出 max_tokens 预算。"""
-    return sum(_message_tokens(message, model) for message in messages)
+    return sum(_message_tokens(message, model, token_counter) for message in messages)
 
 
 # 工具结果截断按输出大小控制，而不是按模型 token 预算控制，因此保留字符级 helper。
@@ -140,6 +148,13 @@ class ModelSummaryClient:
 
 
 @dataclass(frozen=True)
+class PreparedHistory:
+    messages: list[Message]
+    summary: str = ""
+    summarized_count: int = 0
+
+
+@dataclass(frozen=True)
 class ContextGuard:
     """控制发给模型的消息窗口大小。
 
@@ -154,14 +169,28 @@ class ContextGuard:
     model: str = ""
     summary_timeout_s: float = 30.0
     summary_client: SummaryClient | None = None
+    token_counter: Callable[[str, str], int] = _count_tokens
 
     async def prepare(self, messages: list[Message]) -> list[Message]:
         """主入口：在每次 LLM 调用前对消息列表做预算控制，返回可直接送模型的副本。"""
+        return (await self.prepare_with_metadata(messages)).messages
+
+    async def prepare_with_metadata(self, messages: list[Message]) -> PreparedHistory:
+        """返回压缩决策，供上层持久化 summary checkpoint。"""
         # 工具输出截断集中在工具执行阶段的 ObservationTruncator。
         # ContextGuard 只判断历史是否需要压缩。
-        if _total_tokens(messages, self.model) <= self.max_tokens:
-            return messages
-        return await self.compact_history(messages)
+        if _total_tokens(messages, self.model, self.token_counter) <= self.max_tokens:
+            return PreparedHistory(messages=messages)
+        if len(messages) <= self.keep_recent:
+            return PreparedHistory(messages=self._trim_recent(messages))
+        older, recent = self._split_for_compaction(messages)
+        summary = await self._summarize(older)
+        compacted = self._trim_recent([Message.system(summary), *recent])
+        return PreparedHistory(
+            messages=compacted,
+            summary=summary,
+            summarized_count=max(0, len(messages) - len(recent)),
+        )
 
     async def compact_history(self, messages: list[Message]) -> list[Message]:
         """把"远端旧消息"摘要为一条 system 消息 + "近端消息"原样保留，整体替换历史。"""
@@ -259,7 +288,7 @@ class ContextGuard:
     def _trim_recent(self, messages: list[Message]) -> list[Message]:
         """摘要后仍超预算时的最后兜底：把每条消息按字符均摊上限硬截，确保不再超 max_tokens。"""
         # 兜底：摘要完仍可能超预算（如近窗里有巨型 tool 输出），按字符均摊每条上限做硬截断
-        if _total_tokens(messages, self.model) <= self.max_tokens:
+        if _total_tokens(messages, self.model, self.token_counter) <= self.max_tokens:
             return messages
 
         # 经验比例 ~4 字符/token，与 _count_tokens 的 //3 不一致是有意的：

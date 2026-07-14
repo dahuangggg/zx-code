@@ -1,8 +1,8 @@
 """默认工具注册入口。
 
-build_default_registry() 根据 runtime 里实际提供的 store/runner/indexer 选择性注册
+build_default_registry() 根据 runtime 里实际提供的 store/runner 选择性注册
 工具。基础文件和 shell 工具总是可用；todo/memory/skill/task/subagent/team/
-worktree/CodeContext 只有依赖对象存在时才暴露。
+worktree 只有依赖对象存在时才暴露。
 
 本模块只负责编排工具 pack 的注册顺序和默认 active schema；具体工具执行逻辑
 留在各自模块，依赖对象由 runtime_deps.ToolRuntimeDeps 承载。
@@ -12,14 +12,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agent.tools.bash import BashTool
-from agent.tools.code_context import (
-    CodeIndexClearTool,
-    CodeIndexInfoTool,
-    CodeIndexListTool,
-    CodeIndexStatusTool,
-    CodeIndexTool,
-    CodeSearchTool,
-)
 from agent.tools.edit import EditFileTool
 from agent.tools.glob import GlobTool
 from agent.tools.grep import GrepTool
@@ -45,7 +37,6 @@ if TYPE_CHECKING:
     from agent.agents.subagent import SubagentRunner
     from agent.agents.team import Team
     from agent.agents.worktree import WorktreeManager
-    from agent.code_context.indexer import CodeContextIndexer
     from agent.debuglog import DebugLog
     from agent.permissions import ApprovalCallback, PermissionManager
     from agent.state.memory import MemoryStore
@@ -68,7 +59,6 @@ def build_default_registry(
     team: Team | None = None,
     team_timeout_s: float = 30.0,
     worktree_manager: WorktreeManager | None = None,
-    code_context_indexer: CodeContextIndexer | None = None,
     debug_log: DebugLog | None = None,
 ) -> ToolRegistry:
     """构建当前 runtime 使用的 ToolRegistry。
@@ -96,7 +86,6 @@ def build_default_registry(
         team_timeout_s=team_timeout_s,
     )
     register_worktree_tools(registry, worktree_manager=worktree_manager)
-    register_code_context_tools(registry, code_context_indexer=code_context_indexer)
     registry.register(ToolSearchTool(registry))
     registry.activate_schemas(FILE_TOOL_NAMES)
     return registry
@@ -115,7 +104,6 @@ def build_registry_from_deps(deps: ToolRuntimeDeps) -> ToolRegistry:
         team=deps.team,
         team_timeout_s=deps.team_timeout_s,
         worktree_manager=deps.worktree_manager,
-        code_context_indexer=deps.code_context_indexer,
         debug_log=deps.debug_log,
     )
 
@@ -184,28 +172,12 @@ def register_worktree_tools(
         registry.register(WorktreeCleanupTool(worktree_manager))
 
 
-def register_code_context_tools(
-    registry: ToolRegistry,
-    *,
-    code_context_indexer: CodeContextIndexer | None = None,
-) -> None:
-    """注册 CodeContext RAG 索引、搜索和维护工具。"""
-    if code_context_indexer is not None:
-        registry.register(CodeIndexTool(code_context_indexer))
-        registry.register(CodeSearchTool(code_context_indexer))
-        registry.register(CodeIndexStatusTool(code_context_indexer))
-        registry.register(CodeIndexListTool(code_context_indexer))
-        registry.register(CodeIndexInfoTool(code_context_indexer))
-        registry.register(CodeIndexClearTool(code_context_indexer))
-
-
 __all__ = [
     "ToolRegistry",
     "ToolRuntimeDeps",
     "build_default_registry",
     "build_registry_from_deps",
     "register_agent_tools",
-    "register_code_context_tools",
     "register_file_tools",
     "register_state_tools",
     "register_worktree_tools",

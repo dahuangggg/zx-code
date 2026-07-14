@@ -13,14 +13,14 @@ from typing import Any, Callable
 
 from agent.config import AgentSettings
 from agent.core.context import ContextGuard, ModelSummaryClient
+from agent.core.context_assembly import ModelContextAssembler
 from agent.debuglog import DebugLog
-from agent.errors import AgentError
 from agent.hooks import HookRunner
 from agent.core.concurrency import LaneScheduler
-from agent.core.loop import run_task
 from agent.mcp import MCPToolRouter, StdioMCPClient
 from agent.state.memory import MemoryStore
 from agent.permissions import PermissionManager
+from agent.operations import FileCheckpointStore, OperationJournal
 from agent.plugins import PluginManager
 from agent.profiles import FallbackModelClient
 from agent.prompt import SystemPromptBuilder, TOOL_DISPLAY_NAMES
@@ -34,6 +34,7 @@ from agent.runtime.types import (
     StreamOutput,
 )
 from agent.runtime.utils import _approval_prompt, _resolve_project_path, _stream_printer, console
+from agent.security import EffectivePolicy
 from agent.state.sessions import SessionStore, safe_session_id
 from agent.trace import TraceLogger
 from agent.state.skills import SkillStore
@@ -43,9 +44,6 @@ from agent.state.tasks import TaskStore
 from agent.state.todo import TodoManager
 from agent.tools import ToolRuntimeDeps, build_registry_from_deps
 from agent.agents.worktree import WorktreeManager
-from agent.code_context.chroma_store import ChromaCodeStore
-from agent.code_context.embeddings import OpenAICodeEmbeddingFunction
-from agent.code_context.indexer import CodeContextIndexer
 
 
 class CLIProgressReporter:
@@ -255,6 +253,7 @@ def _build_team(
     project_root: Path,
     lane_scheduler: LaneScheduler | None,
     subagent_depth: int,
+    policy: EffectivePolicy | None = None,
 ) -> Team | None:
     if (
         not settings.teams.enabled
@@ -287,6 +286,7 @@ def _build_team(
                 task,
             ]
             child_task = "\n".join(part for part in prompt_parts if part.strip())
+            policy_kwargs = {"policy": policy} if policy is not None else {}
             return await _run_agent_text(
                 child_task,
                 settings=settings.model_copy(
@@ -298,6 +298,7 @@ def _build_team(
                 session_id=child_session_id,
                 lane_scheduler=lane_scheduler,
                 subagent_depth=subagent_depth + 1,
+                **policy_kwargs,
             )
 
         team.add_member(
@@ -313,6 +314,7 @@ def _build_prompt_builder(
     project_root: Path,
     state: StateBundle,
     team: Team | None,
+    policy: EffectivePolicy | None = None,
 ) -> SystemPromptBuilder:
     return SystemPromptBuilder(
         project_root=project_root,
@@ -321,12 +323,14 @@ def _build_prompt_builder(
         task_store=state.task_store,
         todo_manager=state.todo_manager,
         team_members=team.members_summary() if team is not None else None,
+        instructions_trusted=policy is None or policy.trust == "trusted",
     )
 
 
 def _build_permission_manager(
     settings: AgentSettings,
     project_root: Path,
+    policy: EffectivePolicy | None = None,
 ) -> PermissionManager:
     rules_path: Path | None = None
     if settings.permissions.rules_path:
@@ -340,10 +344,15 @@ def _build_permission_manager(
             rules_path,
             tool_policies=settings.permissions.tools,
             default_decision=settings.permissions.default,
+            working_dir=project_root,
+            policy=policy,
+            include_allow_rules=policy is None,
         )
     return PermissionManager(
         tool_policies=settings.permissions.tools,
         default_decision=settings.permissions.default,
+        working_dir=project_root,
+        policy=policy,
     )
 
 
@@ -352,6 +361,7 @@ def _build_subagent_runner(
     *,
     lane_scheduler: LaneScheduler | None,
     subagent_depth: int,
+    policy: EffectivePolicy | None = None,
 ) -> SubagentRunner | None:
     if (
         not settings.subagents.enabled
@@ -365,6 +375,7 @@ def _build_subagent_runner(
         next_depth: int,
     ) -> str:
         """Subagent 实际执行函数：复用主 agent，并递增 depth 防止递归失控。"""
+        policy_kwargs = {"policy": policy} if policy is not None else {}
         return await _run_agent_text(
             task,
             settings=settings.model_copy(
@@ -373,6 +384,7 @@ def _build_subagent_runner(
             session_id=child_session_id,
             lane_scheduler=lane_scheduler,
             subagent_depth=next_depth,
+            **policy_kwargs,
         )
 
     return SubagentRunner(
@@ -396,28 +408,6 @@ def _build_worktree_manager(
     )
 
 
-def _build_code_context_indexer(
-    settings: AgentSettings,
-    project_root: Path,
-) -> CodeContextIndexer | None:
-    if not settings.code_context.enabled:
-        return None
-    return CodeContextIndexer(
-        store=ChromaCodeStore(
-            path=_resolve_project_path(project_root, settings.code_context.path),
-            collection_name=settings.code_context.collection,
-            embedding_function=OpenAICodeEmbeddingFunction(
-                model=settings.code_context.embedding_model,
-                api_key_env=settings.code_context.embedding_api_key_env,
-                base_url=settings.code_context.embedding_base_url,
-            ),
-        ),
-        snapshot_dir=_resolve_project_path(project_root, settings.code_context.snapshot_dir),
-        max_result_chars=settings.code_context.max_result_chars,
-        max_total_chars=settings.code_context.max_total_chars,
-    )
-
-
 def _build_plugin_manager(
     settings: AgentSettings,
     project_root: Path,
@@ -432,7 +422,13 @@ def _build_plugin_manager(
     return PluginManager(plugin_dirs)
 
 
-def _build_hook_runner(settings: AgentSettings, project_root: Path) -> HookRunner:
+def _build_hook_runner(
+    settings: AgentSettings,
+    project_root: Path,
+    policy: EffectivePolicy | None = None,
+) -> HookRunner:
+    if policy is not None and policy.decide("hook").state != "allow":
+        return HookRunner.empty()
     hooks_path: Path | None = None
     if settings.extensions.hooks_path:
         hooks_path = _resolve_project_path(project_root, settings.extensions.hooks_path)
@@ -462,6 +458,7 @@ def _build_runtime(
     session_id: str | None = None,
     lane_scheduler: LaneScheduler | None = None,
     subagent_depth: int = 0,
+    policy: EffectivePolicy | None = None,
 ) -> AgentRuntime:
     """按依赖顺序构建一次 agent turn 需要的全部运行时对象。
 
@@ -479,20 +476,26 @@ def _build_runtime(
         project_root=project_root,
         lane_scheduler=lane_scheduler,
         subagent_depth=subagent_depth,
+        policy=policy,
     )
     prompt_builder = _build_prompt_builder(
         project_root=project_root,
         state=state,
         team=team,
+        policy=policy,
     )
-    permission_manager = _build_permission_manager(effective_settings, project_root)
+    permission_manager = _build_permission_manager(
+        effective_settings,
+        project_root,
+        policy,
+    )
     subagent_runner = _build_subagent_runner(
         effective_settings,
         lane_scheduler=lane_scheduler,
         subagent_depth=subagent_depth,
+        policy=policy,
     )
     worktree_manager = _build_worktree_manager(effective_settings, project_root)
-    code_context_indexer = _build_code_context_indexer(effective_settings, project_root)
     tool_deps = ToolRuntimeDeps(
         permission_manager=permission_manager,
         approval_callback=_approval_prompt,
@@ -504,14 +507,14 @@ def _build_runtime(
         team=team,
         team_timeout_s=effective_settings.teams.timeout_s,
         worktree_manager=worktree_manager,
-        code_context_indexer=code_context_indexer,
         debug_log=debug_log,
     )
     registry = build_registry_from_deps(tool_deps)
     plugin_manager = _build_plugin_manager(effective_settings, project_root)
-    for plugin_tool in plugin_manager.load_tools():
-        registry.register(plugin_tool)
-    hook_runner = _build_hook_runner(effective_settings, project_root)
+    if policy is None or policy.decide("plugin").state == "allow":
+        for plugin_tool in plugin_manager.load_tools():
+            registry.register(plugin_tool)
+    hook_runner = _build_hook_runner(effective_settings, project_root, policy)
 
     model_client = _build_model_client(effective_settings, debug_log)
     summary_model_client = _build_summary_model_client(
@@ -521,8 +524,33 @@ def _build_runtime(
     )
     summary_client = ModelSummaryClient(summary_model_client)
     context_guard = _build_context_guard(effective_settings, summary_client)
+    context_assembler = ModelContextAssembler(
+        context_guard=context_guard,
+        context_limit=effective_settings.context.max_tokens,
+        output_reserve_tokens=effective_settings.context.output_reserve_tokens,
+        model=effective_settings.model.name,
+        session_store=state.session_store,
+        session_id=effective_settings.state.session_id,
+        memory_dir=(state.memory_store.path.parent if state.memory_store is not None else None),
+        prompt_builder=prompt_builder,
+        retrieval_top_k=effective_settings.context.retrieval_top_k,
+        retrieval_max_tokens=effective_settings.context.retrieval_max_tokens,
+    )
+    operation_journal = OperationJournal(
+        data_dir
+        / "operations"
+        / f"{safe_session_id(effective_settings.state.session_id)}.jsonl"
+    )
+    operation_journal.recover_incomplete(
+        reason="runtime reopened with no terminal operation record"
+    )
+    checkpoint_store = FileCheckpointStore(
+        data_dir / "checkpoints",
+        project_root=project_root,
+    )
     runtime = AgentRuntime(
         settings=effective_settings,
+        policy=policy,
         project_root=project_root,
         data_dir=data_dir,
         config=effective_settings.to_runtime_config(),
@@ -534,18 +562,20 @@ def _build_runtime(
             permission_manager=permission_manager,
             hook_runner=hook_runner,
             context_guard=context_guard,
+            context_assembler=context_assembler,
             model_client=model_client,
             summary_model_client=summary_client,
             plugin_manager=plugin_manager,
             prompt_builder=prompt_builder,
             stream_output=_build_stream_output(effective_settings),
             lane_scheduler=lane_scheduler,
+            operation_journal=operation_journal,
+            checkpoint_store=checkpoint_store,
         ),
         extensions=RuntimeExtensions(
             subagent_runner=subagent_runner,
             team=team,
             worktree_manager=worktree_manager,
-            code_context_indexer=code_context_indexer,
         ),
     )
     debug_log.event(
@@ -581,6 +611,8 @@ async def _attach_mcp_tools(
     """连接 MCP 服务器，把发现到的外部工具注册进当前 runtime。"""
     if not settings.extensions.mcp_servers:
         return None
+    if runtime.policy is not None and runtime.policy.decide("mcp").state != "allow":
+        return None
 
     router = MCPToolRouter(
         {
@@ -613,58 +645,21 @@ async def _run_agent_text(
     session_id: str | None = None,
     lane_scheduler: LaneScheduler | None = None,
     subagent_depth: int = 0,
+    policy: EffectivePolicy | None = None,
 ) -> str:
     """运行一次文本任务并返回最终回答。
 
-    这是 CLI、subagent/team 复用的内部入口。它负责创建 runtime、
-    挂载 MCP、调用 run_task，并在 finally 中关闭 team/MCP/stream 状态。
+    这是 CLI、subagent/team 复用的兼容入口；生命周期统一交给 AgentSession。
     """
-    runtime = _build_runtime(
+    from agent.runtime.session import AgentSession
+
+    session = await AgentSession.open(
         settings,
         session_id=session_id,
         lane_scheduler=lane_scheduler,
         subagent_depth=subagent_depth,
+        policy=policy,
     )
-    mcp_router = await _attach_mcp_tools(runtime, runtime.settings)
-    stream_output = runtime.services.stream_output
-    progress_reporter = (
-        CLIProgressReporter(console, flush_output=stream_output.flush)
-        if settings.model.stream
-        else None
-    )
-
-    try:
-        result = await run_task(
-            task,
-            model_client=runtime.services.model_client,
-            tool_registry=runtime.tool_registry,
-            config=runtime.config,
-            stream_handler=stream_output.handler,
-            session_store=runtime.session_store,
-            context_guard=runtime.services.context_guard,
-            prompt_builder=runtime.services.prompt_builder,
-            hook_runner=runtime.services.hook_runner,
-            debug_log=runtime.services.debug_log,
-            trace_logger=runtime.services.trace_logger,
-            project_root=runtime.project_root,
-            progress_handler=(
-                progress_reporter.handle
-                if progress_reporter is not None
-                else None
-            ),
-        )
-    except AgentError as exc:
-        raise exc
-    finally:
-        if progress_reporter is not None:
-            progress_reporter.stop()
-        stream_output.flush()
-        team = runtime.extensions.team
-        if team is not None:
-            await team.shutdown()
-        if mcp_router is not None:
-            await mcp_router.close()
-
-    if settings.model.stream and result.final_text and stream_output.renderer is None:
-        console.print()
+    async with session:
+        result = await session.run(task)
     return result.final_text

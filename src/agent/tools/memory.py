@@ -3,6 +3,7 @@
 把用户允许持久化的事实写入 MemoryStore。这个工具会跨 session 生效，调用前应由
 模型根据系统提示谨慎选择 memory_type。
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -55,6 +56,10 @@ class MemoryAppendTool(Tool):
             memory_type=arguments.memory_type,
         )
         return self.success(
-            data={"path": str(self.store.path), "appended": arguments.text, "type": arguments.memory_type},
+            data={
+                "path": str(self.store.path),
+                "appended": arguments.text,
+                "type": arguments.memory_type,
+            },
             text=f"Saved {arguments.memory_type} memory.",
         )

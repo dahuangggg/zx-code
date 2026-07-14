@@ -11,11 +11,13 @@ from typing import Any
 
 import typer
 
-from agent.config import AgentSettings, ConfigLoader
+from agent.config import ConfigLoader, LoadedConfig
 from agent.runtime import _run_cli
+from agent.security import PolicyCompiler, build_doctor_report, render_doctor_report
+from agent.operations import CheckpointConflict, FileCheckpointStore
 
 
-def _settings_from_cli(
+def _loaded_config_from_cli(
     *,
     model: str | None,
     fallback_models: str | None,
@@ -43,7 +45,7 @@ def _settings_from_cli(
     no_trace_sanitize: bool,
     trace_html: bool,
     trace_html_include_raw_response: bool,
-) -> AgentSettings:
+) -> LoadedConfig:
     overrides: dict[str, Any] = {
         "model": model,
         "fallback_models": fallback_models,
@@ -84,7 +86,7 @@ def _settings_from_cli(
         overrides["trace_html"] = True
     if trace_html_include_raw_response:
         overrides["trace_html_include_raw_response"] = True
-    return ConfigLoader(project_dir=Path.cwd()).load(overrides)
+    return ConfigLoader(project_dir=Path.cwd()).load_with_sources(overrides)
 
 
 def _build_typer_app() -> Any:
@@ -124,8 +126,9 @@ def _build_typer_app() -> Any:
             "--trace-html-include-raw-response",
         ),
         print_system_prompt: bool = typer.Option(False, "--print-system-prompt"),
+        json_output: bool = typer.Option(False, "--json"),
     ) -> None:
-        settings = _settings_from_cli(
+        loaded = _loaded_config_from_cli(
             model=model,
             fallback_models=fallback_models,
             reasoning_effort=reasoning_effort,
@@ -153,9 +156,47 @@ def _build_typer_app() -> Any:
             trace_html=trace_html,
             trace_html_include_raw_response=trace_html_include_raw_response,
         )
+        policy = PolicyCompiler().compile(loaded, workspace_root=Path.cwd())
+        settings = policy.settings
+        if task == ["doctor"]:
+            typer.echo(
+                render_doctor_report(
+                    build_doctor_report(loaded, policy, workspace_root=Path.cwd()),
+                    json_output=json_output,
+                )
+            )
+            raise typer.Exit(0)
+        if task and task[0] == "undo":
+            if len(task) != 2:
+                typer.echo("Usage: agent undo <operation-id>", err=True)
+                raise typer.Exit(2)
+            if policy.decide("write_fs").state == "deny":
+                typer.echo("Undo denied by effective write_fs policy.", err=True)
+                raise typer.Exit(1)
+            data_dir = Path(settings.state.data_dir).expanduser()
+            if not data_dir.is_absolute():
+                data_dir = Path.cwd() / data_dir
+            store = FileCheckpointStore(
+                data_dir.resolve() / "checkpoints",
+                project_root=Path.cwd(),
+            )
+            try:
+                checkpoint = store.get(task[1])
+                target = Path(checkpoint.path).resolve(strict=False)
+                if not any(target.is_relative_to(root) for root in policy.write_roots):
+                    raise CheckpointConflict(
+                        "checkpoint target is outside effective write roots"
+                    )
+                restored = store.undo(task[1])
+            except (CheckpointConflict, KeyError, ValueError) as exc:
+                typer.echo(f"Undo failed: {exc}", err=True)
+                raise typer.Exit(1) from exc
+            typer.echo(f"Restored {restored} from operation {task[1]}.")
+            raise typer.Exit(0)
         exit_code = _run_cli(
             task=" ".join(task).strip() if task else None,
             settings=settings,
+            policy=policy,
             print_system_prompt=print_system_prompt,
             resume_session_id=resume or session_id,
         )

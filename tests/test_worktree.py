@@ -4,7 +4,7 @@ import subprocess
 import json
 from pathlib import Path
 
-from agent.agents.worktree import WorktreeManager
+from agent.agents.worktree import WorktreeLease, WorktreeManager
 from agent.tools import build_default_registry
 
 
@@ -46,7 +46,7 @@ def test_worktree_manager_creates_isolated_worktree_and_cleans_up(tmp_path: Path
         assert (repo / "answer.txt").read_text(encoding="utf-8") == "main\n"
         assert (lease.path / "answer.txt").read_text(encoding="utf-8") == "child\n"
     finally:
-        manager.cleanup(lease, delete_branch=True)
+        manager.cleanup(lease.lease_id, delete_branch=True)
 
     assert not lease.path.exists()
     assert lease.branch not in _git(repo, "branch", "--list", lease.branch)
@@ -95,9 +95,7 @@ async def test_worktree_tools_create_and_cleanup_worktree(tmp_path: Path) -> Non
     cleaned = await registry.execute(
         "worktree_cleanup",
         {
-            "task_id": data["task_id"],
-            "branch": data["branch"],
-            "path": data["path"],
+            "lease_id": data["lease_id"],
             "delete_branch": True,
         },
         call_id="wt-2",
@@ -105,3 +103,77 @@ async def test_worktree_tools_create_and_cleanup_worktree(tmp_path: Path) -> Non
 
     assert not cleaned.is_error
     assert not worktree_path.exists()
+
+
+def test_worktree_manager_rejects_unknown_lease_before_running_git(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    manager = WorktreeManager(
+        repo_root=tmp_path / "repo",
+        worktree_root=tmp_path / "worktrees",
+    )
+    git_called = False
+
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal git_called
+        git_called = True
+        raise AssertionError("unknown lease must be rejected before git")
+
+    monkeypatch.setattr(manager, "_git", fail_if_called)
+
+    try:
+        manager.cleanup("forged-lease", delete_branch=True)
+    except ValueError as exc:
+        assert "unknown worktree lease" in str(exc)
+    else:
+        raise AssertionError("expected forged lease to be rejected")
+
+    assert git_called is False
+
+
+def test_worktree_manager_rejects_lease_pointing_at_main_worktree(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    manager = WorktreeManager(
+        repo_root=repo,
+        worktree_root=tmp_path / "worktrees",
+    )
+    manager._leases["forged-main"] = WorktreeLease(
+        lease_id="forged-main",
+        task_id="forged",
+        branch="main",
+        path=repo,
+    )
+
+    try:
+        manager.cleanup("forged-main", delete_branch=True)
+    except ValueError as exc:
+        assert "outside managed root" in str(exc)
+    else:
+        raise AssertionError("expected main worktree lease to be rejected")
+
+
+async def test_worktree_cleanup_rejects_model_supplied_branch_and_path(
+    tmp_path: Path,
+) -> None:
+    manager = WorktreeManager(
+        repo_root=tmp_path / "repo",
+        worktree_root=tmp_path / "worktrees",
+    )
+    registry = build_default_registry(worktree_manager=manager)
+
+    result = await registry.execute(
+        "worktree_cleanup",
+        {
+            "lease_id": "forged-lease",
+            "branch": "main",
+            "path": str(tmp_path),
+            "delete_branch": True,
+        },
+        call_id="wt-forged",
+    )
+
+    assert result.is_error
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "INVALID_PARAM"

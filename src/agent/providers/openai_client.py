@@ -287,9 +287,9 @@ class OpenAIModelClient:
             raw_args = entry["function"]["arguments"]
             if not name:
                 continue
-            parsed = _parse_arguments(raw_args)
-            if not parsed:
+            if raw_args in (None, ""):
                 continue
+            parsed = _parse_arguments(raw_args)
             tool_calls.append(ToolCall(
                 id=entry["id"] or f"tool-{idx}",
                 name=name,

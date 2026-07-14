@@ -1,172 +1,196 @@
 # zx-code
 
-`zx-code` 是一个用 Python 实现的本地 Coding Agent 运行时。当前项目以 CLI
-体验为核心，重点覆盖 Agent 主循环、工具执行、会话状态、代码库检索、子代理、
-插件、MCP 工具和可追踪的本地运行。
+[![CI](https://github.com/dahuangggg/zx-code/actions/workflows/ci.yml/badge.svg)](https://github.com/dahuangggg/zx-code/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 
-## 功能特性
+一个用 Python 构建的本地 Coding Agent 运行时，重点解决三个问题：Agent 能做什么、
+副作用发生了什么，以及出错后如何安全恢复。
 
-- ReAct 风格的 Agent 主循环，支持 OpenAI-compatible Chat Completions 模型。
-- 工具注册表和按需发现的 `tool_search`。
-- 内置文件工具：读取、写入、编辑、grep、glob 和 shell 执行。
-- CodeContext 代码索引与混合检索：embedding、加权关键词、代码感知分词、
-  path/symbol 排序和 snapshot 元数据。
-- 支持 `--resume` 的会话持久化。
-- Memory、todo、任务 DAG 和 skill 状态存储。
-- 子代理能力，可选 worktree 隔离。
-- 插件命令工具和 MCP server 工具。
-- 权限管理、hooks、circuit breaker、输出截断、debug log 和结构化 trace。
+`zx-code` 不只是把模型接到 shell。它把 workspace trust、capability policy、工具权限、
+operation journal、文件 checkpoint、长生命周期 session 和上下文预算放进同一条执行链，
+并保留 MCP、Plugin、Skill、Subagent 与 Team 的扩展能力。
 
-## 环境要求
+> [!IMPORTANT]
+> `zx-code` 目前是面向学习和实验的原型。它提供应用层 policy 与审计能力，但不是
+> 操作系统级 sandbox；运行不可信任务时仍应使用容器、虚拟机或独立账号做隔离。
 
-- Python `3.11+`
-- [`uv`](https://docs.astral.sh/uv/)
-- 用于模型调用的 OpenAI-compatible API key
+## 为什么做这个项目
+
+多数 Coding Agent 原型很快就能完成“模型调用工具”的 happy path，真正困难的是边界：
+
+- 项目配置能否偷偷扩大权限或替换模型端点？
+- 工具超时或进程崩溃后，副作用到底成功、失败，还是未知？
+- Agent 修改文件后，能否在不覆盖用户后续编辑的前提下撤销？
+- REPL 的多轮任务是否共享同一个 runtime、session 和恢复状态？
+- system prompt、工具 schema、历史消息和输出空间是否都计入上下文预算？
+
+`zx-code` 把这些问题作为运行时的一等概念，而不是散落在各个工具里的特殊判断。
+
+## 核心能力
+
+- **Safe Run policy**：保留 user / project / CLI 配置来源，项目配置只能收紧权限，
+  不能授予 trust、扩大 roots/capabilities 或替换受保护的模型设置。
+- **可审计工具执行**：每次工具调用都有 operation ID，并以 `committed`、`failed` 或
+  `unknown` 状态写入 append-only journal。
+- **安全撤销文件修改**：write/edit 成功后生成 checkpoint、diff 和内容 hash；只有
+  当前文件仍匹配 postimage 时才允许 undo。
+- **长生命周期 Session**：REPL 在一个 `AgentSession` 内执行多次 run，统一管理模型、
+  MCP、Plugin、任务取消和资源关闭。
+- **统一上下文组装**：同时计算 system prompt、激活的工具 schema、消息、Memory 检索和
+  输出预留 token，并持久化 summary checkpoint。
+- **按需工具发现**：初始只暴露小型工具集，其余工具通过 `tool_search` 激活。
+- **可扩展运行时**：支持 MCP server、命令型 Plugin、Skill、Subagent、Team 和可选的
+  Git worktree 隔离。
+- **可观测性与恢复**：结构化 trace、HTML trace、debug JSONL、circuit breaker、模型
+  fallback/cooldown、输出截断与 session resume。
 
 ## 快速开始
 
-安装依赖：
+### 1. 准备环境
+
+需要：
+
+- Python 3.11+
+- [`uv`](https://docs.astral.sh/uv/)
+- OpenAI-compatible API key
 
 ```bash
-uv sync --dev
+git clone https://github.com/dahuangggg/zx-code.git
+cd zx-code
+uv sync --extra dev
+export OPENAI_API_KEY="your-api-key"
 ```
 
-配置默认模型 profile 使用的 API key：
+### 2. 检查最终安全策略
 
 ```bash
-export OPENAI_API_KEY="your-openai-key"
+uv run agent doctor
+uv run agent doctor --json
 ```
+
+`doctor` 只解析配置和 policy，不启动模型、MCP、Plugin 或 Hook，也不会输出 secret 值。
+
+### 3. 运行 Agent
 
 执行一次任务：
 
 ```bash
-uv run agent "总结这个仓库"
+uv run agent "总结这个仓库的运行时架构"
 ```
 
-进入 REPL：
+进入交互式 REPL：
 
 ```bash
 uv run agent
 ```
 
-运行测试：
+REPL 内置命令：
 
-```bash
-uv run pytest -q
-```
+| 命令 | 作用 |
+| --- | --- |
+| `/help` | 查看交互命令 |
+| `/session` | 显示当前 session ID |
+| `/undo` | 撤销最近一次可撤销的文件修改 |
+| `/undo <operation-id>` | 撤销指定 operation |
+| `/clear` | 清屏并重绘状态面板 |
+| `exit` / `quit` | 关闭 session 并退出 |
 
-## 常用命令
+## 常用 CLI
 
-```bash
-# 单次运行指定模型
-uv run agent --model openai/gpt-5.4-mini "分析 src/agent/core/loop.py"
+| 命令 | 作用 |
+| --- | --- |
+| `uv run agent "<task>"` | 单次执行任务 |
+| `uv run agent --model <model> "<task>"` | 临时指定模型 |
+| `uv run agent --resume <session-id> "继续"` | 恢复已有 session |
+| `uv run agent --max-turns 8 "<task>"` | 限制 Agent 轮数 |
+| `uv run agent --no-stream "<task>"` | 关闭流式输出 |
+| `uv run agent --print-system-prompt` | 打印最终 system prompt |
+| `uv run agent --trace --trace-html "<task>"` | 生成 JSONL 与 HTML trace |
+| `uv run agent undo <operation-id>` | 非交互式撤销文件修改 |
+| `uv run agent --help` | 查看全部参数 |
 
-# 关闭流式输出
-uv run agent --no-stream "列出主要 runtime 模块"
+## Safe Run 如何工作
 
-# 限制 Agent 轮数
-uv run agent --max-turns 8 "找到工具执行链路"
-
-# 恢复指定 session
-uv run agent --resume demo-session "继续"
-
-# 打印生成后的 system prompt
-uv run agent --print-system-prompt
-
-# 写入 JSONL debug log
-uv run agent --debug-log --debug-log-path .zx-code/logs/debug.jsonl "调试这次运行"
-
-# 写入结构化 trace 和 HTML trace
-uv run agent --trace --trace-html "追踪一个短任务"
-```
-
-## 配置
+### 1. 配置来源与单调权限
 
 配置按以下顺序加载：
 
 1. 用户配置：`~/.zx-code/config.toml`
 2. 项目配置：`.zx-code/config.toml`
-3. CLI 参数覆盖
+3. CLI 参数
 
-可以从示例配置开始：
+用户配置和显式 CLI 是 authority。项目配置可以降低权限，但不能把 `deny` 改成
+`allow`、扩大读写 roots、授予 workspace trust，或替换受保护的 endpoint/API key 来源。
+
+默认 workspace 为 `untrusted`，MCP、Plugin 和 Hook 不会启动。需要启用外部扩展时，
+在用户配置中明确授权：
+
+```toml
+[model]
+name = "openai/gpt-5.4-mini"
+fallback_models = "openai/gpt-5.5"
+
+[[model.profiles]]
+name = "primary"
+model = "openai/gpt-5.4-mini"
+api_key_env = "OPENAI_API_KEY"
+
+[security]
+workspace_trust = "trusted"
+read_roots = ["/absolute/path/to/project"]
+write_roots = ["/absolute/path/to/project"]
+
+[security.capabilities]
+shell = "ask"
+mcp = "allow"
+plugin = "allow"
+hook = "allow"
+```
+
+项目配置模板位于 [`.zx-code/config.toml.example`](.zx-code/config.toml.example)：
 
 ```bash
 cp .zx-code/config.toml.example .zx-code/config.toml
 ```
 
-主要配置段：
+### 2. Operation journal
 
-- `[agent.model]`：默认模型、fallback 模型、流式输出、超时和 reasoning effort。
-- `[[agent.model.profiles]]`：命名模型 profile 和 API key 环境变量。
-- `[agent.context]`：上下文预算、保留最近消息数量和 compact 模型。
-- `[agent.state]`：session、memory、skills、todos 和 task 存储路径。
-- `[agent.permissions]`：默认工具权限和可选规则文件。
-- `[agent.subagents]`：子代理开关和最大嵌套深度。
-- `[agent.worktree]`：可选的子代理 worktree 隔离。
-- `[agent.code_context]`：本地代码搜索索引和 embedding 配置。
-- `[agent.debug]` / `[agent.trace]`：诊断输出。
-- `[agent.extensions]`：hooks、插件目录和 MCP server。
+所有工具调用都经过统一的 `ToolCallExecutor`：
 
-模型 profile 示例：
-
-```toml
-[[agent.model.profiles]]
-name = "primary"
-model = "openai/gpt-5.4-mini"
-api_key_env = "OPENAI_API_KEY"
+```text
+policy / permission -> pre-hook -> invoke -> checkpoint -> journal -> post-hook
 ```
 
-OpenAI-compatible Chat Completions endpoint 可以通过 `extra_kwargs` 传递客户端参数：
+副作用状态具有明确语义：
 
-```toml
-[[agent.model.profiles]]
-name = "custom"
-model = "openai/gpt-5.4-mini"
-api_key_env = "CUSTOM_API_KEY"
-extra_kwargs = { base_url = "https://example.com/v1" }
+- `committed`：工具返回成功，证据已经记录。
+- `failed`：确认失败，没有需要恢复的未知副作用。
+- `unknown`：调用开始后发生超时、取消或异常，运行时无法确认外部状态。
+
+未完成的 journal 记录在恢复时会转为 `unknown`，不会被自动重放。
+
+### 3. Checkpoint 与 Undo
+
+write/edit 调用前保存 preimage，成功后保存 postimage、SHA-256 和 unified diff。执行 undo
+前会重新计算当前文件 hash；如果用户或其他进程已经修改文件，运行时拒绝覆盖并报告冲突。
+
+### 4. Session 与上下文
+
+`AgentSession` 拥有 runtime 生命周期。每次 run 共享模型 cooldown、circuit breaker、
+session store 和已连接的扩展，但拥有独立的取消边界。
+
+`ModelContextAssembler` 为每次模型请求生成一个不可变 context artifact：
+
+```text
+system prompt + tool schemas + messages + retrieved memory + output reserve
 ```
 
-## CodeContext 代码搜索
+目录级 `AGENTS.md` 按项目根到当前目录继承并记录 provenance；不可信 workspace 的指令和
+Memory 检索结果只作为参考内容，不能改变 capability policy。
 
-CodeContext 提供本地代码库索引和 `code_search`。它组合了：
+## 工具与扩展
 
-- 显式 embedding function，不依赖 Chroma 默认 embedding；
-- 持久化 Chroma 向量库；
-- 持久化 sparse keyword index；
-- 支持 `camelCase`、`PascalCase`、`snake_case` 和路径的代码感知分词；
-- 对 content、relative path、文件 stem、language 和 symbol 加权索引；
-- Python module preamble chunk，用于保留 imports、module docstring 和顶层初始化；
-- weighted RRF 和轻量 rerank，用于 path/symbol/exact 命中；
-- 默认过滤 lockfile、generated file、构建产物和本地缓存。
-
-启用方式：
-
-```toml
-[agent.code_context]
-enabled = true
-path = ".zx-code/cache/code-context/chroma"
-snapshot_dir = ".zx-code/cache/code-context/snapshots"
-collection = "agent_code_context"
-embedding_model = "text-embedding-3-small"
-embedding_api_key_env = "OPENAI_API_KEY"
-embedding_base_url = ""
-top_k = 5
-max_result_chars = 4000
-max_total_chars = 12000
-```
-
-索引 snapshot 会记录 embedding function 名称。如果 embedding 模型配置发生变化，
-indexer 会把旧 snapshot 视为过期并重建索引，避免混用不兼容的向量空间。
-
-典型使用流程：
-
-1. 对目标仓库运行 `code_index`。
-2. 使用 `code_search` 做架构级或自然语言检索。
-3. 用 `read_file`、`grep` 或 `glob` 继续精确查看。
-
-## 内置工具
-
-默认初始可见工具保持很小：
+默认激活的工具保持精简：
 
 - `tool_search`
 - `read_file`
@@ -175,150 +199,106 @@ indexer 会把旧 snapshot 视为过期并重建索引，避免混用不兼容�
 - `grep`
 - `glob`
 
-其他工具可通过 `tool_search` 按需激活，包括：
+其余 shell、Memory、Todo、Task、Skill、Subagent、Team、Worktree、Plugin 和 MCP 工具按需
+发现和激活。所有工具复用同一套权限、timeout、journal、输出截断和 trace 链路。
 
-- shell 执行；
-- todo 和 task 工具；
-- memory 工具；
-- skill 加载；
-- team / subagent 工具；
-- worktree 工具；
-- CodeContext 工具；
-- plugin 工具；
-- MCP 工具。
+代码索引与语义搜索不再绑定在核心运行时中。需要这类能力时，通过 MCP 或 Plugin 接入，
+让运行时专注于 orchestration、安全边界与生命周期管理。
 
-工具执行统一经过 `ToolCallExecutor`，它在 registry 执行前后处理 hooks、权限、
-circuit breaker、输出截断、metrics 和 trace logging。
+MCP 示例：
 
-## 运行时架构
+```toml
+[[extensions.mcp_servers]]
+name = "code-index"
+command = "your-code-index-mcp"
+args = ["--workspace", "."]
+```
+
+命令型 Plugin 通过 `[extensions].plugin_dirs` 配置；其 stdout 会规范化为统一的
+`ToolEnvelope`，异常、超时和取消也会进入相同的 operation 状态机。
+
+## 架构
 
 ```mermaid
 flowchart TD
-    CLI["CLI task / REPL"] --> Runner["runtime.runner"]
-    Runner --> Builder["runtime.builder"]
-    Builder --> Runtime["AgentRuntime"]
+    CLI["CLI / REPL"] --> Policy["PolicyCompiler"]
+    Policy --> Session["AgentSession"]
+    Session --> Builder["Runtime Builder"]
+    Builder --> Context["ModelContextAssembler"]
+    Builder --> Model["Model Client + Fallback"]
+    Builder --> Registry["ToolRegistry"]
+    Builder --> State["Session / Memory / Task State"]
 
-    Runtime --> Prompt["SystemPromptBuilder"]
-    Runtime --> Context["ContextGuard"]
-    Runtime --> Model["OpenAIModelClient / FallbackModelClient"]
-    Runtime --> Registry["ToolRegistry"]
-    Runtime --> Sessions["SessionStore"]
-
-    Prompt --> Memory["MemoryStore"]
-    Prompt --> Todos["TodoManager"]
-    Prompt --> Tasks["TaskStore"]
-    Prompt --> Skills["SkillStore"]
-
-    Model --> Loop["core.run_task"]
-    Context --> Loop
-    Registry --> Loop
-    Sessions --> Loop
-
+    Context --> Loop["Agent Loop"]
+    Model --> Loop
+    State --> Loop
     Loop --> Executor["ToolCallExecutor"]
-    Executor --> Permissions["PermissionManager"]
-    Executor --> Hooks["HookRunner"]
-    Executor --> Tools["Builtin / Plugin / MCP / CodeContext tools"]
-    Loop --> Result["AgentRunResult"]
+    Executor --> Registry
+    Executor --> Journal["Operation Journal"]
+    Executor --> Checkpoints["File Checkpoints"]
+    Registry --> Tools["Built-in / Plugin / MCP Tools"]
 ```
 
 关键模块：
 
-- `src/agent/main.py`：Typer CLI 入口。
-- `src/agent/runtime/runner.py`：单次运行和 REPL 编排。
-- `src/agent/runtime/builder.py`：组合根，装配配置、模型、工具、状态、prompt、trace、MCP 和插件。
-- `src/agent/runtime/types.py`：类型化 runtime bundle。
-- `src/agent/core/loop.py`：Agent 主循环。
-- `src/agent/core/tool_executor.py`：模型 tool call 执行。
-- `src/agent/core/context.py`：上下文预算和 compaction。
-- `src/agent/core/recovery.py`：模型超时、限流、上下文溢出和 fallback 恢复。
-- `src/agent/core/concurrency.py`：子代理使用的轻量协作调度器。
-- `src/agent/model_types/`：消息、工具协议、运行结果和指标模型。
-- `src/agent/tools/`：内置工具和工具注册表。
-- `src/agent/code_context/`：索引、snapshot、sparse search、vector store 和 rerank。
-- `src/agent/state/`：memory、skills、sessions、todos 和 tasks。
-- `src/agent/trace/`：JSONL 和 HTML trace。
+| 模块 | 职责 |
+| --- | --- |
+| `src/agent/main.py` | Typer CLI、`doctor` 和 `undo` 入口 |
+| `src/agent/security/` | trust、capability、roots 与诊断报告 |
+| `src/agent/runtime/session.py` | 长生命周期 session 和资源所有权 |
+| `src/agent/runtime/builder.py` | runtime composition root |
+| `src/agent/core/loop.py` | 模型与工具交替执行的 Agent loop |
+| `src/agent/core/context_assembly.py` | 上下文组装、预算与 provenance |
+| `src/agent/core/tool_executor.py` | 权限、hooks、deadline 和工具执行 |
+| `src/agent/operations/` | journal、checkpoint、undo 与进程清理 |
+| `src/agent/state/` | session、Memory、Skill、Todo 和 Task 持久化 |
+| `src/agent/trace/` | JSONL trace、脱敏和 HTML 报告 |
 
-## Session 和状态
+## 本地状态
 
-默认本地状态位于 `.zx-code/state`：
-
-- sessions：`.zx-code/state/sessions`
-- memory：`.zx-code/state/memory/MEMORY.md`
-- todos：由 `TodoManager` 管理
-- tasks：`.zx-code/state/tasks`
-- skills：`skills`
-
-Session id 规则：
+默认运行时状态位于 `.zx-code/state/`：
 
 ```text
-new run: cli:<timestamp>:<random>
-resume:  --resume 或 --session-id 传入的 id
+.zx-code/state/
+├── sessions/       # 消息、生命周期与 summary checkpoints
+├── operations/     # append-only operation journal
+├── checkpoints/    # 文件 preimage/postimage 与 diff
+├── memory/         # 长期 Memory
+├── tasks/          # Task 状态
+└── worktrees/      # 可选的隔离 worktree
 ```
 
-## 权限和 Hooks
+这些目录、日志、trace、cache 和项目私有配置均由 `.gitignore` 排除。
 
-权限通过 `[agent.permissions]` 配置。默认 decision 是 `allow`，也可以为单个工具覆盖：
+## 开发与验证
 
-```toml
-[agent.permissions]
-default = "allow"
-rules_path = ".zx-code/permissions.toml"
-
-[agent.permissions.tools]
-bash = "ask"
-edit_file = "allow"
-```
-
-Hooks 通过 `[agent.extensions].hooks_path` 配置。Hooks 会围绕工具执行运行，可以在
-registry 执行前拒绝或观察工具调用。
-
-## 插件和 MCP
-
-插件目录在 `[agent.extensions]` 中配置：
-
-```toml
-[agent.extensions]
-plugin_dirs = [".zx-code/plugins"]
-```
-
-MCP server 也可以在同一段配置：
-
-```toml
-[[agent.extensions.mcp_servers]]
-name = "filesystem"
-command = "python"
-args = ["./mcp_servers/filesystem_server.py"]
-env = { TOKEN = "env-or-placeholder-only" }
-```
-
-插件和 MCP 工具会注册进同一个 `ToolRegistry`，并和内置工具一样经过权限、hooks、
-circuit breaker、输出截断和 trace。
-
-## 开发
-
-运行完整测试：
+运行与 CI 相同的测试命令：
 
 ```bash
-uv run pytest -q
+uv run --locked --extra dev pytest -q
 ```
 
-运行定向测试：
+构建 wheel：
 
 ```bash
-uv run pytest tests/test_code_context_indexer.py -q
-uv run pytest tests/test_runtime.py -q
-uv run pytest tests/test_tools.py -q
+uv build --wheel
 ```
 
-查看 CLI：
+执行安装 smoke test：
 
 ```bash
-uv run agent --help
+uv venv .smoke-venv
+uv pip install --python .smoke-venv/bin/python dist/*.whl
+.smoke-venv/bin/agent --help
 ```
 
-常用诊断输出：
+GitHub Actions 覆盖 Linux + Python 3.11/3.13，并执行完整测试、wheel 构建和安装后的 CLI
+验证。
 
-```bash
-uv run agent --debug-log --debug-log-path .zx-code/logs/debug.jsonl "短任务"
-uv run agent --trace --trace-html "短任务"
-```
+## 当前边界
+
+- Policy 是应用层约束，不是 OS sandbox。
+- Shell command 的真实副作用无法完全通过静态分析推断。
+- `unknown` operation 需要人工核查，不会自动重试。
+- 内置 provider 面向 OpenAI-compatible Chat Completions；其他协议可通过 adapter 扩展。
+- 项目仍处于原型阶段，公共 API 和本地状态格式可能继续演进。

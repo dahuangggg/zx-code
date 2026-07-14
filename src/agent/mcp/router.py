@@ -76,11 +76,26 @@ class MCPProxyTool(Tool):
 
     async def execute(self, arguments: dict[str, Any], call_id: str) -> ToolResult:
         # 权限检查已由 ToolRegistry 在调用 execute() 之前完成，此处直接转发
-        output = await self.router.call_tool(
-            self.name,
-            arguments,
-            skip_permission=True,
-        )
+        try:
+            output = await self.router.call_tool(
+                self.name,
+                arguments,
+                skip_permission=True,
+            )
+        except Exception:
+            message = "MCP tool execution failed."
+            return ToolResult(
+                call_id=call_id,
+                name=self.name,
+                envelope=ToolEnvelope(
+                    status="error",
+                    data={},
+                    text=message,
+                    error=ToolError(code="MCP_EXECUTION_ERROR", message=message),
+                    stats={"time_ms": 0},
+                    context={"cwd": "."},
+                ),
+            )
         return ToolResult(
             call_id=call_id,
             name=self.name,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -124,6 +125,72 @@ async def test_grep_returns_matches(tmp_path: Path) -> None:
     )
     data = json.loads(result.content)["data"]
     assert any("agent" in line for line in data["matches"])
+
+
+@pytest.mark.asyncio
+async def test_grep_passes_dash_prefixed_pattern_as_explicit_rg_expression(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: list[str] = []
+
+    async def fake_create_subprocess_exec(*command: str, **_kwargs):
+        captured.extend(command)
+        return SimpleNamespace(
+            returncode=1,
+            communicate=lambda: _communicate(b"", b""),
+        )
+
+    async def _communicate(stdout: bytes, stderr: bytes):
+        return stdout, stderr
+
+    monkeypatch.setattr(
+        "agent.tools.grep.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("agent.tools.grep.shutil.which", lambda _name: "/usr/bin/rg")
+
+    result = await build_default_registry().execute(
+        "grep",
+        {"pattern": "--pre=malicious-command", "path": str(tmp_path)},
+        call_id="grep-option-injection",
+    )
+
+    assert not result.is_error
+    assert captured[-4:] == ["-e", "--pre=malicious-command", "--", str(tmp_path)]
+
+
+@pytest.mark.asyncio
+async def test_grep_fallback_separates_dash_prefixed_pattern_from_options(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: list[str] = []
+
+    async def fake_create_subprocess_exec(*command: str, **_kwargs):
+        captured.extend(command)
+        return SimpleNamespace(
+            returncode=1,
+            communicate=lambda: _communicate(b"", b""),
+        )
+
+    async def _communicate(stdout: bytes, stderr: bytes):
+        return stdout, stderr
+
+    monkeypatch.setattr(
+        "agent.tools.grep.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr("agent.tools.grep.shutil.which", lambda _name: None)
+
+    result = await build_default_registry().execute(
+        "grep",
+        {"pattern": "--version", "path": str(tmp_path)},
+        call_id="grep-fallback-option-injection",
+    )
+
+    assert not result.is_error
+    assert captured[-3:] == ["-e", "--version", str(tmp_path)]
 
 
 @pytest.mark.asyncio

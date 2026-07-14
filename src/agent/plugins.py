@@ -26,7 +26,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.models import ToolEnvelope, ToolResult
+from agent.models import ToolEnvelope, ToolError, ToolResult
+from agent.operations.processes import kill_process_group
 from agent.tools.base import Tool
 
 
@@ -88,36 +89,79 @@ class PluginCommandTool(Tool):
 
     async def execute(self, arguments: dict[str, Any], call_id: str) -> ToolResult:
         """执行插件命令，并把 stdout 规范化为 ToolEnvelope。"""
-        process = await asyncio.create_subprocess_exec(
-            *shlex.split(self.command),
-            cwd=self.plugin_dir,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
         try:
+            process = await asyncio.create_subprocess_exec(
+                *shlex.split(self.command),
+                cwd=self.plugin_dir,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(json.dumps(arguments).encode("utf-8")),
                 timeout=self.timeout_s,
             )
-        except TimeoutError as exc:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            await process.wait()
-            raise TimeoutError(
-                f"plugin command timed out after {self.timeout_s:.1f}s: {self.name}"
-            ) from exc
+        except TimeoutError:
+            await kill_process_group(process)
+            return _plugin_error_result(
+                call_id,
+                self.name,
+                "TIMEOUT",
+                f"Plugin command timed out after {self.timeout_s:.1f}s.",
+            )
+        except asyncio.CancelledError:
+            await kill_process_group(process)
+            raise
+        except Exception:
+            return _plugin_error_result(
+                call_id,
+                self.name,
+                "EXECUTION_ERROR",
+                "Plugin command could not be started.",
+            )
         if process.returncode != 0:
-            raise RuntimeError(stderr.decode("utf-8", errors="replace").strip())
+            return _plugin_error_result(
+                call_id,
+                self.name,
+                "EXECUTION_ERROR",
+                "Plugin command failed.",
+            )
 
         content = stdout.decode("utf-8", errors="replace").strip()
-        envelope = _normalize_plugin_stdout(content)
+        try:
+            envelope = _normalize_plugin_stdout(content)
+        except Exception:
+            return _plugin_error_result(
+                call_id,
+                self.name,
+                "EXECUTION_ERROR",
+                "Plugin command returned an invalid result.",
+            )
         return ToolResult(call_id=call_id, name=self.name, envelope=envelope)
 
     async def run(self, arguments: Any) -> str | dict[str, Any]:
         raise NotImplementedError("PluginCommandTool overrides execute")
+
+
+def _plugin_error_result(
+    call_id: str,
+    name: str,
+    code: str,
+    message: str,
+) -> ToolResult:
+    return ToolResult(
+        call_id=call_id,
+        name=name,
+        envelope=ToolEnvelope(
+            status="error",
+            data={},
+            text=message,
+            error=ToolError(code=code, message=message),
+            stats={"time_ms": 0},
+            context={"cwd": "."},
+        ),
+    )
 
 
 class PluginManager:

@@ -46,12 +46,12 @@ class GrepTool(Tool):
                 command.append("-i")
             if arguments.glob:
                 command.extend(["-g", arguments.glob])
-            command.extend([arguments.pattern, str(search_root)])
+            command.extend(["-e", arguments.pattern, "--", str(search_root)])
         else:
             command = ["grep", "-RIn"]
             if not arguments.case_sensitive:
                 command.append("-i")
-            command.extend([arguments.pattern, str(search_root)])
+            command.extend(["-e", arguments.pattern, str(search_root)])
 
         process = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

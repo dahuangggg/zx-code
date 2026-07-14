@@ -136,6 +136,91 @@ async def test_openai_client_streams_text(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_openai_client_stream_preserves_zero_argument_tool_call(
+    monkeypatch,
+) -> None:
+    async def fake_create(**kwargs):
+        assert kwargs["stream"] is True
+        return FakeStream(
+            [
+                SimpleNamespace(
+                    usage=None,
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                tool_calls=[
+                                    SimpleNamespace(
+                                        index=0,
+                                        id="call-list",
+                                        function=SimpleNamespace(
+                                            name="todo_list",
+                                            arguments="{}",
+                                        ),
+                                    )
+                                ],
+                            ),
+                            finish_reason="tool_calls",
+                        )
+                    ],
+                )
+            ]
+        )
+
+    _install_fake_openai(monkeypatch, fake_create)
+
+    turn = await OpenAIModelClient(model="fake-model").run_turn(
+        system_prompt="system",
+        messages=[Message.user("list todos")],
+        tools=[],
+        stream_handler=lambda _chunk: None,
+    )
+
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].id == "call-list"
+    assert turn.tool_calls[0].name == "todo_list"
+    assert turn.tool_calls[0].arguments == {}
+
+
+@pytest.mark.asyncio
+async def test_openai_client_stream_ignores_tool_slot_without_name(monkeypatch) -> None:
+    async def fake_create(**kwargs):
+        return FakeStream(
+            [
+                SimpleNamespace(
+                    usage=None,
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                tool_calls=[
+                                    SimpleNamespace(
+                                        index=0,
+                                        id="empty-slot",
+                                        function=SimpleNamespace(name="", arguments="{}"),
+                                    )
+                                ],
+                            ),
+                            finish_reason="tool_calls",
+                        )
+                    ],
+                )
+            ]
+        )
+
+    _install_fake_openai(monkeypatch, fake_create)
+
+    turn = await OpenAIModelClient(model="fake-model").run_turn(
+        system_prompt="system",
+        messages=[Message.user("hello")],
+        tools=[],
+        stream_handler=lambda _chunk: None,
+    )
+
+    assert turn.tool_calls == []
+
+
+@pytest.mark.asyncio
 async def test_openai_client_debug_log_aggregates_stream_chunks(
     monkeypatch,
     tmp_path,

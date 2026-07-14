@@ -5,11 +5,9 @@ WorktreeManager，这里只把 lease 信息转成 ToolEnvelope。
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from pydantic import BaseModel, ConfigDict
 
-from agent.agents.worktree import WorktreeLease, WorktreeManager
+from agent.agents.worktree import WorktreeManager
 from agent.models import ToolEnvelope
 from agent.tools.base import Tool
 
@@ -24,13 +22,11 @@ class WorktreeCreateInput(BaseModel):
 
 
 class WorktreeCleanupInput(BaseModel):
-    """worktree_cleanup 参数；delete_branch 控制是否同时删分支。"""
+    """worktree_cleanup 参数；只接受 Manager 创建的 opaque lease id。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    task_id: str
-    branch: str
-    path: str
+    lease_id: str
     delete_branch: bool = False
 
 
@@ -61,13 +57,17 @@ class WorktreeCleanupTool(Tool):
         self.manager = manager
 
     async def run(self, arguments: WorktreeCleanupInput) -> ToolEnvelope:
-        lease = WorktreeLease(
-            task_id=arguments.task_id,
-            branch=arguments.branch,
-            path=Path(arguments.path),
+        lease = self.manager.cleanup(
+            arguments.lease_id,
+            delete_branch=arguments.delete_branch,
         )
-        self.manager.cleanup(lease, delete_branch=arguments.delete_branch)
         return self.success(
-            data={"task_id": lease.task_id, "branch": lease.branch, "path": str(lease.path), "removed": True},
-            text=f"Cleaned up worktree for task '{arguments.task_id}' (branch '{arguments.branch}' {'deleted' if arguments.delete_branch else 'kept'}).",
+            data={
+                "lease_id": lease.lease_id,
+                "task_id": lease.task_id,
+                "branch": lease.branch,
+                "path": str(lease.path),
+                "removed": True,
+            },
+            text=f"Cleaned up worktree for task '{lease.task_id}' (branch '{lease.branch}' {'deleted' if arguments.delete_branch else 'kept'}).",
         )

@@ -96,7 +96,7 @@ def test_system_prompt_builder_includes_runtime_metadata_and_real_tool_index(
     assert "Prefer wrapped agent tools over raw shell commands" in prompt
     assert "Initial active tools are tool_search plus the basic file tools" in prompt
     assert "Use tool_search when you need a non-file capability" in prompt
-    assert "When code_search is available" in prompt
+    assert "use an installed MCP or plugin capability" in prompt
 
 
 @pytest.mark.asyncio

@@ -181,12 +181,53 @@ async def test_plugin_tool_kills_process_on_timeout(monkeypatch, tmp_path: Path)
         plugin_dir=tmp_path,
     )
 
-    try:
-        await tool.execute({}, call_id="plugin-timeout")
-    except TimeoutError:
-        pass
-    else:
-        raise AssertionError("expected plugin timeout")
+    result = await tool.execute({}, call_id="plugin-timeout")
 
     assert process.killed
     assert process.waited
+    assert result.is_error
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "TIMEOUT"
+
+
+async def test_plugin_tool_normalizes_process_start_failure(monkeypatch, tmp_path: Path) -> None:
+    async def fail_create_subprocess_exec(*_args, **_kwargs):
+        raise OSError("sensitive process detail")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail_create_subprocess_exec)
+    tool = PluginCommandTool(
+        plugin_name="demo",
+        config=PluginToolConfig(name="broken", command="missing-command"),
+        plugin_dir=tmp_path,
+    )
+
+    result = await tool.execute({}, call_id="plugin-start-failure")
+
+    assert result.is_error
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "EXECUTION_ERROR"
+    assert "sensitive process detail" not in result.envelope.text
+
+
+async def test_plugin_failure_advances_registry_circuit_breaker(monkeypatch, tmp_path: Path) -> None:
+    async def fail_create_subprocess_exec(*_args, **_kwargs):
+        raise OSError("process failed")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail_create_subprocess_exec)
+    tool = PluginCommandTool(
+        plugin_name="demo",
+        config=PluginToolConfig(name="broken", command="missing-command"),
+        plugin_dir=tmp_path,
+    )
+    registry = ToolRegistry()
+    registry.register(tool)
+
+    for index in range(3):
+        result = await registry.execute(tool.name, {}, call_id=f"plugin-fail-{index}")
+        assert result.envelope.error is not None
+        assert result.envelope.error.code == "EXECUTION_ERROR"
+
+    circuit_result = await registry.execute(tool.name, {}, call_id="plugin-circuit")
+
+    assert circuit_result.envelope.error is not None
+    assert circuit_result.envelope.error.code == "CIRCUIT_OPEN"
