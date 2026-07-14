@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -72,6 +73,7 @@ class SessionStore:
             try:
                 handle.write(parsed.model_dump_json() + "\n")
                 handle.flush()
+                os.fsync(handle.fileno())
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
@@ -84,6 +86,37 @@ class SessionStore:
                 payload={"message": message.model_dump(mode="json")},
             ),
         )
+
+    def append_summary_checkpoint(
+        self,
+        session_id: str,
+        *,
+        summary: str,
+        through_message_count: int,
+    ) -> None:
+        """持久化有损摘要及其覆盖的原始 message 前缀长度。"""
+        self.append(
+            session_id,
+            SessionRecord(
+                type="context_summary",
+                payload={
+                    "schema_version": 1,
+                    "summary": summary,
+                    "through_message_count": through_message_count,
+                },
+            ),
+        )
+
+    def latest_summary_checkpoint(self, session_id: str) -> dict[str, Any] | None:
+        """读取最近一个合法 summary checkpoint。"""
+        for record in reversed(self.read_records(session_id)):
+            if record.type != "context_summary":
+                continue
+            summary = str(record.payload.get("summary", "")).strip()
+            through = int(record.payload.get("through_message_count", 0))
+            if summary and through >= 0:
+                return {"summary": summary, "through_message_count": through}
+        return None
 
     def read_records(self, session_id: str) -> list[SessionRecord]:
         """读取并校验 session JSONL 中的全部记录。"""

@@ -24,6 +24,7 @@ from inspect import isawaitable
 from typing import Any
 
 from agent.core.context import ContextGuard
+from agent.core.context_assembly import ModelContextAssembler
 from agent.core.tool_executor import ToolCallExecutor
 from agent.debuglog import DebugLog
 from agent.hooks import HookRunner
@@ -34,10 +35,10 @@ from agent.models import (
     Message,
     RunMetrics,
     TokenUsage,
-    ToolResult,
     TurnMetric,
 )
 from agent.prompt import DEFAULT_SYSTEM_PROMPT
+from agent.operations import FileCheckpointStore, OperationJournal
 from agent.prompt import SystemPromptBuilder
 from agent.providers.base import ModelClient, StreamHandler
 from agent.errors import MaxIterationsExceededError
@@ -58,12 +59,15 @@ async def run_task(
     stream_handler: StreamHandler | None = None,
     session_store: SessionStore | None = None,
     context_guard: ContextGuard | None = None,
+    context_assembler: ModelContextAssembler | None = None,
     prompt_builder: SystemPromptBuilder | None = None,
     hook_runner: HookRunner | None = None,
     debug_log: DebugLog | None = None,
     trace_logger: TraceLogger | None = None,
     progress_handler: Callable[[str, dict[str, Any]], Any] | None = None,
     project_root: Any | None = None,
+    operation_journal: OperationJournal | None = None,
+    checkpoint_store: FileCheckpointStore | None = None,
 ) -> AgentRunResult:
     """运行一次 agent 任务直到模型给出最终回答或达到轮次上限。
 
@@ -164,11 +168,14 @@ async def run_task(
             stream_handler=stream_handler,
             session_store=session_store,
             context_guard=context_guard,
+            context_assembler=context_assembler,
             hook_runner=hook_runner,
             debug_log=debug_log,
             trace_logger=_trace,
             progress_handler=progress_handler,
             project_root=project_root,
+            operation_journal=operation_journal,
+            checkpoint_store=checkpoint_store,
             run_metrics=run_metrics,
             recovery_budget=recovery_budget,
             emit_progress=emit_progress,
@@ -196,11 +203,14 @@ async def _run_task_loop(
     stream_handler: StreamHandler | None,
     session_store: SessionStore | None,
     context_guard: ContextGuard | None,
+    context_assembler: ModelContextAssembler | None,
     hook_runner: HookRunner | None,
     debug_log: DebugLog | None,
     trace_logger: TraceLogger,
     progress_handler: Callable[[str, dict[str, Any]], Any] | None,
     project_root: Any | None,
+    operation_journal: OperationJournal | None,
+    checkpoint_store: FileCheckpointStore | None,
     run_metrics: RunMetrics,
     recovery_budget: RecoveryBudget,
     emit_progress: Callable[[str, dict[str, Any]], Any],
@@ -212,18 +222,47 @@ async def _run_task_loop(
         state.turn_count += 1
         # continuation/compaction 预算是轮次内概念，每轮重置；backoff 跨轮累计不重置
         recovery_budget.reset_turn()
-        # 上下文准备只裁剪/压缩“发给模型的”消息副本，不修改真实消息历史。
-        model_messages = (
-            await context_guard.prepare(state.messages)
-            if context_guard is not None
-            else state.messages
-        )
+        active_tools = tool_registry.active_schemas()
+        if context_assembler is not None:
+            latest_user = next(
+                (message.content for message in reversed(state.messages) if message.role == "user"),
+                "",
+            )
+            context_artifact = await context_assembler.assemble(
+                query=latest_user,
+                system_prompt=state.system_prompt,
+                messages=state.messages,
+                tools=active_tools,
+            )
+            model_messages = context_artifact.messages
+            model_system_prompt = context_artifact.system_prompt
+            model_tools = context_artifact.tools
+        else:
+            # 兼容直接调用 run_task 的库用户；正式 runtime 始终注入 assembler。
+            model_messages = (
+                await context_guard.prepare(state.messages)
+                if context_guard is not None
+                else state.messages
+            )
+            model_system_prompt = state.system_prompt
+            model_tools = active_tools
+            context_artifact = None
         log.event(
             "run.model_input",
             {
                 "turn": state.turn_count,
                 "messages": list(model_messages),
-                "tool_schemas": tool_registry.active_schemas(),
+                "tool_schemas": model_tools,
+                "context_accounting": (
+                    context_artifact.accounting.model_dump()
+                    if context_artifact is not None
+                    else None
+                ),
+                "context_provenance": (
+                    [item.model_dump() for item in context_artifact.provenance]
+                    if context_artifact is not None
+                    else []
+                ),
             },
             session_id=runtime_config.session_id,
         )
@@ -232,7 +271,17 @@ async def _run_task_loop(
             {
                 "turn": state.turn_count,
                 "message_count": len(model_messages),
-                "tool_count": len(tool_registry.active_schemas()),
+                "tool_count": len(model_tools),
+                "token_accounting": (
+                    context_artifact.accounting.model_dump()
+                    if context_artifact is not None
+                    else None
+                ),
+                "provenance": (
+                    [item.model_dump() for item in context_artifact.provenance]
+                    if context_artifact is not None
+                    else []
+                ),
             },
             step=state.turn_count,
         )
@@ -247,9 +296,9 @@ async def _run_task_loop(
                 # 不需要知道 ContextGuard 的其他职责
                 compact_fn=context_guard.compact_history if context_guard is not None else None,
             ).run(
-                system_prompt=state.system_prompt,
+                system_prompt=model_system_prompt,
                 messages=model_messages,
-                tools=tool_registry.active_schemas(),
+                tools=model_tools,
                 stream_handler=(
                     progress_stream_handler
                     if runtime_config.stream
@@ -258,7 +307,7 @@ async def _run_task_loop(
             )
         finally:
             await emit_progress("model.end", {"turn": state.turn_count})
-        llm_duration_ms = round((time.monotonic() - llm_t0) * 1000, 1)
+        llm_duration_ms = max(0.1, round((time.monotonic() - llm_t0) * 1000, 1))
         trace_logger.log_event(
             "model_output",
             {
@@ -336,6 +385,8 @@ async def _run_task_loop(
             trace_step=state.turn_count,
             progress_handler=progress_handler,
             project_root=project_root,
+            operation_journal=operation_journal,
+            checkpoint_store=checkpoint_store,
         )
         # execute_many 内部对 concurrency-safe 工具并发执行，但返回顺序与 tool_calls 一致，
         # 保证写回消息历史的顺序与模型调用顺序匹配（否则 tool_call_id 配对会乱）

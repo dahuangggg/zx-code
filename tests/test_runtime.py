@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.config import AgentSettings
+from agent.config import AgentSettings, ConfigLoader
 from agent.models import Message
 from agent.mcp import MCPServerConfig
 from agent.profiles import FallbackModelClient, ModelProfile
@@ -21,6 +21,7 @@ from agent.runtime.markdown_stream import MarkdownStreamRenderer
 from agent.runtime.runner import _run_once, _run_repl
 from agent.runtime.types import AgentRuntime
 from agent.runtime.utils import _configure_readline
+from agent.security import PolicyCompiler
 from agent.state.sessions import SessionStore
 
 
@@ -173,6 +174,50 @@ async def test_repl_help_command_lists_available_commands(monkeypatch, tmp_path,
     assert "/help" in output
     assert "/session" in output
     assert "/clear" in output
+    assert "/undo" in output
+
+
+@pytest.mark.asyncio
+async def test_repl_undo_restores_latest_or_named_operation(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(["/undo", "/undo operation-123", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.undos: list[str | None] = []
+
+        def undo(self, operation_id: str | None = None):
+            self.undos.append(operation_id)
+            resolved_id = operation_id or "operation-latest"
+            return resolved_id, tmp_path / "hello_world.py"
+
+        async def close(self) -> None:
+            return None
+
+    session = FakeSession()
+
+    async def fake_open(settings, **kwargs):
+        return session
+
+    monkeypatch.setattr("agent.runtime.runner.AgentSession.open", fake_open)
+
+    exit_code = await _run_repl(
+        settings=AgentSettings(enable_memory=False, enable_todos=False),
+        print_system_prompt=False,
+        resume_session_id="demo",
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert session.undos == [None, "operation-123"]
+    assert "Undid operation-latest" in output
+    assert "Undid operation-123" in output
+    assert "Unknown command" not in output
 
 
 @pytest.mark.asyncio
@@ -201,6 +246,48 @@ async def test_repl_resume_prints_recent_session_messages(monkeypatch, tmp_path,
     assert "recent question" in output
     assert "recent answer" in output
     assert "tool output" not in output
+
+
+@pytest.mark.asyncio
+async def test_repl_opens_one_long_lived_session_for_multiple_inputs(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    inputs = iter(["first", "second", "exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+    opens: list[str | None] = []
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.runs: list[str] = []
+            self.closes = 0
+
+        async def run(self, task: str):
+            self.runs.append(task)
+            return SimpleNamespace(final_text=f"answer:{task}")
+
+        async def close(self) -> None:
+            self.closes += 1
+
+    session = FakeSession()
+
+    async def fake_open(settings, *, session_id=None, **kwargs):
+        opens.append(session_id)
+        return session
+
+    monkeypatch.setattr("agent.runtime.runner.AgentSession.open", fake_open)
+
+    exit_code = await _run_repl(
+        settings=AgentSettings(enable_memory=False, enable_todos=False, stream=False),
+        print_system_prompt=False,
+        resume_session_id="demo",
+    )
+
+    assert exit_code == 0
+    assert opens == ["demo"]
+    assert session.runs == ["first", "second"]
+    assert session.closes == 1
 
 
 @pytest.mark.asyncio
@@ -462,6 +549,42 @@ def test_build_runtime_registers_plugin_tools(monkeypatch, tmp_path) -> None:
     assert "plugin__demo__echo" in runtime.system_prompt
 
 
+def test_untrusted_policy_skips_plugin_and_hook_loading(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    hooks_path = tmp_path / "hooks.toml"
+    hooks_path.write_text('[[pre_tool_use]]\ncommand = "false"\n', encoding="utf-8")
+    loaded = ConfigLoader(
+        project_dir=tmp_path,
+        user_config_path=tmp_path / "missing-user.toml",
+    ).load_with_sources()
+    policy = PolicyCompiler().compile(loaded, workspace_root=tmp_path)
+
+    def fail_plugin_load(self):
+        raise AssertionError("plugin files must not be loaded")
+
+    def fail_hook_load(path):
+        raise AssertionError("hook file must not be loaded")
+
+    monkeypatch.setattr("agent.runtime.builder.PluginManager.load_tools", fail_plugin_load)
+    monkeypatch.setattr("agent.runtime.builder.HookRunner.from_file", fail_hook_load)
+
+    runtime = _build_runtime(
+        AgentSettings(
+            enable_memory=False,
+            enable_todos=False,
+            plugin_dirs=[str(plugin_dir)],
+            hooks_path=str(hooks_path),
+        ),
+        policy=policy,
+    )
+
+    assert runtime.policy is policy
+    assert runtime.services.permission_manager.policy is policy
+    assert runtime.services.hook_runner._hooks == {}
+
+
 def test_build_runtime_registers_worktree_tools_when_enabled(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
 
@@ -475,29 +598,6 @@ def test_build_runtime_registers_worktree_tools_when_enabled(monkeypatch, tmp_pa
 
     assert runtime.tool_registry.get("worktree_create") is not None
     assert runtime.tool_registry.get("worktree_cleanup") is not None
-
-
-def test_build_runtime_uses_explicit_code_context_embedding(monkeypatch, tmp_path) -> None:
-    monkeypatch.chdir(tmp_path)
-
-    runtime = _build_runtime(
-        AgentSettings(
-            enable_memory=False,
-            enable_todos=False,
-            code_context={
-                "enabled": True,
-                "path": ".zx-code/cache/code-context/chroma",
-                "snapshot_dir": ".zx-code/cache/code-context/snapshots",
-                "embedding_model": "text-embedding-3-small",
-                "embedding_api_key_env": "OPENAI_API_KEY",
-            },
-        )
-    )
-
-    indexer = runtime.extensions.code_context_indexer
-    assert indexer is not None
-    assert indexer.store.embedding_function is not None
-    assert indexer.store.embedding_function.name() == "openai:text-embedding-3-small"
 
 
 async def test_attach_mcp_tools_registers_discovered_tools(monkeypatch, tmp_path) -> None:
@@ -555,3 +655,28 @@ for line in sys.stdin:
     assert not result.is_error
     assert "hello" in result.content
     assert "mcp__fake__echo" in runtime.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_untrusted_policy_skips_mcp_process_start(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    loaded = ConfigLoader(
+        project_dir=tmp_path,
+        user_config_path=tmp_path / "missing-user.toml",
+    ).load_with_sources()
+    policy = PolicyCompiler().compile(loaded, workspace_root=tmp_path)
+    runtime = _build_runtime(
+        AgentSettings(
+            enable_memory=False,
+            enable_todos=False,
+            mcp_servers=[MCPServerConfig(name="blocked", command="must-not-run")],
+        ),
+        policy=policy,
+    )
+
+    def fail_router(*args, **kwargs):
+        raise AssertionError("MCP router must not be constructed")
+
+    monkeypatch.setattr("agent.runtime.builder.MCPToolRouter", fail_router)
+
+    assert await _attach_mcp_tools(runtime, runtime.settings) is None

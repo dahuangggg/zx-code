@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.models import ToolEnvelope
+from agent.operations.processes import kill_process_group
 from agent.tools.base import ErrorCode, Tool
 
 
@@ -38,18 +39,21 @@ class BashTool(Tool):
             cwd=workdir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         try:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(), timeout=arguments.timeout_s,
             )
         except TimeoutError:
-            process.kill()
-            await process.wait()
+            await kill_process_group(process)
             return self.error(
                 code=ErrorCode.TIMEOUT,
                 message=f"Command timed out after {arguments.timeout_s:.1f}s: {arguments.command}",
             )
+        except asyncio.CancelledError:
+            await kill_process_group(process)
+            raise
 
         stdout_str = stdout.decode("utf-8", errors="replace")
         stderr_str = stderr.decode("utf-8", errors="replace")

@@ -17,9 +17,12 @@ from rich.table import Table
 from agent.config import AgentSettings
 from agent.errors import AgentError
 from agent.core.concurrency import LaneScheduler
+from agent.operations import CheckpointConflict
 from agent.runtime.builder import _build_runtime, _run_agent_text
 from agent.runtime.types import AgentRuntime
+from agent.runtime.session import AgentSession
 from agent.runtime.utils import _configure_readline, _resolve_project_path, console
+from agent.security import EffectivePolicy
 from agent.state.sessions import SessionStore
 
 
@@ -68,6 +71,7 @@ def _print_repl_help() -> None:
     table.add_column()
     table.add_row("/help", "Show REPL commands.")
     table.add_row("/session", "Show the current session id.")
+    table.add_row("/undo [operation-id]", "Undo the latest or a named file change.")
     table.add_row("/clear", "Clear the terminal and redraw the status banner.")
     table.add_row("exit, quit, /exit, /quit", "Leave the REPL.")
     console.print(Panel.fit(table, title="commands", border_style="dim"))
@@ -127,20 +131,23 @@ async def _run_once(
     settings: AgentSettings,
     print_system_prompt: bool,
     resume_session_id: str | None = None,
+    policy: EffectivePolicy | None = None,
 ) -> int:
     session_id = resume_session_id or _new_cli_session_id()
     if print_system_prompt:
-        runtime = _build_runtime(settings, session_id=session_id)
+        runtime = _build_runtime(settings, session_id=session_id, policy=policy)
         console.print(_render_system_prompt(runtime))
         return 0
 
     lane_scheduler = LaneScheduler()
     try:
+        kwargs = {"policy": policy} if policy is not None else {}
         final_text = await _run_agent_text(
             task,
             settings=settings,
             session_id=session_id,
             lane_scheduler=lane_scheduler,
+            **kwargs,
         )
         if not settings.model.stream and final_text:
             console.print(final_text)
@@ -157,12 +164,13 @@ async def _run_repl(
     settings: AgentSettings,
     print_system_prompt: bool,
     resume_session_id: str | None = None,
+    policy: EffectivePolicy | None = None,
 ) -> int:
     _configure_readline()
     session_id = resume_session_id or _new_cli_session_id()
     resumed = resume_session_id is not None
     if print_system_prompt:
-        runtime = _build_runtime(settings, session_id=session_id)
+        runtime = _build_runtime(settings, session_id=session_id, policy=policy)
         console.print(_render_system_prompt(runtime))
         return 0
 
@@ -172,7 +180,14 @@ async def _run_repl(
     console.print("[dim]Type /help for commands. Type exit or quit to stop.[/dim]")
     prompt = _format_repl_prompt(_prompt_context_name())
     lane_scheduler = LaneScheduler()
+    agent_session: AgentSession | None = None
     try:
+        agent_session = await AgentSession.open(
+            settings,
+            session_id=session_id,
+            lane_scheduler=lane_scheduler,
+            policy=policy,
+        )
         while True:
             try:
                 task = await asyncio.to_thread(input, prompt)
@@ -191,6 +206,18 @@ async def _run_repl(
             if task == "/session":
                 _print_repl_session(session_id, resumed)
                 continue
+            if task == "/undo" or task.startswith("/undo "):
+                operation_id = task.removeprefix("/undo").strip() or None
+                try:
+                    undone_id, restored = agent_session.undo(operation_id)
+                except (CheckpointConflict, KeyError, ValueError) as exc:
+                    message = str(exc.args[0]) if exc.args else str(exc)
+                    console.print(f"[red]Undo failed:[/red] {message}")
+                else:
+                    console.print(
+                        f"[green]Undid[/green] {undone_id} [dim]({restored})[/dim]"
+                    )
+                continue
             if task == "/clear":
                 console.clear()
                 _print_repl_banner(settings=settings, session_id=session_id, resumed=resumed)
@@ -200,18 +227,16 @@ async def _run_repl(
                 continue
             console.rule("[bold cyan]assistant[/bold cyan]")
             try:
-                final_text = await _run_agent_text(
-                    task,
-                    settings=settings,
-                    session_id=session_id,
-                    lane_scheduler=lane_scheduler,
-                )
+                run_result = await agent_session.run(task)
+                final_text = run_result.final_text
                 if not settings.model.stream and final_text:
                     console.print(final_text)
             except AgentError as exc:
                 console.print(f"[red]Error:[/red] {exc}")
             console.rule(style="dim")
     finally:
+        if agent_session is not None:
+            await agent_session.close()
         await lane_scheduler.close()
 
 
@@ -225,6 +250,7 @@ def _run_cli(
     settings: AgentSettings,
     print_system_prompt: bool,
     resume_session_id: str | None = None,
+    policy: EffectivePolicy | None = None,
 ) -> int:
     if not task:
         return asyncio.run(
@@ -232,6 +258,7 @@ def _run_cli(
                 settings=settings,
                 print_system_prompt=print_system_prompt,
                 resume_session_id=resume_session_id,
+                policy=policy,
             )
         )
     return asyncio.run(
@@ -240,5 +267,6 @@ def _run_cli(
             settings=settings,
             print_system_prompt=print_system_prompt,
             resume_session_id=resume_session_id,
+            policy=policy,
         )
     )

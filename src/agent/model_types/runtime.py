@@ -32,6 +32,7 @@ class RuntimeConfig(BaseModel):
     context_max_tokens: int = 12000
     context_keep_recent: int = 6
     context_tool_result_max_chars: int = 6000
+    context_output_reserve_tokens: int = 4096
     memory_path: str = ".zx-code/state/memory/MEMORY.md"
     enable_memory: bool = True
     enable_todos: bool = True

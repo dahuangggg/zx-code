@@ -46,6 +46,11 @@ class _FailingMCPClient(_FakeMCPClient):
         }
 
 
+class _RaisingMCPClient(_FakeMCPClient):
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        raise RuntimeError("sensitive remote detail")
+
+
 async def test_mcp_router_discovers_tools_and_executes_via_registry() -> None:
     router = MCPToolRouter({"local": _FakeMCPClient()})
     registry = ToolRegistry()
@@ -85,6 +90,24 @@ async def test_mcp_tool_propagates_remote_error_flag() -> None:
     assert result.envelope.error is not None
     assert result.envelope.error.code == "MCP_EXECUTION_ERROR"
     assert result.envelope.data["raw"]["isError"] is True
+
+
+async def test_mcp_tool_normalizes_client_exception() -> None:
+    router = MCPToolRouter({"local": _RaisingMCPClient()})
+    registry = ToolRegistry()
+    for tool in await router.discover_tools():
+        registry.register(tool)
+
+    result = await registry.execute(
+        "mcp__local__echo",
+        {"text": "hello"},
+        call_id="mcp-client-exception",
+    )
+
+    assert result.is_error
+    assert result.envelope.error is not None
+    assert result.envelope.error.code == "MCP_EXECUTION_ERROR"
+    assert "sensitive remote detail" not in result.envelope.text
 
 
 async def test_mcp_tool_wraps_string_output_as_success_text(monkeypatch) -> None:

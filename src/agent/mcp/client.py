@@ -13,6 +13,7 @@ MCP 协议握手流程（由官方 SDK 处理）：
 from __future__ import annotations
 
 import contextlib
+import asyncio
 import logging
 import os
 from typing import Any
@@ -106,6 +107,9 @@ class StdioMCPClient:
         """调用失败时重置 session 并重试一次，应对子进程意外崩溃的场景。"""
         try:
             return await fn()
+        except asyncio.CancelledError:
+            await self._reset()
+            raise
         except Exception as exc:
             logger.warning(
                 "MCP server %r call failed (%s), resetting session and retrying once",

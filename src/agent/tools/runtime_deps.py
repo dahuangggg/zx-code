@@ -11,9 +11,8 @@ from dataclasses import dataclass
 from agent.agents.subagent import SubagentRunner
 from agent.agents.team import Team
 from agent.agents.worktree import WorktreeManager
-from agent.code_context.indexer import CodeContextIndexer
 from agent.debuglog import DebugLog
-from agent.permissions import ApprovalCallback, PermissionCheck, PermissionManager
+from agent.permissions import ApprovalCallback, PermissionManager
 from agent.state.memory import MemoryStore
 from agent.state.skills import SkillStore
 from agent.state.tasks import TaskStore
@@ -34,5 +33,4 @@ class ToolRuntimeDeps:
     team: Team | None = None
     team_timeout_s: float = 30.0
     worktree_manager: WorktreeManager | None = None
-    code_context_indexer: CodeContextIndexer | None = None
     debug_log: DebugLog | None = None

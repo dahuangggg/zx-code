@@ -6,10 +6,30 @@ ConfigLoader 按 user config → project config → CLI overrides 的顺序深�
 from __future__ import annotations
 
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from agent.config.sections import AgentSettings
+
+ConfigSource = Literal["user", "project", "cli"]
+
+
+@dataclass(frozen=True)
+class ConfigDocument:
+    """一份尚未合并的配置及其 authority 来源。"""
+
+    source: ConfigSource
+    path: Path | None
+    data: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LoadedConfig:
+    """保留来源文档的校验后配置。"""
+
+    settings: AgentSettings
+    documents: tuple[ConfigDocument, ...]
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -58,11 +78,40 @@ class ConfigLoader:
 
     def load(self, cli_overrides: dict[str, Any] | None = None) -> AgentSettings:
         """合并配置并返回校验后的 AgentSettings。"""
+        return self.load_with_sources(cli_overrides).settings
+
+    def load_with_sources(
+        self,
+        cli_overrides: dict[str, Any] | None = None,
+    ) -> LoadedConfig:
+        """按 authority 顺序加载配置，同时保留每个真实来源。"""
+        documents: list[ConfigDocument] = []
+        for source, path in (
+            ("user", self.user_config_path),
+            ("project", self.project_config_path),
+        ):
+            data = _read_toml(path)
+            if data:
+                documents.append(
+                    ConfigDocument(
+                        source=source,
+                        path=path.expanduser().resolve(),
+                        data=data,
+                    )
+                )
+
+        cli_data = {
+            key: value
+            for key, value in (cli_overrides or {}).items()
+            if value is not None
+        }
+        if cli_data:
+            documents.append(ConfigDocument(source="cli", path=None, data=cli_data))
+
         raw: dict[str, Any] = {}
-        raw = _deep_merge(raw, _read_toml(self.user_config_path))
-        raw = _deep_merge(raw, _read_toml(self.project_config_path))
-        raw = _deep_merge(
-            raw,
-            {key: value for key, value in (cli_overrides or {}).items() if value is not None},
+        for document in documents:
+            raw = _deep_merge(raw, document.data)
+        return LoadedConfig(
+            settings=AgentSettings.model_validate(raw),
+            documents=tuple(documents),
         )
-        return AgentSettings.model_validate(raw)

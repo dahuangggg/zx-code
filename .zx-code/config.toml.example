@@ -2,6 +2,8 @@
 # Project-level config is loaded from .zx-code/config.toml.
 # User-level config is loaded from ~/.zx-code/config.toml.
 # CLI options override both.
+# Security note: project config can tighten user policy, but cannot grant trust,
+# widen capabilities/roots, or replace model/embedding endpoints.
 
 [agent.model]
 name = "openai/gpt-5.4-mini"
@@ -13,21 +15,13 @@ stream = true
 render_markdown = true
 markdown_streaming = true
 
-[[agent.model.profiles]]
-name = "primary"
-model = "openai/gpt-5.4-mini"
-api_key_env = "OPENAI_API_KEY"
-# reasoning_effort = "medium"
-
-[[agent.model.profiles]]
-name = "backup"
-model = "openai/gpt-5.5"
-api_key_env = "OPENAI_API_KEY"
-# reasoning_effort = "high"
+# Named profiles, API-key environment selection, and custom endpoints are
+# authority settings. Define them in ~/.zx-code/config.toml as [[model.profiles]],
+# not in project config. Project config may still select model.name above.
 
 # For an OpenAI-compatible Chat Completions endpoint, set base_url here.
 # If the endpoint only supports /responses, config alone is not enough.
-# [[agent.model.profiles]]
+# [[model.profiles]]  # user config only
 # name = "custom"
 # model = "openai/gpt-5.4-mini"
 # api_key_env = "CUSTOM_API_KEY"
@@ -38,6 +32,9 @@ max_tokens = 128000
 keep_recent = 15
 tool_result_max_chars = 6000
 compact_model = ""
+output_reserve_tokens = 8192
+retrieval_top_k = 3
+retrieval_max_tokens = 1200
 
 [agent.state]
 session_id = "default"
@@ -58,6 +55,20 @@ rules_path = ""
 # bash = "ask"
 # edit = "allow"
 
+[agent.security]
+# Project config may only tighten these authority limits. Put workspace_trust =
+# "trusted" and any capability grants in ~/.zx-code/config.toml, not here.
+workspace_trust = "untrusted"
+read_roots = ["."]
+write_roots = ["."]
+
+[agent.security.capabilities]
+# shell = "deny"
+# network = "deny"
+# mcp = "deny"
+# plugin = "deny"
+# hook = "deny"
+
 [agent.subagents]
 enabled = true
 max_depth = 1
@@ -65,18 +76,6 @@ max_depth = 1
 [agent.worktree]
 isolation_enabled = false
 dir = ".zx-code/state/worktrees"
-
-[agent.code_context]
-enabled = false
-path = ".zx-code/cache/code-context/chroma"
-snapshot_dir = ".zx-code/cache/code-context/snapshots"
-collection = "agent_code_context"
-embedding_model = "text-embedding-3-small"
-embedding_api_key_env = "OPENAI_API_KEY"
-embedding_base_url = ""
-top_k = 5
-max_result_chars = 4000
-max_total_chars = 12000
 
 [agent.debug]
 log_enabled = false

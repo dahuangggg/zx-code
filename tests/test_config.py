@@ -68,6 +68,44 @@ bash = "deny"
     assert settings.extensions.mcp_servers[0].env == {"TOKEN": "x"}
 
 
+def test_config_loader_preserves_source_order_and_raw_documents(tmp_path: Path) -> None:
+    user_config = tmp_path / "user.toml"
+    project_dir = tmp_path / "project"
+    project_config = project_dir / ".zx-code" / "config.toml"
+    project_config.parent.mkdir(parents=True)
+    user_config.write_text('model = "gpt-user"\n', encoding="utf-8")
+    project_config.write_text('[agent]\nmodel = "gpt-project"\n', encoding="utf-8")
+
+    loaded = ConfigLoader(
+        project_dir=project_dir,
+        user_config_path=user_config,
+    ).load_with_sources({"session_id": "from-cli", "model": None})
+
+    assert [document.source for document in loaded.documents] == [
+        "user",
+        "project",
+        "cli",
+    ]
+    assert loaded.documents[0].path == user_config.resolve()
+    assert loaded.documents[1].path == project_config.resolve()
+    assert loaded.documents[2].path is None
+    assert loaded.documents[0].data == {"model": "gpt-user"}
+    assert loaded.documents[1].data == {"model": "gpt-project"}
+    assert loaded.documents[2].data == {"session_id": "from-cli"}
+    assert loaded.settings.model.name == "gpt-project"
+    assert loaded.settings.state.session_id == "from-cli"
+
+
+def test_config_loader_does_not_invent_documents_for_missing_sources(tmp_path: Path) -> None:
+    loaded = ConfigLoader(
+        project_dir=tmp_path / "missing-project",
+        user_config_path=tmp_path / "missing-user.toml",
+    ).load_with_sources({"model": None})
+
+    assert loaded.documents == ()
+    assert loaded.settings.model.name
+
+
 def test_config_loader_reads_model_profiles(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_config = project_dir / ".zx-code" / "config.toml"

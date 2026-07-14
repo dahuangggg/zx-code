@@ -1,12 +1,12 @@
 """Agent 配置 section 定义。
 
 本模块只描述 CLI-only runtime 仍然使用的配置：model、context、state、
-permissions、subagents、teams、worktree、CodeContext、debug、trace 和 extensions。
+permissions、subagents、teams、worktree、debug、trace 和 extensions。
 AgentSettings 还兼容历史扁平字段，通过 _FLAT_ALIASES 折叠到新的嵌套结构。
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -37,10 +37,13 @@ class ContextSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    max_tokens: int = 128000
-    keep_recent: int = 15
-    tool_result_max_chars: int = 6000
+    max_tokens: int = Field(default=128000, ge=1)
+    keep_recent: int = Field(default=15, ge=1)
+    tool_result_max_chars: int = Field(default=6000, ge=1)
     compact_model: str = ""
+    output_reserve_tokens: int = Field(default=8192, ge=0)
+    retrieval_top_k: int = Field(default=3, ge=0)
+    retrieval_max_tokens: int = Field(default=1200, ge=0)
 
 
 class StateSettings(BaseModel):
@@ -67,6 +70,31 @@ class PermissionSettings(BaseModel):
     default: PermissionDecision = "allow"
     tools: dict[str, PermissionDecision] = Field(default_factory=dict)
     rules_path: str = ""
+
+
+CapabilityName = Literal[
+    "read_fs",
+    "write_fs",
+    "shell",
+    "network",
+    "secrets",
+    "mcp",
+    "plugin",
+    "hook",
+    "vcs_delete",
+    "publish",
+]
+
+
+class SecuritySettings(BaseModel):
+    """由 authority 编译为最终 workspace policy 的安全上限。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_trust: Literal["trusted", "untrusted"] = "untrusted"
+    capabilities: dict[CapabilityName, PermissionDecision] = Field(default_factory=dict)
+    read_roots: list[str] = Field(default_factory=list)
+    write_roots: list[str] = Field(default_factory=list)
 
 
 class SubagentSettings(BaseModel):
@@ -107,23 +135,6 @@ class WorktreeSettings(BaseModel):
 
     isolation_enabled: bool = False
     dir: str = ".zx-code/state/worktrees"
-
-
-class CodeContextSettings(BaseModel):
-    """CodeContext 索引、快照和检索结果预算配置。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = False
-    path: str = ".zx-code/cache/code-context/chroma"
-    snapshot_dir: str = ".zx-code/cache/code-context/snapshots"
-    collection: str = "agent_code_context"
-    embedding_model: str = "text-embedding-3-small"
-    embedding_api_key_env: str = "OPENAI_API_KEY"
-    embedding_base_url: str = ""
-    top_k: int = Field(default=5, ge=1, le=20)
-    max_result_chars: int = Field(default=4000, ge=500)
-    max_total_chars: int = Field(default=12000, ge=1000)
 
 
 class DebugSettings(BaseModel):
@@ -170,6 +181,9 @@ _FLAT_ALIASES: dict[str, tuple[str, ...]] = {
     "context_max_tokens": ("context", "max_tokens"),
     "context_keep_recent": ("context", "keep_recent"),
     "context_tool_result_max_chars": ("context", "tool_result_max_chars"),
+    "context_output_reserve_tokens": ("context", "output_reserve_tokens"),
+    "context_retrieval_top_k": ("context", "retrieval_top_k"),
+    "context_retrieval_max_tokens": ("context", "retrieval_max_tokens"),
     "compact_model": ("context", "compact_model"),
     "session_id": ("state", "session_id"),
     "data_dir": ("state", "data_dir"),
@@ -192,16 +206,6 @@ _FLAT_ALIASES: dict[str, tuple[str, ...]] = {
     "team_members": ("teams", "members"),
     "enable_worktree_isolation": ("worktree", "isolation_enabled"),
     "worktree_dir": ("worktree", "dir"),
-    "code_context_enabled": ("code_context", "enabled"),
-    "code_context_path": ("code_context", "path"),
-    "code_context_snapshot_dir": ("code_context", "snapshot_dir"),
-    "code_context_collection": ("code_context", "collection"),
-    "code_context_embedding_model": ("code_context", "embedding_model"),
-    "code_context_embedding_api_key_env": ("code_context", "embedding_api_key_env"),
-    "code_context_embedding_base_url": ("code_context", "embedding_base_url"),
-    "code_context_top_k": ("code_context", "top_k"),
-    "code_context_max_result_chars": ("code_context", "max_result_chars"),
-    "code_context_max_total_chars": ("code_context", "max_total_chars"),
     "debug_log_enabled": ("debug", "log_enabled"),
     "debug_log_path": ("debug", "log_path"),
     "trace_enabled": ("trace", "enabled"),
@@ -224,10 +228,10 @@ class AgentSettings(BaseModel):
     context: ContextSettings = Field(default_factory=ContextSettings)
     state: StateSettings = Field(default_factory=StateSettings)
     permissions: PermissionSettings = Field(default_factory=PermissionSettings)
+    security: SecuritySettings = Field(default_factory=SecuritySettings)
     subagents: SubagentSettings = Field(default_factory=SubagentSettings)
     teams: TeamSettings = Field(default_factory=TeamSettings)
     worktree: WorktreeSettings = Field(default_factory=WorktreeSettings)
-    code_context: CodeContextSettings = Field(default_factory=CodeContextSettings)
     debug: DebugSettings = Field(default_factory=DebugSettings)
     trace: TraceSettings = Field(default_factory=TraceSettings)
     extensions: ExtensionSettings = Field(default_factory=ExtensionSettings)
@@ -259,6 +263,7 @@ class AgentSettings(BaseModel):
             context_max_tokens=self.context.max_tokens,
             context_keep_recent=self.context.keep_recent,
             context_tool_result_max_chars=self.context.tool_result_max_chars,
+            context_output_reserve_tokens=self.context.output_reserve_tokens,
             memory_path=self.state.memory_path,
             enable_memory=self.state.enable_memory,
             enable_todos=self.state.enable_todos,

@@ -12,6 +12,8 @@ from agent.core.tool_executor import ToolCallExecutor
 from agent.debuglog import DebugLog
 from agent.hooks import HookResult
 from agent.models import ToolCall
+from agent.operations import FileCheckpointStore, OperationJournal
+from agent.tools import build_default_registry
 from agent.trace import TraceLogger
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
@@ -64,6 +66,10 @@ class _UnsafeTool(Tool):
         return parsed.label
 
 
+class _BlockedTool(_UnsafeTool):
+    name = "blocked_tool"
+
+
 class _LargeOutputTool(Tool):
     name = "large_output"
     description = "A tool that returns a large envelope payload."
@@ -81,6 +87,7 @@ async def test_tool_call_executor_runs_hooks_and_denies_before_registry() -> Non
     """hook deny 必须在工具执行前短路，同时仍返回可配对的 error envelope。"""
     registry = ToolRegistry()
     registry.register(_UnsafeTool())
+    registry.register(_BlockedTool())
     hooks = _RecordingHooks(denied_tools={"unsafe_tool"})
     executor = ToolCallExecutor(
         tool_registry=registry,
@@ -272,3 +279,159 @@ async def test_tool_call_executor_traces_hook_denied_result(tmp_path) -> None:
     assert result_event["step"] == 3
     assert result_event["payload"]["result"]["status"] == "error"
     assert result_event["payload"]["result"]["error"]["code"] == "ACCESS_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_executor_journals_success_and_hook_denial(tmp_path) -> None:
+    journal = OperationJournal(tmp_path / "operations.jsonl")
+    registry = ToolRegistry()
+    registry.register(_UnsafeTool())
+    registry.register(_BlockedTool())
+    executor = ToolCallExecutor(
+        tool_registry=registry,
+        hook_runner=_RecordingHooks(denied_tools={"blocked_tool"}),
+        session_id="session-1",
+        operation_journal=journal,
+    )
+
+    results, _ = await executor.execute_many(
+        [
+            ToolCall(id="call-ok", name="unsafe_tool", arguments={"label": "ok"}),
+            ToolCall(id="call-blocked", name="blocked_tool", arguments={}),
+        ]
+    )
+
+    records = journal.records()
+    assert [record.status for record in records] == ["committed", "failed"]
+    assert records[0].outcome is not None
+    assert records[0].outcome.result is not None
+    assert records[1].outcome is not None
+    assert records[1].outcome.error_code == "ACCESS_DENIED"
+    assert results[0].envelope.context["operation_id"] == records[0].operation_id
+    assert results[1].envelope.context["operation_id"] == records[1].operation_id
+
+
+@pytest.mark.asyncio
+async def test_unexpected_write_adapter_failure_is_journaled_unknown(tmp_path, monkeypatch) -> None:
+    journal = OperationJournal(tmp_path / "operations.jsonl")
+    registry = ToolRegistry()
+    registry.register(_UnsafeTool())
+
+    async def allow(*args, **kwargs):
+        return None
+
+    async def explode(*args, **kwargs):
+        raise RuntimeError("adapter disappeared")
+
+    monkeypatch.setattr(registry, "check_access", allow)
+    monkeypatch.setattr(registry, "invoke", explode)
+    executor = ToolCallExecutor(
+        tool_registry=registry,
+        hook_runner=_RecordingHooks(),
+        session_id="session-1",
+        operation_journal=journal,
+    )
+
+    results, _ = await executor.execute_many(
+        [ToolCall(id="call-write", name="write_file", arguments={"path": "x"})]
+    )
+
+    assert results[0].is_error
+    assert results[0].envelope.error is not None
+    assert results[0].envelope.error.code == "EXECUTION_ERROR"
+    assert journal.records()[0].status == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_write_deadline_is_structured_and_journaled_unknown(tmp_path, monkeypatch) -> None:
+    journal = OperationJournal(tmp_path / "operations.jsonl")
+    registry = ToolRegistry()
+
+    async def allow(*args, **kwargs):
+        return None
+
+    async def hang(*args, **kwargs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(registry, "check_access", allow)
+    monkeypatch.setattr(registry, "invoke", hang)
+    executor = ToolCallExecutor(
+        tool_registry=registry,
+        hook_runner=_RecordingHooks(),
+        session_id="session-1",
+        operation_journal=journal,
+        operation_timeout_s=0.01,
+    )
+
+    results, _ = await executor.execute_many(
+        [ToolCall(id="call-write", name="write_file", arguments={"path": "x"})]
+    )
+
+    assert results[0].envelope.error is not None
+    assert results[0].envelope.error.code == "TIMEOUT"
+    assert journal.records()[0].status == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_read_deadline_is_journaled_failed(tmp_path, monkeypatch) -> None:
+    journal = OperationJournal(tmp_path / "operations.jsonl")
+    registry = ToolRegistry()
+
+    async def allow(*args, **kwargs):
+        return None
+
+    async def hang(*args, **kwargs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(registry, "check_access", allow)
+    monkeypatch.setattr(registry, "invoke", hang)
+    executor = ToolCallExecutor(
+        tool_registry=registry,
+        hook_runner=_RecordingHooks(),
+        session_id="session-1",
+        operation_journal=journal,
+        operation_timeout_s=0.01,
+    )
+
+    results, _ = await executor.execute_many(
+        [ToolCall(id="call-read", name="read_file", arguments={"path": "x"})]
+    )
+
+    assert results[0].envelope.error is not None
+    assert results[0].envelope.error.code == "TIMEOUT"
+    assert journal.records()[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_write_operation_records_checkpoint_and_can_be_undone(tmp_path) -> None:
+    target = tmp_path / "notes.txt"
+    target.write_text("before\n", encoding="utf-8")
+    journal = OperationJournal(tmp_path / "operations.jsonl")
+    checkpoints = FileCheckpointStore(tmp_path / "checkpoints", project_root=tmp_path)
+    executor = ToolCallExecutor(
+        tool_registry=build_default_registry(),
+        hook_runner=_RecordingHooks(),
+        session_id="session-1",
+        operation_journal=journal,
+        checkpoint_store=checkpoints,
+    )
+
+    results, _ = await executor.execute_many(
+        [
+            ToolCall(
+                id="call-write",
+                name="write_file",
+                arguments={"path": str(target), "content": "after\n"},
+            )
+        ]
+    )
+
+    operation_id = results[0].envelope.context["operation_id"]
+    record = journal.get(operation_id)
+    assert record.status == "committed"
+    assert record.outcome is not None
+    assert record.outcome.evidence["checkpoint_path"].endswith(f"{operation_id}.json")
+    assert target.read_text(encoding="utf-8") == "after\n"
+
+    checkpoints.undo(operation_id)
+    assert target.read_text(encoding="utf-8") == "before\n"

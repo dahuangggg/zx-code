@@ -88,6 +88,19 @@ class ToolRegistry:
         顺序很重要：先确认工具存在，再看熔断，再做写冲突保护，然后权限判断，
         最后才真正执行 Tool.execute()。这样昂贵或有副作用的工具不会在拒绝路径运行。
         """
+        rejected = await self.check_access(name, arguments, call_id=call_id)
+        if rejected is not None:
+            return rejected
+        return await self.invoke(name, arguments, call_id=call_id)
+
+    async def check_access(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        call_id: str,
+    ) -> ToolResult | None:
+        """验证工具存在性、熔断、写冲突和权限，但不调用 Adapter。"""
         tool = self._tools.get(name)
         if tool is None:
             self._debug("tool.registry.unknown", {"tool_name": name, "call_id": call_id})
@@ -111,6 +124,20 @@ class ToolRegistry:
         permission = await self._check_permission(name, arguments, call_id)
         if permission is not None:
             return permission
+
+        return None
+
+    async def invoke(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        call_id: str,
+    ) -> ToolResult:
+        """调用已经过 `check_access` 的 Adapter 并更新运行时状态。"""
+        tool = self._tools.get(name)
+        if tool is None:
+            return self._error_result(call_id, name, ErrorCode.NOT_FOUND, f"unknown tool: {name}")
 
         result = await tool.execute(arguments, call_id=call_id)
 

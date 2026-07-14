@@ -11,6 +11,7 @@ from agent.hooks import HookResult, HookRunner
 from agent.core.loop import run_task
 from agent.models import RuntimeConfig, Message, ModelTurn
 from agent.tools.registry import ToolRegistry
+from agent.tools.bash import BashTool
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +131,7 @@ async def test_hook_denial_surfaces_as_error_in_run_task(tmp_path: Path) -> None
 
     runner = HookRunner.from_file(hooks_toml)
     registry = ToolRegistry()
+    registry.register(BashTool())
 
     result = await run_task(
         "do something",

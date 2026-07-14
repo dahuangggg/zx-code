@@ -13,18 +13,20 @@ from typing import Any, Callable
 from agent.agents.subagent import SubagentRunner
 from agent.agents.team import Team
 from agent.agents.worktree import WorktreeManager
-from agent.code_context.indexer import CodeContextIndexer
 from agent.config import AgentSettings
 from agent.core.concurrency import LaneScheduler
 from agent.core.context import ContextGuard, ModelSummaryClient
+from agent.core.context_assembly import ModelContextAssembler
 from agent.debuglog import DebugLog
 from agent.hooks import HookRunner
 from agent.mcp import MCPToolRouter
 from agent.models import RuntimeConfig
 from agent.permissions import PermissionManager
+from agent.operations import FileCheckpointStore, OperationJournal
 from agent.plugins import PluginManager
 from agent.prompt import SystemPromptBuilder
 from agent.runtime.markdown_stream import MarkdownStreamRenderer
+from agent.security import EffectivePolicy
 from agent.state.memory import MemoryStore
 from agent.state.sessions import SessionStore
 from agent.state.skills import SkillStore
@@ -64,7 +66,6 @@ class RuntimeExtensions:
     subagent_runner: SubagentRunner | None
     team: Team | None
     worktree_manager: WorktreeManager | None
-    code_context_indexer: CodeContextIndexer | None
     mcp_router: MCPToolRouter | None = None
 
 
@@ -77,12 +78,15 @@ class RuntimeServices:
     permission_manager: PermissionManager
     hook_runner: HookRunner
     context_guard: ContextGuard
+    context_assembler: ModelContextAssembler
     model_client: Any
     summary_model_client: ModelSummaryClient
     plugin_manager: PluginManager
     prompt_builder: SystemPromptBuilder
     stream_output: StreamOutput
     lane_scheduler: LaneScheduler | None
+    operation_journal: OperationJournal
+    checkpoint_store: FileCheckpointStore
 
 
 @dataclass
@@ -90,6 +94,7 @@ class AgentRuntime:
     """单个 CLI 任务或 REPL session 的完整运行时。"""
 
     settings: AgentSettings
+    policy: EffectivePolicy | None
     project_root: Path
     data_dir: Path
     config: RuntimeConfig
