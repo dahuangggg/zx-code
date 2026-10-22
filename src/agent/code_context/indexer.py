@@ -98,51 +98,53 @@ class CodeContextIndexer:
         """同步索引代码库并返回索引统计。"""
         root = resolve_codebase_path(path)
         codebase_id = codebase_hash(root)
-        self.jobs.clear_cancel_event(codebase_id)
-        self.snapshot_store.write_status(
-            codebase_id,
-            {
-                "codebase_id": codebase_id,
-                "codebase_path": str(root),
-                "status": "indexing",
-                "phase": "scanning files",
-                "percentage": 0,
-                "current": 0,
-                "total": 0,
-            },
-        )
-        try:
-            return self.pipeline.index_codebase(
-                root,
-                progress_callback=progress_callback,
-                custom_extensions=custom_extensions,
-                ignore_patterns=ignore_patterns,
-            )
-        except IndexCancelled:
+        # Keep terminal status writes inside the same lock as clear_codebase.
+        with self.jobs.lock_for(codebase_id):
+            self.jobs.clear_cancel_event(codebase_id)
             self.snapshot_store.write_status(
                 codebase_id,
                 {
                     "codebase_id": codebase_id,
                     "codebase_path": str(root),
-                    "status": "indexcancelled",
-                    "phase": "cancelled",
+                    "status": "indexing",
+                    "phase": "scanning files",
                     "percentage": 0,
+                    "current": 0,
+                    "total": 0,
                 },
             )
-            raise
-        except Exception as exc:
-            self.snapshot_store.write_status(
-                codebase_id,
-                {
-                    "codebase_id": codebase_id,
-                    "codebase_path": str(root),
-                    "status": "indexfailed",
-                    "phase": "failed",
-                    "percentage": 0,
-                    "error": str(exc),
-                },
-            )
-            raise
+            try:
+                return self.pipeline.index_codebase(
+                    root,
+                    progress_callback=progress_callback,
+                    custom_extensions=custom_extensions,
+                    ignore_patterns=ignore_patterns,
+                )
+            except IndexCancelled:
+                self.snapshot_store.write_status(
+                    codebase_id,
+                    {
+                        "codebase_id": codebase_id,
+                        "codebase_path": str(root),
+                        "status": "indexcancelled",
+                        "phase": "cancelled",
+                        "percentage": 0,
+                    },
+                )
+                raise
+            except Exception as exc:
+                self.snapshot_store.write_status(
+                    codebase_id,
+                    {
+                        "codebase_id": codebase_id,
+                        "codebase_path": str(root),
+                        "status": "indexfailed",
+                        "phase": "failed",
+                        "percentage": 0,
+                        "error": str(exc),
+                    },
+                )
+                raise
 
     def start_background_index(
         self,

@@ -1,8 +1,16 @@
 # zx-code
 
+[English](README.en.md) · [可复现演示](docs/DEMO.md) · [贡献指南](CONTRIBUTING.md) · [MIT License](LICENSE)
+
 `zx-code` 是一个用 Python 实现的本地 Coding Agent 运行时。当前项目以 CLI
 体验为核心，重点覆盖 Agent 主循环、工具执行、会话状态、代码库检索、子代理、
 插件、MCP 工具和可追踪的本地运行。
+
+## 项目定位与状态
+
+面向需要查看工具执行过程、持久化会话和扩展自定义工具的开发者。
+当前是早期 alpha：提供可复现的离线运行时演示，尚未建立公开用户规模或性能基准。
+权限规则用于控制工具调用，不构成操作系统级沙箱；文件编辑返回 diff，尚无通用一键撤销。
 
 ## 功能特性
 
@@ -19,16 +27,23 @@
 
 ## 环境要求
 
-- Python `3.11+`
+- Python `3.11+`，macOS 或 Linux（会话文件锁依赖 POSIX `fcntl`，暂不支持原生 Windows）
 - [`uv`](https://docs.astral.sh/uv/)
 - 用于模型调用的 OpenAI-compatible API key
 
 ## 快速开始
 
+从源码安装（无需 PyPI）：
+
+```bash
+git clone https://github.com/dahuangggg/zx-code.git
+cd zx-code
+```
+
 安装依赖：
 
 ```bash
-uv sync --dev
+uv sync --locked --extra dev
 ```
 
 配置默认模型 profile 使用的 API key：
@@ -40,13 +55,13 @@ export OPENAI_API_KEY="your-openai-key"
 执行一次任务：
 
 ```bash
-uv run agent "总结这个仓库"
+uv run zx-code "总结这个仓库"
 ```
 
 进入 REPL：
 
 ```bash
-uv run agent
+uv run zx-code
 ```
 
 运行测试：
@@ -55,29 +70,41 @@ uv run agent
 uv run pytest -q
 ```
 
+`agent` 命令保留为兼容别名，Python 导入路径仍为 `agent`。
+也可以在独立环境中用 `pip install .` 安装；构建产物可通过 `uv build` 生成。
+项目尚未在本文中声明已发布到 PyPI。
+
+无需 API Key 体验真实工具、权限拦截和会话恢复：
+
+```bash
+uv run python examples/offline_demo.py --output .zx-code/artifacts/offline-demo
+```
+
+演示使用固定模型响应，不会调用模型 API。[演示说明与真实模型录屏脚本](docs/DEMO.md)。
+
 ## 常用命令
 
 ```bash
 # 单次运行指定模型
-uv run agent --model openai/gpt-5.4-mini "分析 src/agent/core/loop.py"
+uv run zx-code --model openai/gpt-5.4-mini "分析 src/agent/core/loop.py"
 
 # 关闭流式输出
-uv run agent --no-stream "列出主要 runtime 模块"
+uv run zx-code --no-stream "列出主要 runtime 模块"
 
 # 限制 Agent 轮数
-uv run agent --max-turns 8 "找到工具执行链路"
+uv run zx-code --max-turns 8 "找到工具执行链路"
 
 # 恢复指定 session
-uv run agent --resume demo-session "继续"
+uv run zx-code --resume demo-session "继续"
 
 # 打印生成后的 system prompt
-uv run agent --print-system-prompt
+uv run zx-code --print-system-prompt
 
 # 写入 JSONL debug log
-uv run agent --debug-log --debug-log-path .zx-code/logs/debug.jsonl "调试这次运行"
+uv run zx-code --debug-log --debug-log-path .zx-code/logs/debug.jsonl "调试这次运行"
 
 # 写入结构化 trace 和 HTML trace
-uv run agent --trace --trace-html "追踪一个短任务"
+uv run zx-code --trace --trace-html "追踪一个短任务"
 ```
 
 ## 配置
@@ -313,12 +340,19 @@ uv run pytest tests/test_tools.py -q
 查看 CLI：
 
 ```bash
-uv run agent --help
+uv run zx-code --help
 ```
 
 常用诊断输出：
 
 ```bash
-uv run agent --debug-log --debug-log-path .zx-code/logs/debug.jsonl "短任务"
-uv run agent --trace --trace-html "短任务"
+uv run zx-code --debug-log --debug-log-path .zx-code/logs/debug.jsonl "短任务"
+uv run zx-code --trace --trace-html "短任务"
 ```
+
+## 反馈与许可
+
+欢迎通过 [试用反馈](https://github.com/dahuangggg/zx-code/issues/new/choose) 分享真实任务与结果，
+或按 [贡献指南](CONTRIBUTING.md) 提交修复。请勿提交凭据、私有代码或未经检查的 trace。
+项目采用 [MIT License](LICENSE)。版本变化见 [CHANGELOG](CHANGELOG.md)，发布步骤见
+[RELEASING](docs/RELEASING.md)。
