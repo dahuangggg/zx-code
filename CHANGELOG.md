@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 — release candidate (not yet published)
+## 0.1.0 — 2026-10-22 (alpha)
 
 Initial public release packaging for the existing CLI runtime:
 
@@ -10,6 +10,8 @@ Initial public release packaging for the existing CLI runtime:
 - Tool permission policies, hooks, execution traces and edit diffs.
 - MIT license, `zx-code` package/command and backward-compatible `agent` command.
 - Offline reproducible demo, contributor guide, feedback templates and CI.
+- Fix cancelled-index status being recreated after clearing an index.
+- Make context tests compatible with Python 3.14 event-loop behavior.
 
 Alpha software. No OS-level sandbox, guaranteed trace redaction, general automatic undo,
 or native Windows support. See README for installation and runtime limitations.

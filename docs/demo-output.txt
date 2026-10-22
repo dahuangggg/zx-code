@@ -1,0 +1,18 @@
+Recorded offline demo, 2026-10-22
+Scripted model responses; real runtime and tool execution.
+
+--- a/greeting.py
++++ b/greeting.py
+@@ -1,2 +1,2 @@
+ def greet():
+-    return "helo"
++    return "hello"
+
+{
+  "model": "scripted (no model API calls)",
+  "read_file": "passed",
+  "edit_file": "passed",
+  "bash_policy": "denied",
+  "session_resume": "passed",
+  "trace_events": 24
+}
