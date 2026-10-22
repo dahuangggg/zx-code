@@ -196,6 +196,7 @@ indexer 会把旧 snapshot 视为过期并重建索引，避免混用不兼容�
 默认初始可见工具保持很小：
 
 - `tool_search`
+- `bash`
 - `read_file`
 - `write_file`
 - `edit_file`
@@ -204,7 +205,6 @@ indexer 会把旧 snapshot 视为过期并重建索引，避免混用不兼容�
 
 其他工具可通过 `tool_search` 按需激活，包括：
 
-- shell 执行；
 - todo 和 task 工具；
 - memory 工具；
 - skill 加载；
