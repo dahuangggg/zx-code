@@ -1,0 +1,27 @@
+name: Trial feedback
+description: Share a real task you tried with zx-code
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: What did you try?
+      description: Describe the task, environment and version. Do not include private code or keys.
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: What worked, and what needs improvement?
+      description: Describe actual outcomes, errors and any comparison you personally measured.
+    validations:
+      required: true
+  - type: dropdown
+    id: permission
+    attributes:
+      label: May the maintainer quote this feedback in project or funding materials?
+      options:
+        - No permission to quote outside this issue
+        - Yes, with my GitHub username
+        - Yes, anonymously
+    validations:
+      required: true

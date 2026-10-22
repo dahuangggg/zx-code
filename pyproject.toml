@@ -3,11 +3,22 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-deep-dive"
+name = "zx-code"
 version = "0.1.0"
-description = "Local coding agent prototype"
+description = "Local-first Python coding agent runtime with auditable tool execution and persistent sessions"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "dahuangggg"}]
+keywords = ["coding-agent", "cli", "mcp", "llm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Operating System :: POSIX",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development",
+]
 dependencies = [
   "pydantic>=2,<3",
   "rich>=13,<15",
@@ -26,7 +37,13 @@ dev = [
   "pytest-asyncio>=0.23,<1",
 ]
 
+[project.urls]
+Repository = "https://github.com/dahuangggg/zx-code"
+Issues = "https://github.com/dahuangggg/zx-code/issues"
+Documentation = "https://github.com/dahuangggg/zx-code/blob/main/README.md"
+
 [project.scripts]
+zx-code = "agent.main:main"
 agent = "agent.main:main"
 
 [tool.pytest.ini_options]

@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible problem
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, zx-code version or commit, model/provider (no keys).
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include a minimal example and sanitized commands.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected and actual behavior
+      description: Include sanitized errors. Do not paste credentials, private code or raw traces.
+    validations:
+      required: true

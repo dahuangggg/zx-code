@@ -64,8 +64,7 @@ htmlcov/
 *.log
 logs/
 
-# docs
-docs/
+# Local notes
 interview/
 
 # Local agent runtime state / project config
